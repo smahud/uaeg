@@ -1,0 +1,438 @@
+"""Persistent interactive terminal sessions over a native PTY (PRD FR-008).
+
+Each session is a real pseudo-terminal (``pty.openpty``) with a session-leader
+shell attached, so agents get genuine interactive behavior: line editing,
+control characters (e.g. "\\x03" for Ctrl-C), job control, SIGWINCH resizing.
+
+Design points:
+- Output is accumulated in a bounded in-memory ring buffer (default 256 KiB)
+  with a monotonically increasing byte sequence number. Clients poll with
+  ``shell_output(session_id, since_seq=N)`` and receive everything after N;
+  the response carries the next cursor. This makes reconnection trivial and
+  keeps memory bounded (PRD section 14).
+- Sessions live in the server process. If the server restarts, the PTY master
+  closes, the shell receives SIGHUP, and sessions are marked interrupted.
+- Session IDs are UUID4 hex (collision-safe).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import fcntl
+import logging
+import os
+import pty
+import signal
+import struct
+import termios
+import time
+import uuid
+import warnings
+from typing import Any, Callable
+
+from ..db import Store
+
+log = logging.getLogger("uaeg.pty")
+
+_READ_CHUNK = 65536
+
+
+class SessionError(Exception):
+    pass
+
+
+class TerminalSession:
+    def __init__(
+        self,
+        session_id: str,
+        master_fd: int,
+        pid: int,
+        command: str,
+        cwd: str | None,
+        buffer_bytes: int,
+    ):
+        self.session_id = session_id
+        self.master_fd = master_fd
+        self.pid = pid
+        self.command = command
+        self.cwd = cwd
+        self.created_at = time.time()
+        self.last_activity = time.time()
+        self.closed = False
+        self.exit_code: int | None = None
+
+        self._buffer = bytearray()
+        self._buffer_cap = buffer_bytes
+        self._total_bytes = 0  # monotonic sequence of output bytes
+        self._reaper: asyncio.Task | None = None
+
+    # ------------------------------------------------------------------
+    @property
+    def base_seq(self) -> int:
+        """Oldest sequence number still retained in the ring buffer."""
+        return self._total_bytes - len(self._buffer)
+
+    @property
+    def alive(self) -> bool:
+        return not self.closed
+
+    def feed(self, data: bytes) -> None:
+        self._total_bytes += len(data)
+        self._buffer += data
+        if len(self._buffer) > self._buffer_cap:
+            del self._buffer[: len(self._buffer) - self._buffer_cap]
+        self.last_activity = time.time()
+
+    def read_since(self, since_seq: int, limit: int = 262_144) -> tuple[str, int, bool]:
+        """Return (data, next_seq, truncated)."""
+        start = max(since_seq, self.base_seq)
+        if start > self._total_bytes:
+            start = self._total_bytes
+        end = min(start + limit, self._total_bytes)
+        chunk = bytes(self._buffer[start - self.base_seq : end - self.base_seq])
+        truncated = since_seq < self.base_seq
+        return chunk.decode("utf-8", errors="replace"), end, truncated
+
+    def write(self, data: bytes) -> int:
+        if self.closed:
+            raise SessionError("session is closed")
+        written = os.write(self.master_fd, data)
+        self.last_activity = time.time()
+        return written
+
+    def resize(self, cols: int, rows: int) -> None:
+        if self.closed:
+            raise SessionError("session is closed")
+        winsize = struct.pack("HHHH", rows, cols, 0, 0)
+        fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, winsize)
+        try:
+            os.killpg(self.pid, signal.SIGWINCH)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    def info(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "command": self.command,
+            "cwd": self.cwd,
+            "pid": self.pid,
+            "alive": self.alive,
+            "created_at": self.created_at,
+            "last_activity": self.last_activity,
+            "seq_total": self._total_bytes,
+            "buffered_bytes": len(self._buffer),
+            "buffer_base_seq": self.base_seq,
+            "exit_code": self.exit_code,
+        }
+
+    def preview_tail(self, n: int = 512) -> str:
+        return bytes(self._buffer[-n:]).decode("utf-8", errors="replace")
+
+
+class SessionManager:
+    def __init__(
+        self,
+        store: Store,
+        shell: str = "/bin/bash",
+        buffer_bytes: int = 262_144,
+        max_sessions: int = 16,
+    ):
+        self.store = store
+        self.shell = shell
+        self.buffer_bytes = buffer_bytes
+        self.max_sessions = max_sessions
+        self.sessions: dict[str, TerminalSession] = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    # ------------------------------------------------------------------
+    def open(
+        self,
+        command: str | None = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        cols: int = 120,
+        rows: int = 30,
+        key_id: str | None = None,
+        key_name: str | None = None,
+    ) -> dict[str, Any]:
+        if len(self.sessions) >= self.max_sessions:
+            raise SessionError(
+                f"session limit reached ({self.max_sessions}); close unused "
+                "sessions with shell_close first"
+            )
+        if not (2 <= cols <= 1000 and 2 <= rows <= 1000):
+            raise SessionError("cols and rows must be between 2 and 1000")
+        if not os.path.exists(self.shell):
+            raise SessionError(f"configured shell not found: {self.shell}")
+        if cwd and not os.path.isdir(cwd):
+            raise SessionError(f"cwd is not a directory: {cwd}")
+
+        shell = self.shell
+        argv = [shell]
+        if command:
+            argv += ["-c", command]
+
+        session_id = uuid.uuid4().hex
+        child_env = os.environ.copy()
+        child_env.setdefault("TERM", "xterm-256color")
+        child_env["UAEG_SESSION_ID"] = session_id
+        for k, v in (env or {}).items():
+            child_env[k] = str(v)
+
+        loop = self._loop or asyncio.get_running_loop()
+        self._loop = loop
+
+        master_fd, slave_fd = pty.openpty()
+        winsize = struct.pack("HHHH", rows, cols, 0, 0)
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
+        os.set_inheritable(master_fd, False)
+
+        # fork+immediate-exec is the standard PTY pattern (same as pexpect /
+        # subprocess with preexec_fn). The child only calls raw syscalls before
+        # exec, so the multithreaded-fork deprecation warning is safe to ignore.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            pid = os.fork()
+        if pid == 0:
+            # ---- child: become the session-leader shell on this PTY ----
+            try:
+                os.close(master_fd)
+                os.setsid()
+                fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+                os.dup2(slave_fd, 0)
+                os.dup2(slave_fd, 1)
+                os.dup2(slave_fd, 2)
+                if slave_fd > 2:
+                    os.close(slave_fd)
+                if cwd:
+                    os.chdir(cwd)
+                os.execve(argv[0], argv, child_env)
+            except BaseException:  # noqa: BLE001 - never propagate from child
+                os._exit(127)
+            os._exit(127)  # pragma: no cover
+
+        # ---- parent ----
+        os.close(slave_fd)
+        session = TerminalSession(
+            session_id=session_id,
+            master_fd=master_fd,
+            pid=pid,
+            command=command or f"{shell} (interactive)",
+            cwd=cwd,
+            buffer_bytes=self.buffer_bytes,
+        )
+        self.sessions[session_id] = session
+
+        loop.add_reader(master_fd, self._on_readable, session)
+        session._reaper = loop.create_task(
+            self._reap_loop(session), name=f"uaeg-pty-reap-{session_id[:8]}"
+        )
+
+        self.store.insert_session(
+            session_id=session_id,
+            command=command or f"{shell} (interactive)",
+            cwd=cwd,
+            pid=pid,
+            key_id=key_id,
+            key_name=key_name,
+        )
+        log.info(
+            "session %s opened (pid %d, %s)",
+            session_id[:12],
+            pid,
+            command or "interactive shell",
+        )
+        return {
+            "session_id": session_id,
+            "pid": pid,
+            "command": session.command,
+            "cols": cols,
+            "rows": rows,
+            "note": "poll output with shell_output(session_id, since_seq=0); "
+            "send input with shell_input(session_id, data)",
+        }
+
+    # ------------------------------------------------------------------
+    def get(self, session_id: str) -> TerminalSession:
+        session = self.sessions.get(session_id)
+        if not session:
+            raise SessionError(
+                f"unknown or expired session_id: {session_id}; list live "
+                "sessions with shell_sessions()"
+            )
+        return session
+
+    def output(self, session_id: str, since_seq: int = 0, limit: int = 262_144) -> dict[str, Any]:
+        session = self.get(session_id)
+        data, next_seq, truncated = session.read_since(since_seq, limit)
+        return {
+            "session_id": session_id,
+            "data": data,
+            "seq": next_seq,
+            "truncated": truncated,
+            "alive": session.alive,
+            "pid": session.pid,
+            "exit_code": session.exit_code,
+        }
+
+    def input(self, session_id: str, data: str, add_newline: bool = False) -> dict[str, Any]:
+        session = self.get(session_id)
+        payload = data + ("\n" if add_newline else "")
+        written = session.write(payload.encode("utf-8"))
+        self.store.update_session(session_id, touch=True)
+        return {"session_id": session_id, "bytes_written": written, "ok": True}
+
+    def resize(self, session_id: str, cols: int, rows: int) -> dict[str, Any]:
+        session = self.get(session_id)
+        session.resize(cols, rows)
+        return {"session_id": session_id, "cols": cols, "rows": rows, "ok": True}
+
+    def list(self) -> list[dict[str, Any]]:
+        return [s.info() for s in self.sessions.values()]
+
+    async def close(self, session_id: str) -> dict[str, Any]:
+        session = self.get(session_id)
+        await asyncio.to_thread(self._terminate, session)
+        return {
+            "session_id": session_id,
+            "ok": True,
+            "status": "closed",
+            "exit_code": session.exit_code,
+        }
+
+    async def terminate_by_id(self, session_id: str) -> dict[str, Any]:
+        return await self.close(session_id)
+
+    # ------------------------------------------------------------------
+    def _on_readable(self, session: TerminalSession) -> None:
+        try:
+            data = os.read(session.master_fd, _READ_CHUNK)
+        except OSError:
+            self._mark_exited(session)
+            return
+        if not data:
+            self._mark_exited(session)
+            return
+        session.feed(data)
+
+    async def _reap_loop(self, session: TerminalSession) -> None:
+        try:
+            while not session.closed:
+                await asyncio.sleep(0.4)
+                try:
+                    pid, status = os.waitpid(session.pid, os.WNOHANG)
+                except ChildProcessError:
+                    break
+                if pid == session.pid:
+                    try:
+                        session.exit_code = os.waitstatus_to_exitcode(status)
+                    except ValueError:
+                        session.exit_code = None
+                    # Drain any final output, then close.
+                    await asyncio.sleep(0.15)
+                    self._drain_and_close(session)
+                    return
+        except asyncio.CancelledError:
+            pass
+
+    def _drain_and_close(self, session: TerminalSession) -> None:
+        while True:
+            try:
+                data = os.read(session.master_fd, _READ_CHUNK)
+            except OSError:
+                break
+            if not data:
+                break
+            session.feed(data)
+        self._mark_exited(session)
+
+    def _mark_exited(self, session: TerminalSession) -> None:
+        if session.closed:
+            return
+        session.closed = True
+        loop = self._loop
+        fd = session.master_fd
+
+        def _close_fd() -> None:
+            if loop is not None and fd >= 0:
+                try:
+                    loop.remove_reader(fd)
+                except (RuntimeError, ValueError, NotImplementedError, OSError):
+                    pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+        # remove_reader/os.close must happen on the loop thread (or when the
+        # loop is already gone, e.g. during test teardown).
+        if loop is not None and loop.is_running():
+            in_loop = False
+            try:
+                in_loop = asyncio.get_running_loop() is loop
+            except RuntimeError:
+                in_loop = False
+            if in_loop:
+                _close_fd()
+            else:
+                loop.call_soon_threadsafe(_close_fd)
+        else:
+            _close_fd()
+
+        # Best-effort reaping if the reaper task hasn't done it yet.
+        try:
+            os.waitpid(session.pid, os.WNOHANG)
+        except (ChildProcessError, OSError):
+            pass
+        if session._reaper and not session._reaper.done():
+            try:
+                session._reaper.cancel()
+            except RuntimeError:  # event loop already closed
+                pass
+        self.store.update_session(session.session_id, status="closed", closed=True)
+        self.sessions.pop(session.session_id, None)
+        log.info(
+            "session %s closed (exit %s)", session.session_id[:12], session.exit_code
+        )
+
+    def _terminate(self, session: TerminalSession) -> None:
+        """Synchronous, potentially blocking termination (run in a thread)."""
+        if session.closed:
+            return
+        try:
+            os.killpg(session.pid, signal.SIGHUP)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline and not session.closed:
+            try:
+                pid, _ = os.waitpid(session.pid, os.WNOHANG)
+                if pid == session.pid:
+                    break
+            except ChildProcessError:
+                break
+            time.sleep(0.05)
+        try:
+            os.killpg(session.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            os.waitpid(session.pid, 0)
+        except (ChildProcessError, OSError):
+            pass
+        self._drain_and_close(session)
+
+    # ------------------------------------------------------------------
+    def startup_reconcile(self) -> int:
+        """After a server restart, previous PTYs are gone (SIGHUP'd)."""
+        count = len(self.store.open_sessions())
+        if count:
+            self.store.mark_open_sessions("interrupted")
+            log.warning(
+                "%d session(s) from a previous server run marked interrupted", count
+            )
+        return count
+
+    async def shutdown(self) -> None:
+        for session in list(self.sessions.values()):
+            await asyncio.to_thread(self._terminate, session)
