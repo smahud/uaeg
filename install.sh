@@ -31,7 +31,7 @@ ASSUME_YES=0
 OPEN_FIREWALL=0
 # Release this installer belongs to (used for standalone bootstrap, FR-002).
 # Override the source version at runtime with: --version X.Y.Z or UAEG_VERSION=X.Y.Z
-UAEG_RELEASE_VERSION="0.1.0"
+UAEG_RELEASE_VERSION="0.1.1"
 FETCH_VERSION=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
