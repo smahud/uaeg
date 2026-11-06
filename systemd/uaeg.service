@@ -1,0 +1,21 @@
+[Unit]
+Description=UAEG - Universal Agent Execution Gateway
+Documentation=https://github.com/smahud/uaeg
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# UAEG intentionally runs as root: authenticated agents receive full native
+# OS execution by design (PRD FR-010, FR-013). Do not harden-sandbox this
+# unit - that would break the product's core capability.
+User=root
+ExecStart=/opt/uaeg/.venv/bin/uaeg serve
+Environment=UAEG_CONFIG=/etc/uaeg/config.json
+Environment=UAEG_DATA_DIR=/var/lib/uaeg
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
