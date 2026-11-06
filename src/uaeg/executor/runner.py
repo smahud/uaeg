@@ -112,6 +112,20 @@ async def run_command(
         asyncio.create_task(_pump(proc.stderr, err_buf)),
     ]
 
+    async def _drain(timeout: float = 5.0) -> None:
+        """Wait for the pumps to hit EOF so no buffered output is lost.
+
+        The process exiting does NOT mean its output was read yet - data can
+        still sit in the pipe buffer. Only if inherited writers (e.g. daemonized
+        children) keep the pipe open do we stop waiting after `timeout` seconds.
+        """
+        try:
+            await asyncio.wait_for(asyncio.gather(*pumps), timeout=timeout)
+        except asyncio.TimeoutError:
+            for pump in pumps:
+                pump.cancel()
+            await asyncio.gather(*pumps, return_exceptions=True)
+
     timed_out = False
     try:
         await asyncio.wait_for(proc.wait(), timeout=timeout_s)
@@ -123,10 +137,8 @@ async def run_command(
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-
-    for pump in pumps:
-        pump.cancel()
-    await asyncio.gather(*pumps, return_exceptions=True)
+    finally:
+        await _drain()
 
     duration_ms = int((time.monotonic() - started) * 1000)
     exit_code = None if timed_out else proc.returncode
