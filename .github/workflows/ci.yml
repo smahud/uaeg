@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package with dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Sanity check CLI
+        run: |
+          uaeg version
+          uaeg --help
+
+      - name: Run unit tests
+        run: python -m pytest tests/test_unit_core.py tests/test_unit_executor.py -v
+
+      - name: Run end-to-end smoke tests (real TLS + MCP protocol)
+        run: python -m pytest tests/test_e2e_smoke.py -v
+
+  installer:
+    name: Install script smoke (no-service mode)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run installer in isolated directories
+        env:
+          BASE: ${{ runner.temp }}/uaeg-install
+        run: |
+          mkdir -p "$BASE/bin"
+          sed -e 's|^if \[\[ \$EUID -ne 0 \]\]; then|if false; then|' \
+              -e 's|^  die "this installer must run as root.*|  :|' \
+              -e 's|^apt-get update -qq$|:|' \
+              -e 's|^apt-get install -y -qq python3 python3-venv openssl curl >/dev/null$|:|' \
+              -e 's|^ln -sf "\$VENV_DIR/bin/uaeg" /usr/local/bin/uaeg$|ln -sf "$VENV_DIR/bin/uaeg" "$BASE/bin/uaeg"|' \
+              install.sh > install-test.sh
+          bash install-test.sh \
+            --port 3952 --dashboard-port 3953 --dashboard-bind loopback \
+            --public-ip 127.0.0.1 --self-signed \
+            --install-dir "$BASE/opt/uaeg" \
+            --config-dir "$BASE/etc/uaeg" \
+            --data-dir "$BASE/var/lib/uaeg" \
+            --no-service --yes
+
+      - name: Serve from installed location and verify MCP
+        env:
+          BASE: ${{ runner.temp }}/uaeg-install
+        run: |
+          export UAEG_CONFIG="$BASE/etc/uaeg/config.json"
+          export UAEG_DATA_DIR="$BASE/var/lib/uaeg"
+          "$BASE/opt/uaeg/.venv/bin/uaeg" generate --name CI > "$BASE/key.txt"
+          "$BASE/opt/uaeg/.venv/bin/uaeg" serve &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do
+            curl -sk https://127.0.0.1:3952/healthz && break
+            sleep 1
+          done
+          SECRET=$(grep -o 'uaeg_[A-Za-z0-9_-]*' "$BASE/key.txt" | head -1)
+          curl -sk -X POST https://127.0.0.1:3952/mcp \
+            -H "Authorization: Bearer $SECRET" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
+            | grep -q '"serverInfo"'
+          curl -s http://127.0.0.1:3953/api/overview | grep -q '"UAEG"'
+          kill $SERVER_PID
+          echo "installer smoke test passed"
