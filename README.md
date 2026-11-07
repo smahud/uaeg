@@ -6,6 +6,11 @@ MCP (Model Context Protocol) and HTTPS — with no SSH, no tunnels, no local age
 no external control plane. The agent stays on its hosting platform; UAEG gives it the full
 native capabilities of the server, up to and including root.
 
+[![CI](https://github.com/smahud/uaeg/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/smahud/uaeg/actions/workflows/ci.yml)
+
+**Current release: v0.3.1** (tag `v0.3.1`). The repository carries its own audit trail
+— release decisions, security findings, and test evidence — under [report/](report/).
+
 > **SECURITY WARNING — READ THIS BEFORE INSTALLING**
 >
 > - **An authenticated agent receives full, unrestricted root access to the VPS.** There is
@@ -179,6 +184,7 @@ keep running on the platform. The agent must explicitly call UAEG tools for VPS 
 | Document | Contents |
 |----------|----------|
 | [docs/INSTALL.md](docs/INSTALL.md) | Prerequisites, installer flags and examples, verified one-line install, upgrade, uninstall, firewall notes |
+| [docs/UPGRADE_CONTRACT.md](docs/UPGRADE_CONTRACT.md) | Binding safe-upgrade contract (clauses U-1..U-12): one command, auto-backup, verify, auto-rollback — enforced by the CI upgrade-contract suite (in Bahasa Indonesia) |
 | [docs/USAGE.md](docs/USAGE.md) | CLI reference, connecting a hosted agent, all 13 MCP tools with worked examples, job lifecycle, PTY cursors, dashboard guide |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Full config schema, TLS modes, env overrides, path layout, persistence |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Process model, request flows, execution subsystems, data model, design decisions |
@@ -198,4 +204,4 @@ deploying, read [docs/SECURITY.md](docs/SECURITY.md) (threat model and hardening
 
 ## License
 
-MIT — see [LICENSE](LICENSE). UAEG is experimental software (v0.3.0); treat it accordingly.
+MIT — see [LICENSE](LICENSE). UAEG is experimental software (v0.3.1); treat it accordingly.
