@@ -43,7 +43,8 @@ class Runtime:
     def dashboard_url(self) -> str:
         bind = self.config.dashboard.bind
         host = "127.0.0.1" if bind in ("0.0.0.0", "::", "*") else bind
-        return f"http://{host}:{self.config.dashboard.port}"
+        scheme = "https" if self.config.dashboard.tls else "http"
+        return f"{scheme}://{host}:{self.config.dashboard.port}"
 
     def exec_user(self) -> str:
         import getpass

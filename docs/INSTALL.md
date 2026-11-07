@@ -32,8 +32,8 @@ only prompt is the confirmation on an unsupported OS, which `--yes` auto-accepts
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--port N` | `3902` | Public MCP HTTPS port |
-| `--dashboard-port N` | `3903` | Dashboard HTTP port |
-| `--dashboard-bind {ip\|lan\|loopback}` | `loopback` | Dashboard bind address. `lan` prefers a private (RFC1918) address (10/8, 172.16/12, 192.168/16) and **refuses** to auto-bind a public address when no private one exists — it tells you to use loopback, an explicit private IP, or add a private interface; a literal IP address also works |
+| `--dashboard-port N` | `3903` | Dashboard HTTP(S) port |
+| `--dashboard-bind {ip\|lan\|loopback\|public}` | `loopback` | Dashboard bind address. `lan` prefers a private (RFC1918) address (10/8, 172.16/12, 192.168/16) and **refuses** to auto-bind a public address when no private one exists — it tells you to use loopback, an explicit private IP, or add a private interface; a literal IP address also works. `public` binds `0.0.0.0` with `dashboard.tls=true` (HTTPS) — it **requires** `sudo uaeg pass` to have been run first and the installer aborts otherwise |
 | `--domain DOMAIN` | — | Public DNS name. Provisions a Let's Encrypt certificate via certbot standalone (port 80 must be free) |
 | `--public-ip IP` | — | Use a public IP as the public host (pair with `--cert`/`--key`) |
 | `--cert FILE` `--key FILE` | — | Manual TLS: use operator-provided certificate files |
@@ -68,6 +68,16 @@ testing):
 
 ```bash
 sudo ./install.sh --self-signed --dashboard-bind lan
+```
+
+Dashboard reachable from the **internet** over HTTPS with password login (v0.3.0) — set
+the dashboard password FIRST, then re-run the installer (it aborts if the password is
+missing):
+
+```bash
+sudo uaeg pass
+sudo ./install.sh --domain gw.example.com --dashboard-bind public
+# the dashboard is then at https://gw.example.com:3903 (open it: ufw allow 3903/tcp)
 ```
 
 ## Option B — one-line verified install (FR-002)
@@ -127,11 +137,13 @@ Then connect an agent: [USAGE.md](./USAGE.md).
 
 ## Firewall notes
 
-Open the MCP port to the public internet; do **not** open the dashboard port:
+Open the MCP port to the public internet. Keep the dashboard port closed unless it is
+deliberately public:
 
 ```bash
 sudo ufw allow 3902/tcp    # MCP, public
-# 3903 is the dashboard: keep it off the public internet
+# 3903 (dashboard): keep it closed while it is LAN/loopback-bound; open it only for a
+# public dashboard (--dashboard-bind public: password login + HTTPS enforced)
 ```
 
 If you used `--domain`, port 80 must be free and reachable for certbot's standalone

@@ -64,6 +64,39 @@ it manually except for debugging outside systemd.
 Writes a default config file (to `/etc/uaeg/config.json`, or `$UAEG_CONFIG` if set) without
 starting anything. Intended for advanced/manual setups such as containers.
 
+### `uaeg pass`
+
+Sets or changes the **dashboard login password** — the credential that protects the web
+dashboard (it is separate from the MCP agent keys and never affects them).
+
+```bash
+sudo uaeg pass
+```
+
+```
+UAEG Dashboard Password Setup
+
+Enter new password:
+Confirm new password:
+
+Password updated successfully.
+  - it takes effect immediately (no service restart needed)
+  - all existing dashboard sessions have been revoked
+  - the MCP agent keys are NOT affected (separate credential)
+```
+
+Behavior:
+
+- Input is hidden while typing; the password is entered **twice** and must match
+  (mismatches and rule violations allow retry; Ctrl+C cancels and keeps the old password).
+- Minimum length 12 characters; empty passwords are rejected.
+- Stored as a salted **scrypt** hash (never plaintext, never logged); the file is written
+  atomically (`/var/lib/uaeg/dashboard-pass.json`, mode 0600).
+- No old password is required — the command runs with local administrator (root)
+  privilege on the VPS.
+- Once a password exists, the dashboard login is enforced on every interface; without one
+  the dashboard runs in legacy unauthenticated mode on a private bind only.
+
 ### `uaeg generate`
 
 ```bash
@@ -176,11 +209,11 @@ uaeg status
 ```
 
 ```text
-UAEG v0.2.0
+UAEG v0.3.0
   service      : active
   MCP port     : 3902 (listening)
   dashboard    : 127.0.0.1:3903 (listening)
-  health       : ok (v0.2.0, uptime 512s)
+  health       : ok (v0.3.0, uptime 512s)
   keys         : 1 active, 1 revoked
   jobs/sessions: 1 running jobs, 1 open sessions
   MCP URL      : https://localhost:3902/mcp
@@ -512,11 +545,26 @@ redirect chatty output to a file and read it with `shell_exec`.
 
 ## Dashboard
 
-The dashboard is plain HTTP on the private listener (default `http://127.0.0.1:3903`, or
-`http://<lan-ip>:3903` when bound to the LAN). There is **no login** — the bind address and
-optional CIDR allowlist are the boundary, so never expose it publicly
-([FR-015](./CONFIGURATION.md#dashboard-network-access)). For a loopback-bound dashboard you
-can use an SSH tunnel from your workstation: `ssh -L 3903:127.0.0.1:3903 root@gw`.
+The dashboard runs on its own listener (default `http://127.0.0.1:3903`, or
+`http://<lan-ip>:3903` when bound to the LAN, or `https://<domain>:3903` when exposed
+publicly). Since v0.3.0 it is protected by a **password login** once you run
+`sudo uaeg pass` — every page and API route then requires a valid session, and a
+Sign out button ends it. Without a password it stays in legacy unauthenticated mode and
+must remain on a private bind
+([FR-015](./CONFIGURATION.md#dashboard-authentication-and-network-access)). To reach a
+loopback-bound dashboard remotely you can also use an SSH tunnel from your workstation:
+`ssh -L 3903:127.0.0.1:3903 root@gw`.
+
+To expose the dashboard directly on the internet (HTTPS + password, e.g. on a VPS):
+
+```bash
+sudo uaeg pass
+sudo ./install.sh --dashboard-bind public --domain gw.example.com
+# then open the port: ufw allow 3903/tcp
+```
+
+The login page appears before the dashboard; failed attempts are rate-limited per source
+IP (temporary lockout), and rotating the password revokes all active sessions.
 
 | Tab | What you can do |
 |-----|-----------------|

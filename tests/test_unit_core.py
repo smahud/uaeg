@@ -69,14 +69,40 @@ def test_config_validation_rules(tmp_path):
     with pytest.raises(ConfigError):
         cfg.validate()
 
+    # Wildcard bind without allow_public: refused
+    cfg = Config()
+    cfg.dashboard.bind = "0.0.0.0"
+    with pytest.raises(ConfigError):
+        cfg.validate()
+
+    # Wildcard bind with allow_public but without TLS: refused (v0.3.0)
     cfg = Config()
     cfg.dashboard.bind = "0.0.0.0"
     cfg.dashboard.allow_public = True
+    with pytest.raises(ConfigError):
+        cfg.validate()
+
+    # Wildcard bind with allow_public AND TLS: allowed, with a warning
+    cfg = Config()
+    cfg.dashboard.bind = "0.0.0.0"
+    cfg.dashboard.allow_public = True
+    cfg.dashboard.tls = True
     warnings = cfg.validate()
     assert any("ALL interfaces" in w for w in warnings)
 
     cfg = Config()
     cfg.tls.mode = "manual"
+    with pytest.raises(ConfigError):
+        cfg.validate()
+
+    # Session timeout sanity
+    cfg = Config()
+    cfg.dashboard.session_idle_timeout_s = 10
+    with pytest.raises(ConfigError):
+        cfg.validate()
+    cfg = Config()
+    cfg.dashboard.session_absolute_timeout_s = 60
+    cfg.dashboard.session_idle_timeout_s = 3600
     with pytest.raises(ConfigError):
         cfg.validate()
 

@@ -4,7 +4,9 @@ Runs ONE process with TWO listeners (PRD section 4, FR-018):
 
 - MCP listener: public HTTPS (TLS required; explicit UAEG_DEV_INSECURE_HTTP=1
   escape hatch for local development only).
-- Dashboard listener: private LAN/loopback HTTP, never public by default.
+- Dashboard listener: private LAN/loopback by default; can be exposed
+  publicly (0.0.0.0) ONLY with dashboard.tls=true AND a dashboard
+  password created via ``uaeg pass`` (fail-closed startup otherwise).
 
 Both share the same Runtime (config, store, jobs, sessions).
 
@@ -50,6 +52,42 @@ class ListenerFailed(Exception):
     """A listener could not start or died unexpectedly."""
 
 
+def _resolve_tls_files(config: Config) -> tuple[str, str]:
+    """Validated certificate/key paths for the configured TLS mode.
+
+    Generates the self-signed pair on demand in self-signed mode. Raises
+    ConfigError (fail closed) when the files are missing or unloadable.
+    """
+    cert_path, key_path = _resolve_tls_paths(config)
+
+    if config.tls.mode == "self-signed" and (
+        not os.path.isfile(cert_path) or not os.path.isfile(key_path)
+    ):
+        _ensure_self_signed(config)
+
+    if not os.path.isfile(cert_path) or not os.path.isfile(key_path):
+        raise ConfigError(
+            f"TLS certificate files missing (mode={config.tls.mode}, cert={cert_path}). "
+            "The public MCP endpoint requires HTTPS; refusing to start insecure. "
+            "Re-run install.sh or fix tls.* in the config."
+        )
+
+    # Pre-validate that the pair actually loads, so a broken certificate
+    # fails loudly at startup with a clear error instead of as a listener
+    # crash later.
+    probe = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    probe.minimum_version = ssl.TLSVersion.TLSv1_2
+    try:
+        probe.load_cert_chain(cert_path, key_path)
+    except (ssl.SSLError, OSError) as exc:
+        raise ConfigError(
+            f"cannot load the TLS certificate/key (cert={cert_path}, key={key_path}): "
+            f"{exc}. Provide a valid, matching certificate pair (check expiry, "
+            "format and file permissions) and restart."
+        ) from exc
+    return cert_path, key_path
+
+
 def _build_ssl_context(
     config: Config,
 ) -> tuple[str | None, str | None, ssl.SSLContext | None]:
@@ -66,31 +104,33 @@ def _build_ssl_context(
         )
         return None, None, None
 
-    cert_path, key_path = _resolve_tls_paths(config)
-
-    if config.tls.mode == "self-signed" and (
-        not os.path.isfile(cert_path) or not os.path.isfile(key_path)
-    ):
-        _ensure_self_signed(config)
-
-    if not os.path.isfile(cert_path) or not os.path.isfile(key_path):
-        raise ConfigError(
-            f"TLS certificate files missing (mode={config.tls.mode}, cert={cert_path}). "
-            "The public MCP endpoint requires HTTPS; refusing to start insecure. "
-            "Re-run install.sh or fix tls.* in the config."
-        )
-
+    cert_path, key_path = _resolve_tls_files(config)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-    try:
-        ctx.load_cert_chain(cert_path, key_path)
-    except (ssl.SSLError, OSError) as exc:
-        raise ConfigError(
-            f"cannot load the TLS certificate/key (cert={cert_path}, key={key_path}): "
-            f"{exc}. Provide a valid, matching certificate pair (check expiry, "
-            "format and file permissions) and restart."
-        ) from exc
+    ctx.load_cert_chain(cert_path, key_path)
     return cert_path, key_path, ctx
+
+
+def _check_dashboard_public_guard(config: Config) -> None:
+    """Fail-closed guard: a public dashboard bind REQUIRES a password.
+
+    ``Config.validate()`` already enforces allow_public=true and
+    dashboard.tls=true for wildcard binds; this checks the remaining piece
+    (an actual dashboard password) at serve time, so the service never
+    exposes an unauthenticated dashboard to the internet - not even for
+    a moment.
+    """
+    from . import dashauth
+    from .config import WILDCARD_BINDS
+
+    if config.dashboard.bind not in WILDCARD_BINDS:
+        return
+    if not dashauth.password_is_configured():
+        raise ConfigError(
+            "the dashboard is configured to bind all interfaces (public), but "
+            "no dashboard password is set. Refusing to start. Create one "
+            "interactively with: sudo uaeg pass - then restart the service."
+        )
 
 
 def _resolve_tls_paths(config: Config) -> tuple[str | None, str | None]:
@@ -160,8 +200,22 @@ async def _amain(config: Config) -> int:
     mcp_app = build_mcp_asgi_app(runtime)
     dashboard_app = build_dashboard_asgi_app(runtime)
 
+    # Public-dashboard guard (fail closed): password required for 0.0.0.0.
+    _check_dashboard_public_guard(config)
+
     tls_result = _build_ssl_context(config)
     cert_path, key_path, ssl_ctx = tls_result
+
+    # Dashboard TLS: same certificate material as the MCP listener.
+    dash_cert = dash_key = None
+    if config.dashboard.tls:
+        if os.environ.get("UAEG_DEV_INSECURE_HTTP") == "1":
+            log.warning(
+                "UAEG_DEV_INSECURE_HTTP=1 set: keeping dashboard TLS disabled "
+                "for this local development run"
+            )
+        else:
+            dash_cert, dash_key = _resolve_tls_files(config)
 
     mcp_server = _NoSignalServer(
         uvicorn.Config(
@@ -181,6 +235,8 @@ async def _amain(config: Config) -> int:
             dashboard_app,
             host=config.dashboard.bind,
             port=config.dashboard.port,
+            ssl_certfile=dash_cert,
+            ssl_keyfile=dash_key,
             log_level="warning",
             access_log=False,
             timeout_graceful_shutdown=3,
@@ -201,14 +257,34 @@ async def _amain(config: Config) -> int:
             loop.add_signal_handler(sig, _request_stop)
 
     log.info(
-        "UAEG v%s starting: MCP %s (tls=%s) | dashboard http://%s:%d | data=%s",
+        "UAEG v%s starting: MCP %s (tls=%s) | dashboard %s://%s:%d | data=%s",
         __version__,
         runtime.mcp_url(),
         "on" if ssl_ctx else "OFF(dev)",
+        "https" if config.dashboard.tls else "http",
         config.dashboard.bind,
         config.dashboard.port,
         paths.data_dir(),
     )
+
+    # Dashboard security posture: say it loudly at startup.
+    from . import dashauth as _dashauth
+    from .config import WILDCARD_BINDS as _WILDCARD
+
+    if _dashauth.password_is_configured():
+        log.info(
+            "dashboard authentication: password login enforced "
+            "(sessions expire after %ds idle / %ds absolute)",
+            config.dashboard.session_idle_timeout_s,
+            config.dashboard.session_absolute_timeout_s,
+        )
+    elif config.dashboard.bind not in _WILDCARD:
+        log.warning(
+            "dashboard has NO password (legacy unauthenticated mode). It is "
+            "reachable only on the private bind %s. Run 'sudo uaeg pass' to "
+            "enable the login.",
+            config.dashboard.bind,
+        )
 
     async def _supervised_serve(server: _NoSignalServer, name: str) -> None:
         # uvicorn calls sys.exit(1) when it cannot bind; convert that (and any

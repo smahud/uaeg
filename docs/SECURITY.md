@@ -20,7 +20,7 @@ path*, never about containing the *agent*.
 | Key material at rest | Protected | Only SHA-256 verifiers are stored; the config file is mode 0600; plaintext secrets are never persisted or logged |
 | Unauthorized API use | Protected while the key stays secret | 256-bit CSPRNG keys, bearer auth checked on every request, immediate revocation (FR-005, FR-012) |
 | Anonymous public execution | Blocked | No valid bearer token, no MCP protocol handling — `401` before anything else |
-| Dashboard exposure | Mitigated by network placement | Loopback/LAN bind by default, wildcard bind refused without explicit opt-in, optional CIDR allowlist; there is **no login** (FR-015, FR-018) |
+| Dashboard exposure | Mitigated by password login + network placement | Loopback/LAN bind by default; since v0.3.0 `sudo uaeg pass` enables a native password login (scrypt hash, server-side sessions, CSRF + Origin checks, per-IP lockout). A wildcard bind requires `allow_public` + `dashboard.tls` + a password or the service refuses to start; optional CIDR allowlist (FR-015, FR-018) |
 | Host OS integrity | **Not protected** | An authenticated agent has full root: it can read/modify/delete anything, stop UAEG, rewrite firewall rules, or destroy the OS (FR-020) |
 | "Restricted" paths | **Not protected** | `restricted_paths` are advisory rules told to the agent; a root shell bypasses them trivially (FR-014) |
 | Secrets inside commands | Redacted in logs (best effort) | Command text persisted in the audit log, job/session metadata, dashboard previews, and journal lines has high-confidence secret shapes masked with `***REDACTED***` (see [below](#secret-redaction-in-logs)); raw job output files are not altered |
@@ -70,7 +70,10 @@ UAEG on that machine. This is a deliberate MVP trade-off, not an oversight
   to lose. Assume the agent will eventually run `rm -rf` or equivalent.
 - **Snapshots before destructive experiments.** A provider snapshot/restore you have
   actually tested is an operational prerequisite (FR-020).
-- **Firewall.** Only the MCP port (default 3902/tcp) is public. Never open 3903.
+- **Firewall.** Only the MCP port (default 3902/tcp) is public by default. Open 3903 only
+  when the dashboard is deliberately public (`--dashboard-bind public`: password + HTTPS).
+- **Set a dashboard password.** Run `sudo uaeg pass` so the login is enforced even on a
+  LAN bind; a 12+ character unique password is required.
 - **CIDR allowlist.** If the dashboard is LAN-bound, also set
   `network.allowed_dashboard_cidrs` so a misconfigured bind cannot silently expose it.
   Since 0.2.0 an invalid CIDR entry is a clear startup error (fail closed) — it can no

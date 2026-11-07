@@ -1,4 +1,98 @@
-"""Embedded dashboard UI template (single HTML page, no external assets)."""
+"""Embedded dashboard UI templates (single HTML pages, no external assets)."""
+
+LOGIN_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>UAEG · Login</title>
+<style>
+:root{--bg:#0e141b;--panel:#141c26;--border:rgba(255,255,255,.08);--border-strong:rgba(255,255,255,.16);--text:#d5dde8;--text-dim:#8d99ab;--text-faint:#647080;--accent:#4f9cf9;--accent-strong:#8abaff;--accent-dim:rgba(79,156,249,.15);--red:#f0635f;--red-dim:rgba(240,99,95,.13);--orange:#e0a83e;--orange-dim:rgba(224,168,62,.12);--mono:ui-monospace,'SFMono-Regular',Menlo,Consolas,'Liberation Mono',monospace;--sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif}
+*{box-sizing:border-box}
+html{color-scheme:dark}
+body{margin:0;background:var(--bg);color:var(--text);font:13px/1.5 var(--sans);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.mono{font-family:var(--mono);font-size:12px}
+.login-box{width:100%;max-width:380px}
+.brand{display:flex;align-items:center;gap:8px;font-size:14px;justify-content:center;margin-bottom:18px}
+.brand-logo{width:10px;height:10px;border-radius:3px;background:var(--accent);box-shadow:0 0 10px rgba(79,156,249,.8)}
+.brand-name{font-weight:700;letter-spacing:.04em}
+.brand-sub{color:var(--text-dim)}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:22px}
+.panel h1{margin:0 0 4px;font-size:15px;font-weight:600}
+.panel .sub{margin:0 0 16px;color:var(--text-dim);font-size:12.5px}
+label{display:block;font:600 10.5px/1.3 var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--text-faint);margin:0 0 6px}
+input[type=password]{width:100%;background:#0b1016;border:1px solid var(--border-strong);border-radius:6px;color:var(--text);font:13px var(--mono);padding:9px 11px;outline:none}
+input[type=password]:focus{border-color:var(--accent)}
+.btn{appearance:none;display:inline-flex;align-items:center;justify-content:center;gap:7px;width:100%;margin-top:14px;background:var(--accent);border:1px solid transparent;color:#08121d;border-radius:6px;font:600 12.5px var(--sans);padding:9px 14px;cursor:pointer}
+.btn:hover{background:var(--accent-strong)}
+.btn[disabled]{opacity:.55;cursor:wait}
+.spinner{width:12px;height:12px;border:2px solid rgba(8,18,29,.35);border-top-color:#08121d;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.err{display:none;margin-top:12px;padding:8px 11px;border:1px solid rgba(240,99,95,.45);background:var(--red-dim);border-radius:6px;color:#f3a09d;font-size:12.5px}
+.err.show{display:block}
+.note{display:none;margin-top:16px;padding:10px 12px;border:1px solid rgba(224,168,62,.4);background:var(--orange-dim);border-radius:6px;color:#e6c07c;font-size:12.5px;line-height:1.55}
+.note.show{display:block}
+.foot{margin-top:16px;text-align:center;color:var(--text-faint);font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="login-box">
+  <div class="brand">
+    <span class="brand-logo"></span>
+    <span class="brand-name">UAEG</span>
+    <span class="brand-sub">· Dashboard</span>
+  </div>
+  <form class="panel" id="login-form" autocomplete="off">
+    <h1>Sign in</h1>
+    <p class="sub">Enter the dashboard password to continue.</p>
+    <label for="password">Password</label>
+    <input type="password" id="password" autofocus autocomplete="current-password">
+    <button type="submit" class="btn" id="login-btn"><span>Sign in</span></button>
+    <div class="err" id="login-err"></div>
+  </form>
+  <div class="note" id="note-unconfigured">
+    No dashboard password is configured yet.<br>
+    Run <span class="mono">sudo uaeg pass</span> on the server, then reload this page.
+  </div>
+  <div class="note" id="note-broken">
+    The stored dashboard password is unreadable.<br>
+    Run <span class="mono">sudo uaeg pass</span> on the server to repair it.
+  </div>
+  <div class="foot">UAEG · Universal Agent Execution Gateway</div>
+</div>
+<script>
+var PW_CONFIGURED=__PASSWORD_CONFIGURED__,AUTH_BROKEN=__AUTH_BROKEN__;
+if(!PW_CONFIGURED){document.getElementById('note-unconfigured').classList.add('show');}
+if(AUTH_BROKEN){document.getElementById('note-broken').classList.add('show');}
+(function(){
+ var form=document.getElementById('login-form'),pw=document.getElementById('password'),
+     btn=document.getElementById('login-btn'),err=document.getElementById('login-err');
+ function setBusy(b){
+  btn.disabled=b;
+  btn.innerHTML=b?'<span class="spinner"></span><span>Signing in…</span>':'<span>Sign in</span>';
+ }
+ function fail(msg){setBusy(false);err.textContent=msg;err.classList.add('show');pw.select();}
+ form.addEventListener('submit',function(ev){
+  ev.preventDefault();
+  err.classList.remove('show');
+  setBusy(true);
+  fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw.value})})
+   .then(function(r){return r.json().then(function(d){return{status:r.status,ok:r.ok,d:d};},function(){return{status:r.status,ok:r.ok,d:null};});})
+   .then(function(r){
+    if(r.ok&&r.d&&r.d.ok){window.location.href='/';return;}
+    if(r.status===429){fail('Too many failed attempts. Wait a moment and try again.');return;}
+    if(r.status===503){fail('Dashboard password storage error. Run sudo uaeg pass on the server.');return;}
+    fail((r.d&&r.d.error)||'Login failed.');
+   })
+   .catch(function(){fail('Network error - check the connection and try again.');});
+ });
+ pw.focus();
+})();
+</script>
+</body>
+</html>
+"""
 
 TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -142,6 +236,7 @@ dl.kv dd{margin:0;word-break:break-all}
     <button class="refresh-btn" id="refresh-ind">
       <span class="dot"></span><span id="refresh-text">connecting…</span>
     </button>
+    <button class="refresh-btn" id="logout-btn" title="End this dashboard session">⎋ Sign out</button>
   </div>
 </header>
 
@@ -385,11 +480,15 @@ function ttxt(v){return td('ts mono',esc(v||'—'));}
 function cmdCell(v,n){return tdT('mono cell-cmd',v||'','<span class="trunc">'+esc(trunc(v||'—',n))+'</span>');}
 
 // API client — every failure surfaces via toast and/or banner
+var CSRF='';
 async function api(method,path,body){
- var opts={method:method,headers:{}}; if(body!==undefined){opts.headers['Content-Type']='application/json';opts.body=JSON.stringify(body);}
+ var opts={method:method,headers:{}};
+ if(body!==undefined){opts.headers['Content-Type']='application/json';opts.body=JSON.stringify(body);}
+ if(method!=='GET'&&CSRF){opts.headers['X-CSRF-Token']=CSRF;}
  var res;
  try{res=await fetch(path,opts);}
  catch(e){throw new Error('network error ('+((e&&e.message)?e.message:'fetch failed')+')');}
+ if(res.status===401){window.location.href='/login';throw new Error('session expired');}
  var data=null;
  try{data=await res.json();}catch(e2){}
  if(!res.ok)throw new Error((data&&data.error)?data.error:('HTTP '+res.status+(res.statusText?' '+res.statusText:'')));
@@ -725,9 +824,14 @@ function renderServer(d){
  var mcp=d.mcp||{},dash=d.dashboard||{},tls=d.tls||{},sum=d.summary||{};
  el('srv-service').innerHTML=dd('Version',d.version)+dd('Uptime',fmtUptime(d.uptime_seconds))+dd('Hostname',d.hostname)+dd('Exec user',d.service_user)+dd('Python',d.python_version)+dd('Platform',d.platform)+dd('Config path',d.config_path,1)+dd('Data dir',d.data_dir,1);
  el('srv-mcp').innerHTML=dd('URL',mcp.url,1)+dd('Bind',mcp.bind)+dd('Port',mcp.port)+dd('TLS mode',tls.mode)+dd('Cert subject',tls.subject)+dd('Cert issuer',tls.issuer)+dd('Cert expires',tls.expires)+dd('Cert path',tls.cert_path,1);
- el('srv-dash').innerHTML=dd('Bind',dash.bind)+dd('Port',dash.port)+dd('Authentication','none (network-restricted)');
+ el('srv-dash').innerHTML=dd('Bind',dash.bind)+dd('Port',dash.port)+dd('TLS',dash.tls?'enabled (HTTPS)':'disabled (HTTP)')+dd('Authentication',dash.auth_mode)+dd('Session idle timeout',fmtDur((dash.session_idle_timeout_s||1800)*1000));
  el('srv-summary').innerHTML=tile('Active keys',sum.keys_active)+tile('Revoked keys',sum.keys_revoked)+tile('Running jobs',sum.jobs_running)+tile('Open sessions',sum.sessions_open)+tile('Log entries',sum.log_entries);
- el('srv-bind-note').textContent='This dashboard is bound to a private interface ('+(dash.bind||'?')+':'+(dash.port||'?')+') and has no application login — keep it restricted to your LAN or loopback (PRD FR-015).';
+ var pub=(dash.bind==='0.0.0.0'||dash.bind==='::'||dash.bind==='*');
+ el('srv-bind-note').textContent=pub
+  ?'This dashboard is publicly bound. Password login, HTTPS and CSRF protection are enforced.'
+  :(dash.auth_mode==='password'
+    ?'This dashboard requires the password you configured with uaeg pass.'
+    :'This dashboard is bound to a private interface and has NO password set (legacy mode). Run sudo uaeg pass on the server to enable login.');
 }
 async function loadServer(silent){
  try{
@@ -789,10 +893,17 @@ async function withBusy(b,fn){
 
 var LOADERS={keys:loadKeys,permissions:loadPermissions,sessions:loadSessions,logs:loadLogs,server:loadServer};
 function on(id,ev,fn){el(id).addEventListener(ev,fn);}
-function boot(){
+async function boot(){
  toastsEl=el('toasts');
+ // Fetch the session-bound CSRF token first (kept in memory only — never
+ // localStorage). All state-changing calls below send it as a header.
+ try{var me=await api('GET','/api/whoami');CSRF=(me&&me.csrf_token)||'';}catch(e){}
  $all('.tab-btn').forEach(function(b){b.addEventListener('click',function(){setTab(b.dataset.tab);});});
  on('refresh-ind','click',function(){loadOverview();if(activeTab)loadTab(activeTab,false);});
+ on('logout-btn','click',async function(){
+  try{await api('POST','/logout');}catch(e){}
+  window.location.href='/login';
+ });
  on('confirm-ok','click',function(){settleConfirm(true);});
  on('confirm-cancel','click',function(){settleConfirm(false);});
  on('modal-confirm','mousedown',function(ev){if(ev.target===this)settleConfirm(false);});

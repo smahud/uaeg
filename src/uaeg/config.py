@@ -39,8 +39,16 @@ class DashboardConfig:
     bind: str = "127.0.0.1"
     port: int = DEFAULT_DASHBOARD_PORT
     # Explicit, loud opt-in required before the dashboard may bind publicly.
-    # The dashboard has no login; binding it publicly is almost always wrong.
+    # A public bind additionally requires dashboard.tls=true and a dashboard
+    # password created with `uaeg pass` (enforced at serve time, fail closed).
     allow_public: bool = False
+    # Serve the dashboard listener over HTTPS using the same certificate
+    # material as the MCP listener (tls.mode/cert/key). Required for public
+    # binds; optional (but recommended) for LAN access.
+    tls: bool = False
+    # Session lifetime limits for the dashboard login (seconds).
+    session_idle_timeout_s: int = 1800       # 30 min without a request
+    session_absolute_timeout_s: int = 43200  # 12 h hard cap per session
 
 
 @dataclass
@@ -178,14 +186,32 @@ class Config:
 
         if self.dashboard.bind in WILDCARD_BINDS and not self.dashboard.allow_public:
             raise ConfigError(
-                "Refusing to bind the dashboard to all interfaces: the dashboard has "
-                "no login. Bind it to a LAN IP or 127.0.0.1, or set "
-                "dashboard.allow_public=true explicitly if you really accept the risk."
+                "Refusing to bind the dashboard to all interfaces without an "
+                "explicit opt-in. Bind it to a LAN IP or 127.0.0.1, or set "
+                "dashboard.allow_public=true (a dashboard password via "
+                "'sudo uaeg pass' and dashboard.tls=true are required as well)."
+            )
+        if self.dashboard.bind in WILDCARD_BINDS and not self.dashboard.tls:
+            raise ConfigError(
+                "A public dashboard bind requires dashboard.tls=true: external "
+                "dashboard access must go through HTTPS. Enable TLS (the same "
+                "certificate as the MCP listener is used) and try again."
             )
         if self.dashboard.bind in WILDCARD_BINDS:
             warnings.append(
-                "Dashboard is bound to ALL interfaces with allow_public=true. "
-                "Anyone who can reach this port gets full administration access."
+                "Dashboard is bound to ALL interfaces (public). Login with the "
+                "dashboard password is enforced; a password must exist or the "
+                "service refuses to start (run 'sudo uaeg pass')."
+            )
+        if self.dashboard.session_idle_timeout_s < 60:
+            raise ConfigError("dashboard.session_idle_timeout_s must be at least 60 seconds")
+        if (
+            self.dashboard.session_absolute_timeout_s
+            < self.dashboard.session_idle_timeout_s
+        ):
+            raise ConfigError(
+                "dashboard.session_absolute_timeout_s must be greater than or "
+                "equal to dashboard.session_idle_timeout_s"
             )
 
         if self.exec.default_timeout_s <= 0:

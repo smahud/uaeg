@@ -18,10 +18,12 @@ MCP_PORT=3902
 MCP_PORT_GIVEN=0
 DASHBOARD_PORT=3903
 DASHBOARD_PORT_GIVEN=0
-DASHBOARD_BIND="loopback"     # loopback | lan | <ip>
+DASHBOARD_BIND="loopback"     # loopback | lan | public | <ip>
 DASHBOARD_BIND_GIVEN=0
+DASHBOARD_PUBLIC=0
 DOMAIN=""
 PUBLIC_IP=""
+PUBLIC_HOST=""               # resolved later; "" = keep existing on upgrades
 PUBLIC_HOST_GIVEN=0
 CERT_FILE=""
 KEY_FILE=""
@@ -40,7 +42,7 @@ APP_BACKUP=""
 CONFIG_BACKUP=""
 # Release this installer belongs to (used for standalone bootstrap, FR-002).
 # Override the source version at runtime with: --version X.Y.Z or UAEG_VERSION=X.Y.Z
-UAEG_RELEASE_VERSION="0.2.0"
+UAEG_RELEASE_VERSION="0.3.0"
 FETCH_VERSION=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -58,8 +60,10 @@ UAEG installer
 
 Options:
   --port N               MCP (public HTTPS) port                    [3902]
-  --dashboard-port N     dashboard (private HTTP) port              [3903]
-  --dashboard-bind X     loopback | lan | <ip>                      [loopback]
+  --dashboard-port N     dashboard port                             [3903]
+  --dashboard-bind X     loopback | lan | public | <ip>            [loopback]
+                           'public' binds 0.0.0.0 with HTTPS + password login
+                           (requires 'sudo uaeg pass' to have been run first)
   --domain DOMAIN        public DNS name; provisions Let's Encrypt via certbot
   --public-ip IP         public IP address (for display / self-signed SAN)
   --cert FILE --key FILE operator-provided TLS certificate (manual mode)
@@ -68,7 +72,7 @@ Options:
   --config-dir PATH      configuration directory                    [/etc/uaeg]
   --install-dir PATH     application install directory              [/opt/uaeg]
   --no-service           install without registering systemd (containers/tests)
-  --open-firewall        open the MCP port with ufw when ufw is active
+  --open-firewall        open the MCP (and public dashboard, if any) port in ufw
   --version X.Y.Z        standalone mode: install this release tag (default: $UAEG_RELEASE_VERSION)
   --yes                  assume yes for all prompts (unattended)
   -h, --help             show this help
@@ -243,9 +247,12 @@ resolve_dashboard_bind() {
   case "$DASHBOARD_BIND" in
     loopback|127.0.0.1|localhost)
       echo "127.0.0.1" ;;
+    public|0.0.0.0|::)
+      DASHBOARD_PUBLIC=1
+      echo "0.0.0.0" ;;
     lan)
-      # Prefer a proper private (RFC1918) address. The dashboard has no
-      # login: "lan" must never silently bind it to a public interface.
+      # Prefer a proper private (RFC1918) address; "lan" must never
+      # silently bind the dashboard to a public interface.
       local ip
       ip=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 \
            | while read -r a; do
@@ -256,17 +263,36 @@ resolve_dashboard_bind() {
       [[ -z "$ip" ]] && ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="src"){print $(i+1); exit}}' || true)
       [[ -z "$ip" ]] && ip=$(hostname -I 2>/dev/null | awk '{print $1}')
       [[ -n "$ip" ]] || die "could not detect a LAN address; use --dashboard-bind <ip> or loopback"
-      if ! python3 -c "import ipaddress,sys; sys.exit(0 if ipaddress.ip_address(sys.argv[1]).is_private else 1)" "$ip" >/dev/null 2>&1; then
+      if ! "$VENV_DIR/bin/python" -c "import ipaddress,sys; sys.exit(0 if ipaddress.ip_address(sys.argv[1]).is_private else 1)" "$ip" >/dev/null 2>&1; then
         warn "no private (RFC1918) address was found on this host."
-        warn "The only detected address is '$ip', which appears to be PUBLIC; the"
-        warn "dashboard has no login, so auto-binding it to a public address is refused."
-        die "use --dashboard-bind loopback, --dashboard-bind <private-ip>, or add a private interface"
+        warn "The only detected address is '$ip', which appears to be PUBLIC."
+        warn "For a public dashboard use: --dashboard-bind public (requires 'sudo uaeg pass' + TLS)."
+        die "use --dashboard-bind loopback, --dashboard-bind public, or --dashboard-bind <private-ip>"
       fi
       echo "$ip" ;;
-    *) echo "$DASHBOARD_BIND" ;;
+    *)
+      echo "$DASHBOARD_BIND" ;;
   esac
 }
 DASH_BIND_IP="$(resolve_dashboard_bind)"
+
+# ----------------------------------------------------------------------
+# Public dashboard requires a password BEFORE anything is reconfigured
+# ----------------------------------------------------------------------
+if [[ $DASHBOARD_PUBLIC -eq 1 ]]; then
+  if ! UAEG_DATA_DIR="$DATA_DIR" "$VENV_DIR/bin/python" -c \
+      "from uaeg import dashauth; import sys; sys.exit(0 if dashauth.password_is_configured() else 1)" >/dev/null 2>&1; then
+    die "public dashboard requested (--dashboard-bind public) but no dashboard password is
+configured. For security the installer refuses to expose an unauthenticated dashboard.
+
+  Step 1: run  sudo uaeg pass   interactively on this server
+  Step 2: re-run this installer with --dashboard-bind public
+
+The password is stored as a salted scrypt hash and is separate from the MCP
+agent keys (which are not affected)."
+  fi
+  say "public dashboard: password verified, enabling HTTPS + password login"
+fi
 
 # ----------------------------------------------------------------------
 # Public host
@@ -357,7 +383,8 @@ say "writing configuration: $CONFIG_FILE"
 UAEG_CONFIG="$CONFIG_FILE" UAEG_DATA_DIR="$DATA_DIR" "$VENV_DIR/bin/python" - "$CONFIG_FILE" \
   "$CONFIG_EXISTS" "$PUBLIC_HOST" "$MCP_PORT" "$MCP_PORT_GIVEN" \
   "$DASHBOARD_PORT" "$DASHBOARD_PORT_GIVEN" "$DASH_BIND_IP" "$DASHBOARD_BIND_GIVEN" \
-  "$TLS_MODE" "$TLS_MODE_GIVEN" "$CERT_FILE" "$KEY_FILE" "$PUBLIC_HOST_GIVEN" <<'PY' \
+  "$TLS_MODE" "$TLS_MODE_GIVEN" "$CERT_FILE" "$KEY_FILE" "$PUBLIC_HOST_GIVEN" \
+  "$DASHBOARD_PUBLIC" <<'PY' \
   || die "configuration could not be written - see the error above"
 import sys
 
@@ -369,8 +396,8 @@ from uaeg.config import Config, ConfigError
     dash_port, dash_port_given,
     dash_bind, dash_bind_given,
     tls_mode, tls_mode_given, cert_file, key_file,
-    public_host_given,
-) = sys.argv[1:15]
+    public_host_given, dash_public,
+) = sys.argv[1:16]
 
 if config_exists == "1":
     try:
@@ -387,6 +414,11 @@ if dash_port_given == "1":
     cfg.dashboard.port = int(dash_port)
 if dash_bind_given == "1":
     cfg.dashboard.bind = dash_bind
+if dash_public == "1":
+    # Explicit public dashboard opt-in: password was verified by the
+    # installer before reaching here; TLS is mandatory for public binds.
+    cfg.dashboard.allow_public = True
+    cfg.dashboard.tls = True
 if tls_mode_given == "1":
     cfg.tls.mode = tls_mode
     cfg.tls.cert = cert_file or None
@@ -494,10 +526,19 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: a
   if [[ $OPEN_FIREWALL -eq 1 ]]; then
     say "opening MCP port $EFFECTIVE_MCP_PORT/tcp in ufw"
     ufw allow "$EFFECTIVE_MCP_PORT/tcp"
+    if [[ "$DASH_BIND_IP" == "0.0.0.0" ]]; then
+      say "opening public dashboard port $EFFECTIVE_DASH_PORT/tcp in ufw"
+      ufw allow "$EFFECTIVE_DASH_PORT/tcp"
+    fi
   else
     warn "ufw is active. Allow the MCP port yourself, e.g.:"
     warn "    ufw allow ${EFFECTIVE_MCP_PORT}/tcp"
-    warn "(do NOT open ${EFFECTIVE_DASH_PORT} - keep the dashboard LAN-private)"
+    if [[ "$DASH_BIND_IP" == "0.0.0.0" ]]; then
+      warn "The dashboard is public - also allow its port:"
+      warn "    ufw allow ${EFFECTIVE_DASH_PORT}/tcp"
+    else
+      warn "(the dashboard is LAN/loopback-private - do NOT open ${EFFECTIVE_DASH_PORT})"
+    fi
   fi
 fi
 
@@ -507,14 +548,23 @@ fi
 echo
 printf '\033[1mUAEG installed successfully.\033[0m\n'
 echo
+if [[ "$DASH_BIND_IP" == "0.0.0.0" ]]; then
+  echo "  Dashboard    : https://${EFFECTIVE_HOST}:${EFFECTIVE_DASH_PORT} (public - password login + HTTPS)"
+else
+  echo "  Dashboard    : http://${DASH_BIND_IP}:${EFFECTIVE_DASH_PORT} (LAN/loopback only)"
+fi
 echo "  MCP endpoint : https://${EFFECTIVE_HOST}:${EFFECTIVE_MCP_PORT}/mcp"
-echo "  Dashboard    : http://${DASH_BIND_IP}:${EFFECTIVE_DASH_PORT} (LAN/loopback only)"
 echo "  Config       : $CONFIG_FILE"
 echo "  Data         : $DATA_DIR"
 echo "  TLS mode     : $TLS_MODE"
 [[ $NO_SERVICE -eq 0 ]] && echo "  Service      : systemctl status ${SERVICE_NAME}"
 echo
 echo "Next steps:"
+if [[ "$DASH_BIND_IP" != "0.0.0.0" ]]; then
+  echo "  0. (optional) enable dashboard login + remote access:"
+  echo "       sudo uaeg pass"
+  echo "       sudo ./install.sh --dashboard-bind public  # re-run with your TLS flags"
+fi
 echo "  1. Create an agent key:"
 echo "       uaeg generate --name \"Claude\""
 echo "  2. Configure your hosted agent's MCP connector:"

@@ -15,8 +15,10 @@ native capabilities of the server, up to and including root.
 >   trusted person. Do not install it on a machine that holds anything you care about.
 > - Optional "restricted paths" are **advisory rules communicated to the agent — they are not
 >   a security boundary.** A root shell can bypass them trivially (FR-014).
-> - The dashboard has **no login**. Its network placement (LAN/loopback bind) is the only
->   thing protecting it.
+> - The dashboard has a **native password login** (since v0.3.0). Set the password with
+>   `sudo uaeg pass`; until then it runs in legacy unauthenticated mode and MUST stay on a
+>   private bind. A public (`0.0.0.0`) dashboard bind requires a password AND HTTPS, or the
+>   service refuses to start (fail closed).
 > - An agent can stop UAEG itself, rewrite firewall rules, or destroy the operating system.
 >   A provider console and snapshots are the recovery path (FR-020).
 >
@@ -35,6 +37,10 @@ native capabilities of the server, up to and including root.
 - Interactive persistent terminals (real PTYs) with input, resize, and reconnection (FR-008).
 - LAN/loopback dashboard for key management, live sessions, audit logs, and server status
   (FR-015, FR-016); command text and output previews are secret-redacted in the audit trail.
+- Dashboard authentication (v0.3.0): `uaeg pass` sets a scrypt-hashed login password; all
+  pages and API routes then require a revocable server-side session (HttpOnly cookie,
+  CSRF token, per-IP lockout). Public exposure over HTTPS with `0.0.0.0` is supported
+  safely once a password exists.
 - One systemd service, one SQLite database, three runtime dependencies (FR-019). Fail-closed
   startup: a broken listener, config, certificate or database stops the whole service with a
   clear error instead of running half-alive.
@@ -43,22 +49,23 @@ native capabilities of the server, up to and including root.
 
 ## Architecture
 
-One process, two listeners. The MCP listener is public and authenticated; the dashboard
-listener is private and unauthenticated but network-restricted.
+One process, two listeners. The MCP listener is public and bearer-authenticated; the
+dashboard listener is private by default and password-protected once `uaeg pass` has been
+run.
 
 ```text
-  Hosted AI agent                     Operator (private LAN or loopback)
-  (any remote MCP client)             (browser; the dashboard has no login)
+  Hosted AI agent                     Operator (browser)
+  (any remote MCP client)             (LAN/loopback, or public with a password)
         |                                         |
-        | HTTPS   https://HOST:3902/mcp           | HTTP   http://HOST:3903
-        | Authorization: Bearer <UAEG_AGENT_KEY>  |
+        | HTTPS   https://HOST:3902/mcp           | HTTP(S) http(s)://HOST:3903
+        | Authorization: Bearer <UAEG_AGENT_KEY>  | (login page -> session cookie)
         v                                         v
  +---------------------------------------------------------------+
  |                    UAEG service (systemd)                     |
  |                                                               |
  |  +--------------------------+   +---------------------------+ |
  |  | MCP listener (TLS)       |   | Dashboard listener        | |
- |  | bearer auth per request  |   | bind-restricted HTTP,     | |
+ |  | bearer auth per request  |   | password login + sessions | |
  |  | stateful MCP sessions    |   | optional CIDR allowlist   | |
  |  +------------+-------------+   +-------------+-------------+ |
  |               |                               |               |
@@ -132,6 +139,7 @@ Parameter-level reference with worked examples: [docs/USAGE.md](docs/USAGE.md).
 |---------|---------|
 | `uaeg serve` | Run the server in the foreground (used by systemd) |
 | `uaeg init` | Write a default config file (advanced/manual setups) |
+| `uaeg pass` | Set or change the dashboard login password (interactive, hidden input, stored as a scrypt hash) |
 | `uaeg generate` | Create an agent key; the secret is printed exactly once |
 | `uaeg keys list` | List keys: ID, name, prefix, status, permissions, created, last used |
 | `uaeg keys revoke <KEY_ID>` | Revoke a key (immediate) and terminate its live sessions/jobs; `--keep-processes` opts out |
@@ -173,11 +181,12 @@ keep running on the platform. The agent must explicitly call UAEG tools for VPS 
 
 ## Security and limitations
 
-UAEG is deliberately a power tool with a thin safety story: authenticated agents get root,
-soft restrictions are advisory, and the dashboard trusts the network. Before deploying, read
-[docs/SECURITY.md](docs/SECURITY.md) (threat model and hardening) and
+UAEG is deliberately a power tool with a thin safety story: authenticated agents get root
+and soft restrictions are advisory. The dashboard is password-protected once `uaeg pass`
+has been run; without a password it must stay on a private bind (legacy mode). Before
+deploying, read [docs/SECURITY.md](docs/SECURITY.md) (threat model and hardening) and
 [docs/LIMITATIONS.md](docs/LIMITATIONS.md) (known limitations, out of scope).
 
 ## License
 
-MIT — see [LICENSE](LICENSE). UAEG is experimental software (v0.2.0); treat it accordingly.
+MIT — see [LICENSE](LICENSE). UAEG is experimental software (v0.3.0); treat it accordingly.

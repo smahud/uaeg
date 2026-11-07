@@ -33,10 +33,13 @@ jobs:
           uaeg --help
 
       - name: Run unit tests
-        run: python -m pytest tests/test_unit_core.py tests/test_unit_executor.py -v
+        run: python -m pytest tests/test_unit_core.py tests/test_unit_executor.py tests/test_unit_containment.py tests/test_unit_security_redaction.py tests/test_unit_server_hardening.py tests/test_dashboard_auth.py -v
 
       - name: Run end-to-end smoke tests (real TLS + MCP protocol)
         run: python -m pytest tests/test_e2e_smoke.py -v
+
+      - name: Run end-to-end dashboard auth tests (login, HTTPS, public bind)
+        run: python -m pytest tests/test_e2e_dashboard_auth.py tests/test_e2e_hardening.py -v
 
   installer:
     name: Install script smoke (no-service mode)

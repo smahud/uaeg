@@ -3,6 +3,7 @@
 Subcommands:
     uaeg serve                       run the server in the foreground
     uaeg init                        write a default configuration file
+    uaeg pass                        set or change the dashboard login password
     uaeg generate [--name N]         create an agent key (secret shown once)
     uaeg keys list|revoke|rotate     key administration
     uaeg jobs list|status|output|cancel
@@ -46,12 +47,94 @@ def _store():
 
 
 # ----------------------------------------------------------------------
-# serve / init
+# serve / init / pass
 # ----------------------------------------------------------------------
 def cmd_serve(args: argparse.Namespace) -> int:
     from .server import serve
 
     return serve()
+
+
+def cmd_pass(args: argparse.Namespace) -> int:
+    """Set or replace the dashboard login password (interactive).
+
+    - Input is hidden (getpass); the password is entered twice and must
+      match; empty and too-short passwords are rejected with a retry.
+    - Stored as a salted scrypt hash in an atomically written file; the
+      plaintext never touches disk, logs or output.
+    - No old password is required: the command runs with local admin
+      privilege (root) on the VPS by design.
+    - Cancelling (Ctrl+C / EOF) keeps the previous password active.
+    - Takes effect immediately (no service restart); all existing
+      dashboard sessions are revoked.
+    """
+    import getpass
+
+    from . import dashauth
+
+    print("UAEG Dashboard Password Setup")
+    print()
+
+    password = ""
+    try:
+        while True:
+            try:
+                first = getpass.getpass("Enter new password: ")
+            except EOFError:
+                raise
+            if not first:
+                print("error: the password must not be empty - try again")
+                continue
+            if len(first) < dashauth.MIN_PASSWORD_LEN:
+                print(
+                    f"error: the password must be at least "
+                    f"{dashauth.MIN_PASSWORD_LEN} characters - try again"
+                )
+                continue
+            if len(first) > dashauth.MAX_PASSWORD_LEN:
+                print(
+                    f"error: the password must be at most "
+                    f"{dashauth.MAX_PASSWORD_LEN} characters - try again"
+                )
+                continue
+            second = getpass.getpass("Confirm new password: ")
+            if first != second:
+                print("error: passwords do not match - try again")
+                continue
+            password = first
+            break
+    except (KeyboardInterrupt, EOFError):
+        print()
+        print("cancelled - the previous password (if any) remains active")
+        return 130
+
+    try:
+        existing = dashauth.load_password()
+    except dashauth.PasswordFileError as exc:
+        print(f"warning: existing password file is unreadable and will be replaced ({exc})")
+        existing = None
+
+    record = dashauth.hash_password(password)
+    if existing is not None:
+        record.created_at = existing.created_at
+    try:
+        dashauth.save_password(record)
+    except OSError as exc:
+        print(f"error: could not write the password file: {exc}")
+        if os.geteuid() != 0:
+            print("hint: run it as root: sudo uaeg pass")
+        return 1
+
+    # Scrub the plaintext references; the value itself is immutable, but
+    # we make sure nothing below can accidentally log it.
+    del password, first, second
+
+    print()
+    print("Password updated successfully.")
+    print("  - it takes effect immediately (no service restart needed)")
+    print("  - all existing dashboard sessions have been revoked")
+    print("  - the MCP agent keys are NOT affected (separate credential)")
+    return 0
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -295,6 +378,17 @@ def cmd_status(args: argparse.Namespace) -> int:
         f"  dashboard    : {cfg.dashboard.bind}:{cfg.dashboard.port} "
         f"({'listening' if dash_listening else 'NOT listening'})"
     )
+    try:
+        from . import dashauth
+
+        dash_auth = (
+            "password login"
+            if dashauth.password_is_configured()
+            else "no password (legacy mode on private bind)"
+        )
+    except Exception:  # noqa: BLE001 - status must never crash
+        dash_auth = "unknown"
+    print(f"  dash auth    : {dash_auth}")
     health = _http_get_json(f"https://{bind}:{cfg.mcp.port}/healthz")
     if health:
         print(
@@ -425,6 +519,45 @@ def cmd_doctor(args: argparse.Namespace) -> int:
               f"not root (uid={os.geteuid()}); agents will NOT get root execution - "
               "run the service as root for the intended behavior")
 
+    # dashboard authentication
+    from . import dashauth
+    from .config import WILDCARD_BINDS
+
+    try:
+        pw_ok = dashauth.password_is_configured()
+    except Exception:  # noqa: BLE001
+        pw_ok = False
+    try:
+        dashauth.load_password()
+        pw_readable = True
+    except dashauth.PasswordFileError as exc:
+        pw_readable = False
+        print(f"        ! stored password file is unreadable: {exc}")
+    except Exception:  # noqa: BLE001
+        pw_readable = pw_ok
+    if cfg.dashboard.bind in WILDCARD_BINDS:
+        check(
+            "dashboard auth",
+            pw_ok and pw_readable and cfg.dashboard.tls,
+            "public bind: password + TLS required"
+            + (
+                " (password configured, login enforced)"
+                if pw_ok and pw_readable
+                else " - NO VALID PASSWORD: run 'sudo uaeg pass' (the service refuses to start)"
+            ),
+        )
+    elif pw_ok:
+        check(
+            "dashboard auth",
+            pw_readable,
+            "password configured - login enforced on every interface"
+            if pw_readable
+            else "password file unreadable - run 'sudo uaeg pass' to repair",
+        )
+    else:
+        check("dashboard auth", True, "no password set - legacy unauthenticated mode "
+              "(private bind only); run 'sudo uaeg pass' to enable login")
+
     shell = cfg.exec.shell
     check("exec shell", os.path.exists(shell), shell)
 
@@ -548,6 +681,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", help="public host or IP for the default config")
     p.add_argument("--force", action="store_true", help="overwrite an existing config")
     p.set_defaults(func=cmd_init)
+
+    sub.add_parser(
+        "pass",
+        help="set or change the dashboard login password (interactive)",
+    ).set_defaults(func=cmd_pass)
 
     p = sub.add_parser("generate", help="generate a new agent API key")
     p.add_argument("--name", default="Unnamed agent", help="display name for the key")

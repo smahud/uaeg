@@ -39,7 +39,14 @@ Defaults shown; the config file needs only the keys you want to change.
 {
   "public_host": "localhost",
   "mcp": { "bind": "0.0.0.0", "port": 3902 },
-  "dashboard": { "bind": "127.0.0.1", "port": 3903, "allow_public": false },
+  "dashboard": {
+    "bind": "127.0.0.1",
+    "port": 3903,
+    "allow_public": false,
+    "tls": false,
+    "session_idle_timeout_s": 1800,
+    "session_absolute_timeout_s": 43200
+  },
   "tls": { "mode": "self-signed", "cert": null, "key": null },
   "exec": {
     "shell": "/bin/bash",
@@ -59,9 +66,12 @@ Defaults shown; the config file needs only the keys you want to change.
 | `public_host` | string | `"localhost"` | Host name or IP agents use to reach the MCP endpoint; used in the printed connection URL and as the self-signed certificate identity |
 | `mcp.bind` | string | `"0.0.0.0"` | Bind address of the public MCP listener |
 | `mcp.port` | integer | `3902` | Public MCP HTTPS port |
-| `dashboard.bind` | string | `"127.0.0.1"` | Dashboard bind address; a wildcard requires `dashboard.allow_public` |
-| `dashboard.port` | integer | `3903` | Dashboard HTTP port |
+| `dashboard.bind` | string | `"127.0.0.1"` | Dashboard bind address; a wildcard requires `dashboard.allow_public`, `dashboard.tls` and a password created with `uaeg pass` |
+| `dashboard.port` | integer | `3903` | Dashboard HTTP(S) port |
 | `dashboard.allow_public` | boolean | `false` | Explicit opt-in to bind the dashboard on all interfaces |
+| `dashboard.tls` | boolean | `false` | Serve the dashboard over HTTPS using the same certificate material as the MCP listener (`tls.mode`/`tls.cert`/`tls.key`). Required for public binds |
+| `dashboard.session_idle_timeout_s` | integer | `1800` | Dashboard login session expires after this many seconds without a request (minimum 60) |
+| `dashboard.session_absolute_timeout_s` | integer | `43200` | Hard cap on a dashboard session's total lifetime (>= idle timeout) |
 | `tls.mode` | string | `"self-signed"` | One of `certbot`, `manual`, `self-signed` |
 | `tls.cert` | string \| null | `null` | Certificate file path (required for `manual`) |
 | `tls.key` | string \| null | `null` | Private key file path (required for `manual`) |
@@ -85,7 +95,10 @@ The service validates configuration at startup and refuses to start with clear e
   passes validation, but certbot needs a real DNS domain to issue a certificate — use a
   domain in practice.
 - `dashboard.bind` set to a wildcard (`0.0.0.0`) is rejected unless
-  `dashboard.allow_public: true` is set explicitly (FR-015).
+  `dashboard.allow_public: true` AND `dashboard.tls: true` are set explicitly
+  (FR-015, v0.3.0); the service additionally refuses to start when no dashboard
+  password exists (`sudo uaeg pass`).
+- `dashboard.session_absolute_timeout_s` must be >= `dashboard.session_idle_timeout_s`.
 - `network.allowed_dashboard_cidrs` entries must be valid CIDR networks; since 0.2.0 an
   invalid entry is a clear startup error instead of being silently ignored.
 
@@ -103,14 +116,31 @@ that covers the IP and use `manual`; a domain-issued certificate will not match 
 UAEG never silently falls back to plain HTTP on the public listener (the only exception is
 the `UAEG_DEV_INSECURE_HTTP` development escape hatch).
 
-## Dashboard network access
+## Dashboard authentication and network access
 
-The dashboard has **no login**; its network placement is the boundary (FR-015, FR-018):
+Since v0.3.0 the dashboard has a **native password login** (single operator, no
+usernames/multi-user):
+
+1. **Password** — created with `sudo uaeg pass` (interactive, hidden input, confirmed
+   twice, minimum 12 characters, stored as a salted **scrypt** hash in
+   `/var/lib/uaeg/dashboard-pass.json`, mode 0600, atomic writes). It takes effect
+   immediately without a service restart and revokes all existing dashboard sessions.
+   It is a separate credential from the MCP agent keys — rotating it never touches them.
+2. **Sessions** — server-side, revocable; the browser only holds an opaque `HttpOnly`
+   `uaeg_session` cookie (`SameSite=Lax`, `Secure` when HTTPS). Idle timeout 30 min,
+   absolute cap 12 h (configurable above). Logout and password rotation revoke sessions.
+3. **CSRF / Origin** — state-changing requests require the session's CSRF token
+   (`X-CSRF-Token`) and a matching `Origin` header.
+4. **Brute-force protection** — per-IP lockout after 5 failed logins within 15 minutes
+   (15-minute lockout); generic error messages; attempts are audited without secrets.
+
+While NO password is configured, the dashboard runs in **legacy mode** (v0.2.0
+behavior): no login, and the network placement is the boundary — keep it on a private
+bind:
 
 1. **Bind address** (`dashboard.bind`) — default `127.0.0.1` (loopback only). The
    installer's `--dashboard-bind lan` prefers a private (RFC1918) address and refuses to
-   auto-bind a public address when no private one exists; a literal IP also works. A
-   wildcard bind is refused unless `dashboard.allow_public: true` is set explicitly.
+   auto-bind a public address when no private one exists; a literal IP also works.
 2. **Optional CIDR allowlist** (`network.allowed_dashboard_cidrs`) — when set, requests
    from source addresses outside the listed networks are rejected even if they reach the
    listener. Invalid entries are rejected at startup (fail closed) — since 0.2.0 they are
@@ -123,6 +153,32 @@ uaeg config set dashboard.bind 192.168.1.20
 uaeg config set network.allowed_dashboard_cidrs '["192.168.1.0/24"]'
 sudo systemctl restart uaeg
 ```
+
+### Exposing the dashboard to the internet (HTTPS + password)
+
+Once a password exists, the dashboard can be bound publicly. The recommended path is the
+installer, which verifies the password before changing anything:
+
+```bash
+sudo uaeg pass                 # interactive; never scripted or auto-generated
+sudo ./install.sh --dashboard-bind public --domain gw.example.com
+```
+
+`--dashboard-bind public` sets `dashboard.bind=0.0.0.0`, `allow_public=true` and
+`tls=true` (the same certificate as the MCP listener is used). The dashboard is then
+reachable at `https://gw.example.com:3903` — a login page guards every page and API
+route. Equivalently by hand (order matters, each step is validated):
+
+```bash
+sudo uaeg pass
+sudo uaeg config set dashboard.allow_public true
+sudo uaeg config set dashboard.tls true
+sudo uaeg config set dashboard.bind 0.0.0.0
+sudo systemctl restart uaeg
+```
+
+Open the port in your firewall (`ufw allow 3903/tcp`) and keep TLS certificates trusted
+(certbot or manual) — UAEG refuses to run a public dashboard over plain HTTP.
 
 ## Changing ports safely
 
