@@ -1,0 +1,23 @@
+=== STAGE 1: fresh v0.2.0 install (simulates the existing VPS) ===
+=== STAGE 2: operator state (keys + config customization) ===
+v0.2.0 keys: 2
+v0.2.0 config: {'dashboard.bind': '127.0.0.1', 'exec.default_timeout_s': 90, 'tls.mode': 'self-signed'}
+=== STAGE 3: start v0.2.0 server, verify MCP works ===
+v0.2.0 health: ok
+v0.2.0 dashboard (no login, legacy): ok
+=== STAGE 4: UPGRADE to v0.3.0 (in place, like the real VPS) ===
+=== STAGE 5: verify zero data loss ===
+uaeg 0.3.0
+v0.3.0 keys: 2 (before: 2)
+=== STAGE 6: start v0.3.0 server; keys still authenticate; legacy dashboard still works ===
+v0.3.0 health: ok
+MCP key still valid: yes
+MCP key still valid: yes
+v0.3.0 dashboard legacy mode (no password yet): ok
+=== STAGE 7: set dashboard password on the upgraded install ===
+uaeg pass on upgraded install: ok
+login now enforced without restart: yes
+API protected without restart: yes
+=== STAGE 8: login over HTTP works ===
+login + key visible: yes
+ALL UPGRADE CHECKS PASSED
