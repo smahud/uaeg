@@ -1,0 +1,145 @@
+==============================================================
+ UAEG safe-upgrade contract test suite
+ repo: /home/z/my-project/uaeg (v0.3.2)   base: /tmp/uaeg-upgtest.IETZOH
+==============================================================
+
+[23:16:16] T-01: fresh install via (patched) install.sh — isolated dirs
+  PASS T-01 installer selesai (rc)
+  PASS T-01 marker instalasi ada
+  PASS T-01 versi terpasang == 0.3.2
+
+[23:16:27] T-02: dua agent key + perubahan config oleh operator
+  PASS T-02 ada 2 kunci agent
+  PASS T-02 operator mengubah dashboard.port -> 3954
+
+[23:16:27] T-03: upgrade.sh --check mendeteksi instalasi (U-2, U-10)
+  PASS T-03 --check rc=0
+  PASS T-03 menampilkan install dir
+  PASS T-03 menampilkan versi terpasang
+  PASS T-03 menampilkan data dir
+  PASS T-03 status terdeteksi
+
+[23:16:28] T-04: --dry-run menampilkan rencana tanpa perubahan (U-11)
+  PASS T-04 dry-run rc=0
+  PASS T-04 menampilkan rencana
+  PASS T-04 menyatakan tidak ada perubahan
+  PASS T-04 tidak membuat backup
+
+[23:16:28] T-GUARD: dashboard publik tanpa password -> upgrade ditolak (U-8)
+  PASS T-GUARD rc=1 (ditolak)
+  PASS T-GUARD pesan mengarah ke 'sudo uaeg pass'
+  PASS T-GUARD tidak membuat backup (belum ada yang berubah)
+  PASS T-GUARD versi tidak berubah
+
+[23:16:29] T-13: remote upgrade ke tag terbaru (7.7.7) via staging terisolasi (U-1, U-2, U-12)
+  PASS T-13 remote upgrade rc=0
+  PASS T-13 versi sekarang 7.7.7
+  PASS T-13 clone operator TIDAK diubah (HEAD identik)
+  PASS T-13 clone operator tetap di branch main (bukan detached)
+  PASS T-13 status clone operator identik (tidak ada perubahan baru)
+  PASS T-13 sumber dari staging terisolasi
+  PASS T-13 script menyatakan clone operator tidak disentuh
+  PASS T-13 kunci agent identik
+  PASS T-13 RECORD to_version=7.7.7
+  PASS T-13 RECORD result=success
+  PASS T-13 RECORD contract_version=2
+
+[23:16:36] T-14: git tree kotor -> TETAP aman; tree dipertahankan (U-12 kontrak v2)
+  PASS T-14 rc=0 (tree kotor tidak lagi menghalangi)
+  PASS T-14 versi tetap 7.7.7 (re-install/repair)
+  PASS T-14 perubahan lokal operator dipertahankan
+  PASS T-14 kunci agent identik
+
+[23:16:43] T-05: upgrade --source 9.9.9 — zero data loss + bukti (U-1, U-3, U-4, U-8)
+  PASS T-05 upgrade rc=0
+  PASS T-05 versi sekarang 9.9.9
+  PASS T-05 kunci agent identik (key_id+status)
+  PASS T-05 integritas DB ok
+  PASS T-05 config operator dipertahankan (port 3954)
+  PASS T-05 RECORD.json ada
+  PASS T-05 before-state.json ada (bukti audit)
+  PASS T-05 after-state.json ada (bukti audit)
+  PASS T-05 install.log ada
+  PASS T-05 backup DB konsisten ada
+  PASS T-05 backup app/ dihapus setelah sukses terverifikasi
+  PASS T-05 RECORD from_version=7.7.7
+  PASS T-05 RECORD to_version=9.9.9
+  PASS T-05 RECORD result=success
+  PASS T-05 RECORD verification=all-checks-passed
+
+[23:16:51] T-06: idempoten — jalankan ulang, aman (U-7)
+  PASS T-06 re-run rc=0
+  PASS T-06 versi tetap 9.9.9
+  PASS T-06 kunci tetap identik
+  PASS T-06 backup keempat dibuat (T-13+T-14+T-05+T-06 = 4 direktori)
+
+[23:16:57] T-07: bukti smoke test / healthz tercatat (U-4)
+  PASS T-07 smoke-serve.log ada
+  PASS T-07 output menyebut smoke test
+
+[23:16:57] T-08: release rusak -> rollback OTOMATIS, exit 2 (U-5)
+  PASS T-08 rc=2 (gagal -> sudah di-rollback)
+  PASS T-08 aplikasi kembali ke 9.9.9 (berfungsi)
+  PASS T-08 kunci agent tetap utuh
+  PASS T-08 integritas DB ok
+  PASS T-08 config tetap 3954
+  PASS T-08 RECORD result=rolled-back
+  PASS T-08 rollback diverifikasi ulang (app lama hidup)
+  PASS T-08 backup app/ dipertahankan untuk pemulihan manual
+
+[23:17:30] T-09: rollback manual memulihkan data pra-upgrade (U-6)
+  PASS T-09 kunci ketiga dibuat (3 kunci)
+  PASS T-09 --rollback rc=0
+  PASS T-09 data kembali ke 2 kunci pra-backup
+  PASS T-09 config tetap konsisten
+  PASS T-09 event manual-rollback tercatat di RECORD
+
+[23:17:30] T-10: tanpa instalasi -> menolak, exit 3 (U-2)
+  PASS T-10 rc=3 (tidak terinstal)
+
+[23:17:31] T-11: rahasia tidak pernah bocor ke log/record (U-9)
+  PASS T-11 secret key tidak muncul di log/RECORD manapun
+  PASS T-11 state JSON tidak memuat verifier
+
+[23:17:31] T-12: retensi backup --keep-backups (U-7)
+  PASS T-12 upgrade dengan keep=1 rc=0
+  PASS T-12 hanya 1 backup tersisa
+
+[23:17:38] T-16: downgrade diam-diam -> ditolak exit 5 (U-12)
+  PASS T-16 rc=5 (downgrade ditolak)
+  PASS T-16 pesan downgrade
+  PASS T-16 versi tidak berubah
+  PASS T-16 tidak ada backup baru
+
+[23:17:38] T-15: skrip standalone (tanpa repo) — dry-run menemukan target (U-2, U-11)
+  PASS T-15 standalone dry-run rc=0
+  PASS T-15 menemukan target v7.7.7 via ls-remote
+  PASS T-15 tidak membuat backup
+
+[23:17:39] T-17: INSIDEN v0.3.1 — upgrade.sh terunduh DI DALAM clone operator (regresi)
+  PASS T-17 checksum asset terverifikasi
+  PASS T-17 rc=0 (insiden v0.3.1 tidak terulang)
+  PASS T-17 versi sekarang 10.0.0
+  PASS T-17 clone operator tidak berubah (HEAD identik)
+  PASS T-17 file terunduh tetap ada, tidak ada perubahan lain
+  PASS T-17 kunci agent identik
+  PASS T-17 script menyatakan clone operator tidak disentuh
+
+[23:17:46] T-18: tag tidak ada -> pesan akurat, bukan misreporting (U-2, U-10)
+  PASS T-18 rc=1 (tag tidak ada -> ditolak)
+  PASS T-18 pesan menyebut tag tidak ada di remote
+  PASS T-18 pesan misleading lama (v0.3.1) tidak muncul
+  PASS T-18 versi tidak berubah
+  PASS T-18 tidak membuat backup (belum ada yang berubah)
+
+[23:17:46] T-19: skrip standalone (tanpa repo lokal) — upgrade PENUH dari remote (U-1, U-2)
+  PASS T-19 standalone upgrade rc=0
+  PASS T-19 versi 10.0.0 (re-install dari standalone)
+  PASS T-19 kunci agent identik
+  PASS T-19 sumber dari staging terisolasi
+
+==============================================================
+ HASIL: 95 PASS / 0 FAIL
+==============================================================
+
+[suite selesai rc=0 | base=/tmp/uaeg-upgtest.IETZOH]
