@@ -32,28 +32,29 @@ Dijalankan oleh GitHub Actions saat tag `v*` di-push:
 Publikasi gagal → workflow gagal secara **terlihat** (bukan senyap).
 Retry aman: `--verify-tag` + aset di-upload ulang idempoten oleh workflow.
 
-## 3. Verifikasi independen pasca-publikasi (dilakukan setelah terbit, hasil di-commit ke main)
+## 3. Verifikasi independen pasca-publikasi — HASIL (dieksekusi 2026-11-07/08)
 
-Prosedur yang dieksekusi terhadap **aset yang benar-benar terbit**
-(bukan artefak lokal):
+Seluruh butir §3 di bawah dieksekusi terhadap **aset yang benar-benar
+terbit** dan lulus (log lengkap:
+`report/evidence/published_asset_e2e_v0.3.2.txt`):
 
-1. `releases/latest` me-resolve ke `v0.3.2`;
-2. mengunduh keempat aset dari URL publik
-   `releases/latest/download/...`;
-3. `sha256sum -c` kedua sidecar → OK;
-4. provenance: konten `upgrade.sh` terbit == `git show v0.3.2:upgrade.sh`;
-   versi pyproject di source tag == `0.3.2` == pin installer;
-5. fresh-install smoke memakai **install.sh terbit** (lingkungan
-   terisolasi, tanpa systemd);
-6. upgrade smoke memakai **upgrade.sh terbit**: instalasi v0.3.1 →
-   upgrade → verifikasi versi/keys/DB/config;
-7. **pementasan ulang skenario insiden operator** dengan aset terbit
-   (clone usang + unduhan untracked di dalamnya) → harus sukses;
-8. verifikasi rollback (`--rollback`) pasca-upgrade.
+| # | Check | Hasil |
+|---|-------|-------|
+| 1 | `releases/latest` → `v0.3.2` | ✅ (terbit 2026-11-07T23:34:33Z, 4 aset lengkap) |
+| 2 | Unduh 4 aset dari URL publik `releases/latest/download/...` | ✅ |
+| 3 | `sha256sum -c` kedua sidecar | ✅ `upgrade.sh: OK`, `install.sh: OK` |
+| 4 | Provenance: aset terbit == `git show v0.3.2:...` (byte-identical); pin installer `0.3.2` == pyproject tag `0.3.2` | ✅ |
+| 5 | Fresh-install smoke dengan **install.sh terbit** (standalone bootstrap mengambil source v0.3.2 dari GitHub, venv+pip nyata, serve, `/healthz` OK v0.3.2, key dibuat, unauth MCP → 401) | ✅ |
+| 6 | Upgrade smoke dengan **upgrade.sh terbit**: instalasi nyata v0.3.0 (dari source tag v0.3.0) + 2 agent key → upgrade → `UPGRADE BERHASIL: v0.3.0 -> v0.3.2`, **key fingerprint identik**, DB utuh, config dipertahankan, smoke `/healthz` OK, `RECORD.json` `contract_version=2`, `repo_url=https://github.com/smahud/uaeg.git`, `result=success` | ✅ |
+| 7 | **Pementasan ulang skenario insiden operator** dengan aset terbit: clone usang @v0.3.0 (origin = GitHub nyata) + `upgrade.sh`/`.sha256` terunduh **di dalamnya** (untracked, bertabrakan dengan file yang dilacak tag target) + `sha256sum -c` OK + `bash upgrade.sh` → **rc=0**; HEAD/branch/status clone operator **identik byte-for-byte**; file terunduh tetap ada | ✅ |
+| 8 | Rollback pasca-upgrade: data+config dipulihkan dari backup; app tetap v0.3.2 sesuai kontrak (app/ dipangkas setelah sukses terverifikasi) dan `--rollback` **mencetak jalur pemulihan app yang jujur** (`install.sh` dari tag `v0.3.0` immutable); re-upgrade setelahnya → rc=0, v0.3.2, keys identik | ✅ |
 
-> Hasil eksekusi butir 1–8 dicatat pada commit tindak-lanjut di `main`
-> (bukan di dalam tag — tag immutable) dan dirangkum di
-> `PRODUCTION_READINESS.md` serta laporan akhir audit.
+CI pada commit pasca-rilis (main `f0980cf`, memuat v0.3.2 + perbaikan
+harness CI): **semua job sukses** (Test 3.11/3.12/3.13, Safe-upgrade
+contract, Install script smoke) — menghapus kegagalan CI yang menghantui
+main sejak era v0.3.1 (akar: checkout shallow actions/checkout —
+`shallow update not allowed`; sekaligus kelas masalah "shallow clone"
+dari daftar investigasi insiden).
 
 ## 4. Kebijakan tag & rilis yang diikuti
 

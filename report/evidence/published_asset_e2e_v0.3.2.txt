@@ -1,0 +1,58 @@
+=== [1] real installation of v0.3.0 (from tag source) ===
+install v0.3.0 rc=0 ; version=uaeg 0.3.0
+=== [2] agent keys (fingerprint) ===
+keys before: k-aa0b1c05a874:active;k-d79baab40ff8:active
+=== [3] operator clone at v0.3.0 (stale, origin = REAL GitHub) ===
+clone: HEAD=7117b8b tags=6 (usang: tanpa v0.3.2)
+=== [4] download PUBLISHED assets INTO the clone (exact operator flow) ===
+untracked: ?? upgrade.sh ?? upgrade.sh.sha256 
+=== [5] checksum ===
+upgrade.sh: OK
+=== [6] bash upgrade.sh  (the exact failing command, now against GitHub) ===
+  ok    config dash_port tidak berubah
+  ok    config dash_bind tidak berubah
+  ok    config dash_tls tidak berubah
+  ok    config allow_public tidak berubah
+  ok    config tls_mode tidak berubah
+  ok    config public_host tidak berubah
+
+semua check zero-data-loss lolos
+
+[1mUPGRADE BERHASIL: v0.3.0 -> v0.3.2[0m
+
+  terverifikasi : versi, service/healthz, agent keys identik, integritas DB,
+                  konfigurasi dipertahankan, password dashboard utuh
+  backup        : /tmp/uaeg-final.ogxlsC/var/backups/uaeg/upgrade-20261107-234954 (data + config; rollback: sudo bash upgrade.sh --rollback)
+  log installer : /tmp/uaeg-final.ogxlsC/var/backups/uaeg/upgrade-20261107-234954/install.log
+  catatan       : clone operator /tmp/uaeg-final.ogxlsC/home/uaeg TIDAK diubah (sumber diambil
+                  dari staging terisolasi https://github.com/smahud/uaeg.git)
+
+Langkah berikutnya:
+  uaeg version && sudo uaeg doctor
+  sudo uaeg keys list   # pastikan key agent Anda masih lengkap
+
+upgrade rc=0
+=== [7] post-upgrade verification ===
+version        : uaeg 0.3.2
+keys after     : k-aa0b1c05a874:active;k-d79baab40ff8:active
+KEYS: IDENTICAL ✅
+tree HEAD      : 7117b8b (before: 7117b8b) IDENTICAL ✅
+tree status    : ?? upgrade.sh ?? upgrade.sh.sha256 
+healthz        : 
+RECORD         : {'contract_version': 2, 'from_version': '0.3.0', 'to_version': '0.3.2', 'target_ref': 'v0.3.2', 'repo_url': 'https://github.com/smahud/uaeg.git', 'result': 'success', 'verification': 'all-checks-passed'}
+=== [8] rollback ===
+[1;32m==>[0m UAEG safe-upgrade installer (contract: docs/UPGRADE_CONTRACT.md, v2)
+  asal     : 0.3.0 -> 0.3.2  hasil=success
+  aplikasi : TIDAK tersimpan (data+config saja)
+             (pemulihan aplikasi: install.sh dari tag v0.3.0 yang immutable,
+[1;32m==>[0m mengembalikan state pra-upgrade dari: /tmp/uaeg-final.ogxlsC/var/backups/uaeg/upgrade-20261107-234954
+[1;33mWARNING:[0m backup aplikasi tidak tersimpan pada backup ini (data+config saja)
+[1;32m==>[0m data dipulihkan (/tmp/uaeg-final.ogxlsC/var/lib/uaeg)
+[1;32m==>[0m konfigurasi dipulihkan
+version after rollback: uaeg 0.3.2
+keys after rollback   : k-aa0b1c05a874:active;k-d79baab40ff8:active
+=== [9] re-upgrade (recovery path) ===
+re-upgrade rc=0 ; final version=uaeg 0.3.2
+final keys: k-aa0b1c05a874:active;k-d79baab40ff8:active
+
+BASE=/tmp/uaeg-final.ogxlsC

@@ -69,6 +69,7 @@ GitHub tag push ──► release.yml ──► Release + aset + .sha256 ──�
 | F-7 | Docs INSTALL menyarankan `sudo git pull` (tidak perlu & membingungkan) | P3 | FIXED |
 | F-8 | Kontrak v1 mengklaim rollback penuh tanpa menjelaskan pemulihan app pasca-pruning | P3 | FIXED (kontrak v2 + hint di `--rollback`) |
 | F-9 | v0.2.0/v0.3.0 tanpa GitHub Release (aset 404 untuk versi historis) | P3 | Diterima (historis; release.yml mencegah terulang; tag immutable tidak ditulis ulang) |
+| F-11 | **CI kontrak upgrade gagal di main sejak era v0.3.1** (T-15; akar: `actions/checkout` shallow → push test remote ditolak "shallow update not allowed" → remote tanpa tag) — juga kelas "shallow clone" dari daftar investigasi insiden | P1 | **FIXED** — `fetch-depth: 0` di ci.yml + self-heal shallow/tagless di test suite; CI main `f0980cf` **semua job hijau** |
 | F-10 | Deployment live MicroTix belum dieksekusi (tak ada akses VPS dari audit) | — | PENDING operator (lihat PRODUCTION_READINESS.md) |
 
 Tidak ada temuan P0/P1 yang tersisa terbuka.
