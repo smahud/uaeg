@@ -45,7 +45,13 @@ jobs:
     name: Safe-upgrade contract tests (upgrade.sh)
     runs-on: ubuntu-latest
     steps:
+      # Full history + tags: the suite builds local git remotes from this
+      # checkout and pushes tags/clones from it. A shallow/tagless checkout
+      # (actions/checkout default) makes those pushes fail with "shallow
+      # update not allowed" and starves the remotes of tags.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5

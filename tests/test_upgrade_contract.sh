@@ -38,6 +38,25 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# ---------------------------------------------------------------------------
+# Self-heal a shallow/tagless checkout (e.g. actions/checkout default).
+# This suite builds local git remotes FROM this repository (T-13/T-17) and
+# checks out historical tags (T-17: v0.3.0). From a shallow clone those
+# pushes are rejected ("shallow update not allowed") and the tags do not
+# exist, which starves the test remotes. Best effort: unshallow + fetch
+# tags from origin (requires network; harmless no-op when already complete).
+# ---------------------------------------------------------------------------
+if [[ -d "$REPO_DIR/.git" ]] \
+   && [[ "$(git -C "$REPO_DIR" rev-parse --is-shallow-repository 2>/dev/null)" == "true" ]]; then
+  echo "[setup] repositori shallow terdeteksi - mencoba unshallow + fetch tags"
+  git -C "$REPO_DIR" fetch --unshallow --tags --quiet origin 2>/dev/null || true
+fi
+if [[ -z "$(git -C "$REPO_DIR" tag -l 'v*' 2>/dev/null)" && -d "$REPO_DIR/.git" ]]; then
+  echo "[setup] tag tidak ditemukan - mencoba fetch tags dari origin"
+  git -C "$REPO_DIR" fetch --tags --quiet origin 2>/dev/null || true
+fi
+
 BASE="$(mktemp -d /tmp/uaeg-upgtest.XXXXXX)"
 SRC="$BASE/src-repo"          # patched copy of the repo  (no .git)
 INSTALL="$BASE/opt/uaeg"
