@@ -30,6 +30,7 @@ import uuid
 import warnings
 from typing import Any, Callable
 
+from .. import security as _security
 from ..db import Store
 
 log = logging.getLogger("uaeg.pty")
@@ -50,15 +51,18 @@ class TerminalSession:
         command: str,
         cwd: str | None,
         buffer_bytes: int,
+        key_id: str | None = None,
     ):
         self.session_id = session_id
         self.master_fd = master_fd
         self.pid = pid
         self.command = command
         self.cwd = cwd
+        self.key_id = key_id
         self.created_at = time.time()
         self.last_activity = time.time()
         self.closed = False
+        self.closed_at: float | None = None
         self.exit_code: int | None = None
 
         self._buffer = bytearray()
@@ -116,6 +120,7 @@ class TerminalSession:
             "command": self.command,
             "cwd": self.cwd,
             "pid": self.pid,
+            "key_id": self.key_id,
             "alive": self.alive,
             "created_at": self.created_at,
             "last_activity": self.last_activity,
@@ -220,6 +225,7 @@ class SessionManager:
             command=command or f"{shell} (interactive)",
             cwd=cwd,
             buffer_bytes=self.buffer_bytes,
+            key_id=key_id,
         )
         self.sessions[session_id] = session
 
@@ -240,7 +246,7 @@ class SessionManager:
             "session %s opened (pid %d, %s)",
             session_id[:12],
             pid,
-            command or "interactive shell",
+            _security.redact_secrets(command or "interactive shell"),
         )
         return {
             "session_id": session_id,
@@ -300,6 +306,20 @@ class SessionManager:
             "exit_code": session.exit_code,
         }
 
+    async def close_by_key(self, key_id: str) -> int:
+        """Revocation containment: terminate every live session owned by a
+        key. Returns the number of sessions terminated."""
+        count = 0
+        for session in list(self.sessions.values()):
+            if session.key_id != key_id:
+                continue
+            try:
+                await self.close(session.session_id)
+                count += 1
+            except SessionError:
+                pass
+        return count
+
     async def terminate_by_id(self, session_id: str) -> dict[str, Any]:
         return await self.close(session_id)
 
@@ -317,12 +337,12 @@ class SessionManager:
 
     async def _reap_loop(self, session: TerminalSession) -> None:
         try:
-            while not session.closed:
+            while True:
                 await asyncio.sleep(0.4)
                 try:
                     pid, status = os.waitpid(session.pid, os.WNOHANG)
                 except ChildProcessError:
-                    break
+                    return
                 if pid == session.pid:
                     try:
                         session.exit_code = os.waitstatus_to_exitcode(status)
@@ -332,6 +352,16 @@ class SessionManager:
                     await asyncio.sleep(0.15)
                     self._drain_and_close(session)
                     return
+                if session.closed:
+                    # The PTY master is gone, so the child received SIGHUP.
+                    # Give it a short grace period, then force-kill so it can
+                    # neither linger nor become an unreaped zombie.
+                    closed_for = time.monotonic() - (session.closed_at or time.monotonic())
+                    if closed_for > 5.0:
+                        try:
+                            os.killpg(session.pid, signal.SIGKILL)
+                        except (ProcessLookupError, PermissionError, OSError):
+                            pass
         except asyncio.CancelledError:
             pass
 
@@ -350,6 +380,7 @@ class SessionManager:
         if session.closed:
             return
         session.closed = True
+        session.closed_at = time.monotonic()
         loop = self._loop
         fd = session.master_fd
 
@@ -379,12 +410,16 @@ class SessionManager:
         else:
             _close_fd()
 
-        # Best-effort reaping if the reaper task hasn't done it yet.
+        # Reap immediately when possible; if the child has not exited yet
+        # the reaper task stays alive to collect it (its loop keeps running
+        # after closed) - that prevents zombie children.
+        reaped = False
         try:
-            os.waitpid(session.pid, os.WNOHANG)
+            pid, _ = os.waitpid(session.pid, os.WNOHANG)
+            reaped = pid == session.pid
         except (ChildProcessError, OSError):
-            pass
-        if session._reaper and not session._reaper.done():
+            reaped = True  # already collected elsewhere
+        if session._reaper and not session._reaper.done() and reaped:
             try:
                 session._reaper.cancel()
             except RuntimeError:  # event loop already closed
@@ -434,5 +469,11 @@ class SessionManager:
         return count
 
     async def shutdown(self) -> None:
-        for session in list(self.sessions.values()):
+        sessions = list(self.sessions.values())
+        for session in sessions:
             await asyncio.to_thread(self._terminate, session)
+        # _terminate reaps the children; cancel any reapers still pending so
+        # the event loop is not left with dangling tasks.
+        for session in sessions:
+            if session._reaper and not session._reaper.done():
+                session._reaper.cancel()

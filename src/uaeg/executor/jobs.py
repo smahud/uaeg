@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .. import paths
+from .. import paths, security as _security
 from ..db import Store
 
 log = logging.getLogger("uaeg.jobs")
@@ -126,7 +126,10 @@ class JobManager:
         runtime.task = asyncio.get_running_loop().create_task(
             self._watch(runtime), name=f"uaeg-job-{job_id}"
         )
-        log.info("job %s started (shim pid %d): %s", job_id, proc.pid, command[:200])
+        log.info(
+            "job %s started (shim pid %d): %s",
+            job_id, proc.pid, _security.redact_secrets(command)[:200],
+        )
         return self.status(job_id) or {"job_id": job_id, "status": "running"}
 
     # ------------------------------------------------------------------
@@ -233,6 +236,20 @@ class JobManager:
             self._runtime.pop(job_id, None)
         log.info("job %s cancelled", job_id)
         return self.store.get_job(job_id) or job
+
+    async def cancel_by_key(self, key_id: str) -> int:
+        """Revocation containment: cancel every running job owned by a key.
+        Returns the number of jobs cancelled."""
+        count = 0
+        for job in self.store.running_jobs():
+            if job.get("key_id") != key_id:
+                continue
+            try:
+                await self.cancel(job["job_id"])
+                count += 1
+            except JobError:
+                pass
+        return count
 
     # ------------------------------------------------------------------
     # watcher & startup reconciliation

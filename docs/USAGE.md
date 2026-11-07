@@ -24,18 +24,17 @@ uaeg generate --name "my-agent"
 ```
 
 ```text
-Key created.
+Agent key created: my-agent  (k-1a2b3c4d5e6f)
 
-  Key ID:       k-9f2c41ab12
-  Name:         my-agent
-  Permissions:  all
-
-  Secret (shown ONCE):
-
+  Secret (shown ONCE, store it now):
     uaeg_Qm7zK4pLxV2nR8tWcYb3HfDjS6gN1aEu5oPiT0hZqwe
 
-Store it now — it cannot be displayed again.
+  MCP endpoint : https://gw.example.com:3902/mcp
+  Header       : Authorization: Bearer <secret>
+  Permissions  : all
 ```
+
+(Output is illustrative.) Key IDs are `k-` followed by 12 hex characters.
 
 Facts worth knowing:
 
@@ -45,8 +44,9 @@ Facts worth knowing:
 - `--permissions restricted` marks the key as restricted; the advisory usage rules from
   `exec.restricted_paths` are then communicated to the agent in `server_info`. This is
   advisory only, not a security boundary (FR-014, see [LIMITATIONS.md](./LIMITATIONS.md)).
-- Give every agent its own key. Keys are identified by prefix in listings and in the audit
-  log, so per-agent keys give you per-agent traceability and per-agent revocation.
+- Give every agent its own key. The audit log identifies keys by key ID and key name (the
+  prefix appears in `uaeg keys list` only), so per-agent keys give you per-agent
+  traceability and per-agent revocation.
 - Lost a secret? Rotate the key (`uaeg keys rotate <KEY_ID>`) or revoke and generate a new
   one.
 
@@ -81,33 +81,40 @@ uaeg keys list
 ```
 
 ```text
-KEY ID      NAME       PREFIX      STATUS   PERMISSIONS  CREATED             LAST USED
-k-9f2c41ab12    my-agent   uaeg_Qm7z   active   all          2025-06-01 09:20    2025-06-01 12:44
-k_d40a97    test       uaeg_Vz3p   revoked  all          2025-06-01 09:31    2025-06-01 10:02
+KEY ID           NAME              PREFIX            STATUS   MODE        CREATED (UTC)        LAST USED
+k-1a2b3c4d5e6f   my-agent          uaeg_Qm7z...      active   all         2025-06-01 09:20:00   2025-06-01 12:44:00
+k-0f3e9d8c7b6a   test              uaeg_Vz3p...      revoked  all         2025-06-01 09:31:00   2025-06-01 10:02:00
 ```
 
-(Output is illustrative.) The prefix column lets you match a stored key to a log entry
-without ever having the secret.
+(Output is illustrative.) MODE is the permission mode (`all`/`restricted`). The prefix is
+for identification only — it never authenticates; the audit log identifies keys by key
+ID and name.
 
 ### `uaeg keys revoke <KEY_ID>`
 
 ```bash
-uaeg keys revoke k_d40a97
+uaeg keys revoke k-0f3e9d8c7b6a
 ```
 
 Revocation is immediate and checked on every request: the next MCP call with that key
-fails with `401`. Already-running jobs or PTY sessions started by the revoked key are not
-retroactively killed — cancel them via `uaeg jobs cancel` / `uaeg sessions kill` if needed
-(see [LIMITATIONS.md](./LIMITATIONS.md)).
+fails with `401`. Revocation also contains the key's running work: its live PTY sessions
+are terminated (SIGHUP then SIGKILL) and its running background jobs are cancelled
+(SIGTERM then SIGKILL, recorded as `cancelled`); the command prints a containment
+summary (`terminated N session(s), N background job(s)`). Pass `--keep-processes` to
+leave the key's processes running. Sessions and jobs owned by other keys are unaffected.
+The dashboard's revoke button does the same (opt out with a `keep_processes` JSON body).
 
 ### `uaeg keys rotate <KEY_ID>`
 
 ```bash
-uaeg keys rotate k-9f2c41ab12 --name "my-agent-v2"
+uaeg keys rotate k-1a2b3c4d5e6f --name "my-agent-v2"
 ```
 
-Issues a replacement secret for the key and prints it exactly once; the old secret stops
-working immediately. Use `--name` to update the display name at the same time.
+Revokes the old key ID and creates a new key entry — new key ID, new secret, old row kept
+for audit — and prints the new secret exactly once; the old secret stops working
+immediately, so reconfigure the agent with the new one. Rotation terminates nothing: it is
+routine credential hygiene, not containment (revoke for that). Use `--name` to update the
+display name at the same time.
 
 ### `uaeg jobs list`
 
@@ -116,15 +123,17 @@ uaeg jobs list --limit 20
 ```
 
 ```text
-JOB ID     STATUS      EXIT  PID     STARTED             DURATION  COMMAND
-job_b7c1   running     -     18342   2025-06-01 12:40    -         cd /srv/app && make test
-job_a93f   completed   0     -       2025-06-01 11:02    4m 12s    apt-get update && apt-get install -y jq
+JOB ID                                STATUS      EXIT   STARTED (UTC)           COMMAND
+job-b7c1a2f3d4e5f6a7b8c9d0e1f2a3b4c5  running     -      2025-06-01 12:40:00     cd /srv/app && make test
+job-a93f0c1d2e3f4a5b6c7d8e9f0a1b2c3d  completed   0      2025-06-01 11:02:00     apt-get update && apt-get install -y jq
 ```
+
+(Output is illustrative.) Job IDs are `job-` followed by 32 hex characters.
 
 ### `uaeg jobs status <JOB_ID>`
 
 ```bash
-uaeg jobs status job_b7c1
+uaeg jobs status job-b7c1a2f3d4e5f6a7b8c9d0e1f2a3b4c5
 ```
 
 Shows status, exit code, start/finish times, and the command.
@@ -132,27 +141,33 @@ Shows status, exit code, start/finish times, and the command.
 ### `uaeg jobs output <JOB_ID>`
 
 ```bash
-uaeg jobs output job_b7c1                          # stdout from the beginning
-uaeg jobs output job_b7c1 --stream stderr          # stderr stream
-uaeg jobs output job_b7c1 --offset 4096 --limit 2000
+uaeg jobs output job-b7c1a2f3d4e5f6a7b8c9d0e1f2a3b4c5                          # stdout from the beginning
+uaeg jobs output job-b7c1a2f3d4e5f6a7b8c9d0e1f2a3b4c5 --stream stderr          # stderr stream
+uaeg jobs output job-b7c1a2f3d4e5f6a7b8c9d0e1f2a3b4c5 --offset 4096 --limit 2000
 ```
 
-Reads the job's captured output files; `--offset`/`--limit` paginate by bytes.
+Reads the job's captured output files; `--offset`/`--limit` paginate by bytes (a negative
+`--offset` is clamped to 0).
 
 ### `uaeg jobs cancel <JOB_ID>`
 
-Terminates a running background job and records the `cancelled` status.
+Terminates a running background job: SIGTERM to its process group, then SIGKILL if it
+does not exit in the grace period, and records the `cancelled` status. It is idempotent —
+cancelling a job that already finished reports its real final status (and exit code)
+without changing it.
 
 ### `uaeg sessions list` / `uaeg sessions kill`
 
 ```bash
 uaeg sessions list
-uaeg sessions kill s_5f2a
+uaeg sessions kill 5f2a9c31d4b8e7a2c6f0d3e1b4a7982d
 ```
 
-Lists live PTY sessions (ID, command, key, opened) and force-terminates one. Live sessions
-exist only while the service runs; after a restart the list is empty (jobs survive, sessions
-do not).
+`sessions list` shows the recorded session history (ID, status, owning key, created,
+command) — open, closed, and interrupted sessions alike. Live sessions are listed by the
+`shell_sessions` MCP tool. `sessions kill` terminates a live session (SIGHUP then SIGKILL
+to its process group) and marks it closed; it works whether the server is running or not —
+a running server notices the dying process and releases the PTY.
 
 ### `uaeg status`
 
@@ -161,23 +176,26 @@ uaeg status
 ```
 
 ```text
-service    : active (enabled)
-health     : OK   https://localhost:3902/healthz
-mcp        : 0.0.0.0:3902  (tls: self-signed)
-dashboard  : 127.0.0.1:3903
-keys       : 1 active / 1 revoked
-jobs       : 1 running / 14 finished
-sessions   : 1 live
+UAEG v0.2.0
+  service      : active
+  MCP port     : 3902 (listening)
+  dashboard    : 127.0.0.1:3903 (listening)
+  health       : ok (v0.2.0, uptime 512s)
+  keys         : 1 active, 1 revoked
+  jobs/sessions: 1 running jobs, 1 open sessions
+  MCP URL      : https://localhost:3902/mcp
 ```
 
 (Output is illustrative.)
 
 ### `uaeg doctor`
 
-Full diagnostics: config validity, data directory, database, service state, port listeners,
-health endpoint, TLS certificate (expiry, subject, SAN), a running-as-root warning (which is
-expected — the service runs as root by design), and version. See the walkthrough in
-[TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
+Full diagnostics: config validity, data directory, database (including an integrity check),
+systemd service state, MCP and dashboard listeners, health endpoint, TLS certificate
+(subject, SAN, expiry — with a warning when it expires within 30 days), execution user
+(root is a **passing** check on a standard install — the service runs as root by design; a
+non-root service fails with an explanation), and the configured exec shell. See the
+walkthrough in [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
 
 ### `uaeg config show` / `get` / `set`
 
@@ -192,7 +210,7 @@ See [CONFIGURATION.md](./CONFIGURATION.md) for the full schema.
 
 ### `uaeg version`
 
-Prints the installed version, e.g. `uaeg 0.1.0`.
+Prints the installed version, e.g. `uaeg 0.2.0`.
 
 ## Connecting a hosted agent
 
@@ -385,15 +403,15 @@ biggest risk.
 
 ```text
 > shell_exec(command="cd /srv/webapp && npm run build", background=true)
-{ "ok": true, "background": true, "job_id": "job-b7c1a2f3...", "pid": 18342, "status": "running" }
+{ "ok": true, "background": true, "job_id": "job-b7c1a2f3d4e5f6a7b8c9d0e1f2a3b4c5", "pid": 18342, "status": "running" }
 
-> job_status(job_id="job_b7c1")
-{ "ok": true, "job_id": "job-b7c1a2f3...", "status": "running", "pid": 18342, "exit_code": null, ... }
+> job_status(job_id="job-b7c1a2f3d4e5f6a7b8c9d0e1f2a3b4c5")
+{ "ok": true, "job_id": "job-b7c1a2f3d4e5f6a7b8c9d0e1f2a3b4c5", "status": "running", "pid": 18342, "exit_code": null, ... }
 
-> job_wait(job_id="job_b7c1", timeout_seconds=120)
+> job_wait(job_id="job-b7c1a2f3d4e5f6a7b8c9d0e1f2a3b4c5", timeout_seconds=120)
 { "ok": true, "status": "completed", "exit_code": 0, "duration_ms": 71340, ... }
 
-> job_output(job_id="job_b7c1", stream="stdout", offset=0, limit=65536)
+> job_output(job_id="job-b7c1a2f3d4e5f6a7b8c9d0e1f2a3b4c5", stream="stdout", offset=0, limit=65536)
 { "ok": true, "data": "built in 71s\n", ... }
 ```
 
@@ -404,21 +422,21 @@ session does not stop it.
 
 ```text
 > shell_open(cols=120, rows=30)
-{ "ok": true, "session_id": "s_5f2a", "pid": 18411, ... }
+{ "ok": true, "session_id": "5f2a9c31d4b8e7a2c6f0d3e1b4a7982d", "pid": 18411, ... }
 
-> shell_input(session_id="s_5f2a", data="htop", add_newline=true)      # run a full-screen tool
+> shell_input(session_id="5f2a9c31d4b8e7a2c6f0d3e1b4a7982d", data="htop", add_newline=true)   # run a full-screen tool
 
-> shell_output(session_id="s_5f2a", since_seq=0)
+> shell_output(session_id="5f2a9c31d4b8e7a2c6f0d3e1b4a7982d", since_seq=0)
 { "data": "  1  [|||||||||||  12.3%]  …", "seq": 1493, "truncated": false,
   "alive": true, "pid": 18411, "exit_code": null }
 
-> shell_resize(session_id="s_5f2a", cols=200, rows=50)                 # htop redraws wider
+> shell_resize(session_id="5f2a9c31d4b8e7a2c6f0d3e1b4a7982d", cols=200, rows=50)          # htop redraws wider
 
-> shell_input(session_id="s_5f2a", data="q")                           # quit htop
+> shell_input(session_id="5f2a9c31d4b8e7a2c6f0d3e1b4a7982d", data="q")                    # quit htop
 
-> shell_input(session_id="s_5f2a", data="\x03")                        # Ctrl-C a stray command
+> shell_input(session_id="5f2a9c31d4b8e7a2c6f0d3e1b4a7982d", data="\x03")                 # Ctrl-C a stray command
 
-> shell_close(session_id="s_5f2a")
+> shell_close(session_id="5f2a9c31d4b8e7a2c6f0d3e1b4a7982d")
 { "ok": true }
 ```
 
@@ -431,7 +449,7 @@ session, then continue polling `shell_output` with your last cursor.
 
    ```text
    > shell_exec(command="sleep 90 && echo done", background=true)
-   { "ok": true, "background": true, "job_id": "job_c2d9", "pid": 19001, "status": "running" }
+   { "ok": true, "background": true, "job_id": "job-c2d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5", "pid": 19001, "status": "running" }
    ```
 
 2. Close the client entirely (end the conversation / disconnect the MCP session).
@@ -439,11 +457,11 @@ session, then continue polling `shell_output` with your last cursor.
 3. Reconnect later (a fresh MCP session is fine) and query the same `job_id`:
 
    ```text
-   > job_status(job_id="job_c2d9")
+   > job_status(job_id="job-c2d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5")
    { "ok": true, "status": "running", "pid": 19001, "exit_code": null, ... }
-   > job_wait(job_id="job_c2d9", timeout_seconds=120)
+   > job_wait(job_id="job-c2d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5", timeout_seconds=120)
    { "ok": true, "status": "completed", "exit_code": 0, ... }
-   > job_output(job_id="job_c2d9", stream="stdout", offset=0, limit=65536)
+   > job_output(job_id="job-c2d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5", stream="stdout", offset=0, limit=65536)
    { "ok": true, "data": "done\n", ... }
    ```
 
@@ -457,7 +475,7 @@ The job never noticed the disconnect. Job IDs can also be found from the CLI
 | `running` | The process is alive (pid known and monitored) |
 | `completed` | Exited with code 0 |
 | `failed` | Exited with a non-zero code |
-| `cancelled` | Killed via `job_cancel` / `uaeg jobs cancel` |
+| `cancelled` | Killed via `job_cancel` / `uaeg jobs cancel`, or by revoking the owning key |
 | `interrupted` | UAEG can no longer account for the process — typically after a VPS reboot or the service being SIGKILLed before the exit code was recorded |
 
 `interrupted` is deliberate honesty (FR-009): after a reboot every pre-reboot process is
@@ -474,16 +492,16 @@ has a monotonically increasing sequence number. `shell_output` takes `since_seq`
 the bytes after that point plus the next cursor:
 
 ```text
-> shell_output(session_id="s_5f2a", since_seq=0)
+> shell_output(session_id="5f2a9c31d4b8e7a2c6f0d3e1b4a7982d", since_seq=0)
 { "data": "root@gw:~# ", "seq": 12, ... }
 
-> shell_input(session_id="s_5f2a", data="uname -a", add_newline=true)
+> shell_input(session_id="5f2a9c31d4b8e7a2c6f0d3e1b4a7982d", data="uname -a", add_newline=true)
 
-> shell_output(session_id="s_5f2a", since_seq=12)
+> shell_output(session_id="5f2a9c31d4b8e7a2c6f0d3e1b4a7982d", since_seq=12)
 { "data": "uname -a\nLinux gw 6.1.0-18-amd64 … x86_64 GNU/Linux\nroot@gw:~# ",
   "seq": 151, "truncated": false, ... }
 
-> shell_output(session_id="s_5f2a", since_seq=151)
+> shell_output(session_id="5f2a9c31d4b8e7a2c6f0d3e1b4a7982d", since_seq=151)
 { "data": "", "seq": 151, ... }        # nothing new yet
 ```
 
@@ -502,11 +520,11 @@ can use an SSH tunnel from your workstation: `ssh -L 3903:127.0.0.1:3903 root@gw
 
 | Tab | What you can do |
 |-----|-----------------|
-| **Keys** | Generate, revoke, and rotate keys; the full secret appears once in a modal after generation; set a key's permission mode (`all`/`restricted`) |
+| **Keys** | Generate, revoke, and rotate keys; revocation applies the same session/job containment as the CLI; the full secret appears once in a modal after generation; set a key's permission mode (`all`/`restricted`) |
 | **Permissions** | View the default access mode and edit the advisory `restricted_paths` list (advisory only — not a security boundary) |
 | **Sessions** | See live PTY sessions and background jobs; terminate sessions, cancel jobs, and view job output in a viewer |
 | **Logs** | Audit log of executions: time, key identity, tool, status, exit code, duration, command, with expandable metadata and an output preview |
-| **Server** | Endpoints, health, version, TLS certificate details (subject, SAN, expiry), and object counts |
+| **Server** | Version, uptime, config paths, TLS certificate details (subject, issuer, SAN, expiry), and object counts |
 
 The dashboard reads and writes the same database the CLI uses, so actions taken there are
 immediately visible to `uaeg` commands and vice versa.

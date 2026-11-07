@@ -16,15 +16,15 @@ path*, never about containing the *agent*.
 
 | Concern | Status | Notes |
 |---------|--------|-------|
-| Transport confidentiality/integrity | Protected | TLS is mandatory on the public MCP listener; UAEG never silently falls back to plain HTTP (FR-017) |
+| Transport confidentiality/integrity | Protected | TLS is mandatory on the public MCP listener; UAEG never silently falls back to plain HTTP (FR-017). The only bypass is the explicit `UAEG_DEV_INSECURE_HTTP=1` development escape hatch, which serves plain HTTP on the MCP listener with a loud warning — never for production |
 | Key material at rest | Protected | Only SHA-256 verifiers are stored; the config file is mode 0600; plaintext secrets are never persisted or logged |
 | Unauthorized API use | Protected while the key stays secret | 256-bit CSPRNG keys, bearer auth checked on every request, immediate revocation (FR-005, FR-012) |
 | Anonymous public execution | Blocked | No valid bearer token, no MCP protocol handling — `401` before anything else |
 | Dashboard exposure | Mitigated by network placement | Loopback/LAN bind by default, wildcard bind refused without explicit opt-in, optional CIDR allowlist; there is **no login** (FR-015, FR-018) |
 | Host OS integrity | **Not protected** | An authenticated agent has full root: it can read/modify/delete anything, stop UAEG, rewrite firewall rules, or destroy the OS (FR-020) |
 | "Restricted" paths | **Not protected** | `restricted_paths` are advisory rules told to the agent; a root shell bypasses them trivially (FR-014) |
-| Secrets inside commands | **Not protected** | The audit log records command text; any secret an agent embeds in a command will be logged (see below) |
-| Processes started by a revoked key | **Not retroactively stopped** | Revocation blocks new requests; running jobs/PTYs continue until they finish or are cancelled |
+| Secrets inside commands | Redacted in logs (best effort) | Command text persisted in the audit log, job/session metadata, dashboard previews, and journal lines has high-confidence secret shapes masked with `***REDACTED***` (see [below](#secret-redaction-in-logs)); raw job output files are not altered |
+| Processes started by a revoked key | Contained on revocation | Revoking terminates the key's live PTY sessions (SIGHUP then SIGKILL) and cancels its running background jobs (SIGTERM then SIGKILL, status `cancelled`); opt out with `--keep-processes` / `{"keep_processes": true}`. Rotation terminates nothing |
 
 If any row in the "not protected" block is unacceptable for your use case, do not deploy
 UAEG on that machine. This is a deliberate MVP trade-off, not an oversight
@@ -36,16 +36,23 @@ UAEG on that machine. This is a deliberate MVP trade-off, not an oversight
   from the operating system CSPRNG (FR-005).
 - **Display:** the full secret is printed exactly once, at `generate`/`rotate` time. Store
   it immediately; it cannot be recovered.
-- **Storage:** only a SHA-256 verifier is stored in the database. Listings and logs show a
-  short prefix (`uaeg_9mKQ…`) so you can identify keys without ever having the secret.
-- **Revocation:** a status flip enforced per request — the next call with a revoked key
-  gets `401`. Rotate (`uaeg keys rotate`) to replace a possibly-leaked secret while keeping
-  the key entry.
+- **Storage:** only a SHA-256 verifier is stored in the database. Listings show a short
+  prefix (`uaeg_9mKQ…`) and the audit log identifies keys by key ID and name, so you can
+  identify keys without ever having the secret.
+- **Revocation:** immediate for new requests — the next call with a revoked key gets
+  `401` — and it contains the key's running work: live PTY sessions are terminated (SIGHUP
+  then SIGKILL) and running background jobs are cancelled (SIGTERM then SIGKILL, status
+  `cancelled`). Opt out per revocation with the CLI `--keep-processes` flag or the
+  dashboard JSON body `{"keep_processes": true}`; the dashboard revoke response reports
+  the result (`containment`: `terminated_sessions`, `terminated_jobs`). Revoking one key
+  never touches another key's sessions or jobs.
 - **Hygiene:** one key per agent, named after the agent. Per-agent keys give per-agent audit
-  trails and surgical revocation. On any suspicion of compromise: revoke first, investigate
-  second, then cancel anything the key left running (`uaeg jobs list`, `uaeg sessions list`).
-- **Rotation of trust:** revoking a key does not kill processes it already started. Check
-  for running jobs and live sessions after a revocation.
+  trails and surgical revocation. On any suspicion of compromise: revoke first — since 0.2.0
+  that also terminates the key's live sessions and jobs — then investigate.
+- **Rotation is continuity, not containment:** `uaeg keys rotate` revokes the old key ID and
+  creates a NEW key ID entry (the old row is kept for audit); the agent must be reconfigured
+  with the new secret. Rotation deliberately terminates nothing — it is routine credential
+  hygiene for a key that is still trusted, not the response to a compromise.
 
 ## TLS guidance
 
@@ -66,6 +73,8 @@ UAEG on that machine. This is a deliberate MVP trade-off, not an oversight
 - **Firewall.** Only the MCP port (default 3902/tcp) is public. Never open 3903.
 - **CIDR allowlist.** If the dashboard is LAN-bound, also set
   `network.allowed_dashboard_cidrs` so a misconfigured bind cannot silently expose it.
+  Since 0.2.0 an invalid CIDR entry is a clear startup error (fail closed) — it can no
+  longer be silently ignored or silently disable the allowlist.
 - **Separate keys per agent** and revoke anything unused or suspicious.
 - **Keep TLS valid** and renewal working.
 - **Review the audit log** (dashboard Logs tab) for commands you did not expect.
@@ -89,15 +98,45 @@ The recovery procedure itself is documented step by step in
 
 ## Audit log guarantees
 
-What the execution log (`exec_logs`, dashboard Logs tab) records: timestamp, key identity,
-tool, status, exit code, duration, and the **command text**, plus metadata and an output
-preview. Two boundaries to understand:
+What the execution log (`exec_logs`, dashboard Logs tab) records: timestamp, key identity
+(key ID and name), tool, status, exit code, duration, and the **command text**, plus
+metadata and an output preview. Boundaries to understand:
 
 - **Environment variable values are not logged.** Passing a secret via `env` keeps it out
   of the audit log.
-- **Command text is logged verbatim.** If the agent embeds a secret in a command line
-  (`export API_KEY=sk-live-...`), that text — and therefore the secret — is in the log.
-  Prefer `env` for secrets when the workflow allows it.
+- **Command text is redacted before storage** (see below): high-confidence secret shapes
+  are masked, so `export API_KEY=sk-live-...` is stored as `export
+  API_KEY=***REDACTED***`. Redaction is best-effort, not a guarantee — prefer `env` for
+  secrets when the workflow allows it.
+
+### Secret redaction in logs
+
+Command text stored in the audit log (`exec_logs`), job metadata (jobs table), session
+metadata (sessions table), session previews on the dashboard, and journal log lines is
+passed through `security.redact_secrets()` before it is persisted or emitted. Only
+high-confidence secret shapes are masked, so ordinary shell commands are not mangled:
+
+- `Authorization: Bearer/Basic/Token` header and assignment values →
+  `Authorization: Bearer ***REDACTED***`
+- URLs with embedded credentials → `https://user:***REDACTED***@host`
+- well-known token shapes → `***REDACTED***`: `uaeg_`, `ghp_`-style GitHub tokens, `sk-`
+  keys, `AKIA` AWS access key IDs, `xox[baprs]-` Slack tokens, `AIza` Google API keys,
+  JWTs
+- PEM private key blocks → `<redacted private key>`
+- `password=` / `passwd=` / `secret=` / `token=` / `api_key=` / `access_key=` /
+  `client_secret=` / `aws_secret_access_key=` assignments → the name is kept, the value is
+  masked with `***REDACTED***`
+
+What is **not** redacted:
+
+- **Raw job output files.** `/var/lib/uaeg/jobs/<job_id>/` files are never altered; a
+  secret an agent prints to a background job's stdout/stderr is on disk verbatim.
+- **The agent's own output.** The authenticated agent still receives its own full
+  stdout/stderr via `job_output`/`shell_output`; only what UAEG writes into its own logs
+  and metadata is masked.
+- The root operator can inspect the raw files under `/var/lib/uaeg/jobs/<job_id>/`
+  directly.
+- Environment variable values passed to `shell_exec` were never logged (unchanged).
 
 ## Reporting
 

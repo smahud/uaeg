@@ -113,11 +113,22 @@ def cmd_keys(args: argparse.Namespace) -> int:
             )
         return 0
     if action == "revoke":
-        key = store.revoke_key(args.key_id)
-        if not key:
-            print(f"error: unknown key_id or already revoked: {args.key_id}")
+        from . import containment as _containment
+
+        existing = store.get_key(args.key_id)
+        if not existing:
+            print(f"error: unknown key_id: {args.key_id}")
             return 1
+        key = store.revoke_key(args.key_id)
         print(f"revoked {key['key_id']} ({key['name']}) - it can no longer authenticate")
+        if getattr(args, "keep_processes", False):
+            print("  (--keep-processes: its live sessions/jobs were left running)")
+        else:
+            result = _containment.terminate_key_processes(store, args.key_id)
+            print(
+                f"  containment: terminated {result['terminated_sessions']} "
+                f"session(s), {result['terminated_jobs']} background job(s)"
+            )
         return 0
     if action == "rotate":
         existing = store.get_key(args.key_id)
@@ -176,8 +187,8 @@ def cmd_jobs(args: argparse.Namespace) -> int:
             print(f"no {args.stream} recorded for job {args.job_id}")
             return 1
         data = path.read_bytes()
-        if args.offset:
-            data = data[args.offset:]
+        offset = max(0, args.offset)
+        data = data[offset:]
         if args.limit:
             data = data[: args.limit]
         sys.stdout.write(data.decode("utf-8", errors="replace"))
@@ -185,9 +196,21 @@ def cmd_jobs(args: argparse.Namespace) -> int:
             print()
         return 0
     if action == "cancel":
-        print("note: job cancellation runs inside the server process.")
-        print("use the dashboard (Sessions tab) or the MCP job_cancel tool, or:")
-        print(f"  kill -- -$(cat {paths.jobs_dir()}/{args.job_id}/pid 2>/dev/null)")
+        from . import containment as _containment
+
+        job = _containment.cancel_job_standalone(store, args.job_id)
+        if not job:
+            print(f"error: unknown job_id: {args.job_id}")
+            return 1
+        if job["status"] in ("completed", "failed", "cancelled", "interrupted"):
+            print(
+                f"job {args.job_id}: status={job['status']} "
+                f"exit={job.get('exit_code')}"
+            )
+            if job["status"] == "cancelled":
+                print("  process group terminated (SIGTERM then SIGKILL)")
+            return 0
+        print(f"job {args.job_id}: status={job['status']} (not in a final state)")
         return 1
     print(f"error: unknown jobs action: {action}")
     return 2
@@ -208,9 +231,17 @@ def cmd_sessions(args: argparse.Namespace) -> int:
             )
         return 0
     if args.sessions_action == "kill":
-        print("note: live sessions live inside the server process.")
-        print("terminate via the dashboard (Sessions tab) or the shell_close MCP tool.")
-        return 1
+        from . import containment as _containment
+
+        session = _containment.kill_session_standalone(store, args.session_id)
+        if not session:
+            print(f"error: unknown session_id: {args.session_id}")
+            return 1
+        print(
+            f"session {args.session_id}: status={session['status']} "
+            "(process group signalled SIGHUP/SIGKILL)"
+        )
+        return 0
     return 2
 
 
@@ -321,12 +352,17 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         try:
             store = _store()
             s = store.summary()
-            db_ok = True
-            check("database", True,
-                  f"{s['keys_active']} active keys, {s['log_entries']} log entries")
+            integrity = store.quick_check()
+            db_ok = integrity == "ok"
+            check(
+                "database",
+                db_ok,
+                f"{s['keys_active']} active keys, {s['log_entries']} log entries"
+                + ("" if db_ok else f" - INTEGRITY CHECK FAILED: {integrity}"),
+            )
             store.close()
         except Exception as exc:  # noqa: BLE001
-            check("database", False, str(exc))
+            check("database", False, f"unreadable or corrupt: {exc}")
     else:
         check("database", False, f"not initialized ({paths.database_path()})")
 
@@ -355,18 +391,25 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         import subprocess
 
         out = subprocess.run(
-            ["openssl", "x509", "-in", cert_path, "-noout", "-subject", "-enddate", "-checkend", "2592000"],
+            ["openssl", "x509", "-in", cert_path, "-noout", "-subject", "-enddate",
+             "-checkend", "2592000", "-ext", "subjectAltName"],
             capture_output=True, text=True, timeout=10,
         )
         subject = ""
         expires = ""
+        san = ""
         for line in out.stdout.splitlines():
             if line.startswith("subject="):
                 subject = line.split("=", 1)[1]
             elif line.startswith("notAfter="):
                 expires = line.split("=", 1)[1]
+            elif line.strip() and not line.startswith("X509v3"):
+                san = san or line.strip()
         expiring = out.returncode != 0  # checkend: rc!=0 => expires within 30d
-        check("TLS certificate", True, f"{tls_detail}; {subject}; expires {expires}")
+        detail = f"{tls_detail}; {subject}; expires {expires}"
+        if san:
+            detail += f"; SAN {san}"
+        check("TLS certificate", True, detail)
         if cfg.tls.mode == "self-signed":
             print("        ! self-signed: hosted MCP clients will NOT trust this certificate")
         if expiring:
@@ -517,6 +560,8 @@ def build_parser() -> argparse.ArgumentParser:
     keys_sub.add_parser("list", help="list all keys")
     pr = keys_sub.add_parser("revoke", help="revoke a key immediately")
     pr.add_argument("key_id")
+    pr.add_argument("--keep-processes", action="store_true",
+                    help="do not terminate the key's live sessions/jobs")
     pr = keys_sub.add_parser("rotate", help="revoke a key and issue a replacement")
     pr.add_argument("key_id")
     pr.add_argument("--name", help="new display name (default: keep current)")
@@ -533,14 +578,16 @@ def build_parser() -> argparse.ArgumentParser:
     pj.add_argument("--stream", choices=["stdout", "stderr"], default="stdout")
     pj.add_argument("--offset", type=int, default=0)
     pj.add_argument("--limit", type=int, default=0, help="max bytes (0 = all)")
-    jobs_sub.add_parser("cancel", help="explain how to cancel a job")
+    pj = jobs_sub.add_parser("cancel", help="terminate a running job (SIGTERM/SIGKILL)")
+    pj.add_argument("job_id")
     p.set_defaults(func=cmd_jobs)
 
     p = sub.add_parser("sessions", help="terminal session inspection")
     s_sub = p.add_subparsers(dest="sessions_action", required=True)
     ps = s_sub.add_parser("list", help="list recent sessions")
     ps.add_argument("--limit", type=int, default=100)
-    s_sub.add_parser("kill", help="explain how to terminate a session")
+    ps = s_sub.add_parser("kill", help="terminate a live session (SIGHUP/SIGKILL)")
+    ps.add_argument("session_id")
     p.set_defaults(func=cmd_sessions)
 
     sub.add_parser("status", help="service and endpoint status").set_defaults(func=cmd_status)

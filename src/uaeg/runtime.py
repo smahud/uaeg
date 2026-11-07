@@ -6,6 +6,7 @@ same backend and configuration")."""
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from typing import Any
@@ -14,6 +15,8 @@ from .config import Config
 from .db import Store
 from .executor.jobs import JobManager
 from .executor.pty import SessionManager
+
+log = logging.getLogger("uaeg.runtime")
 
 
 class Runtime:
@@ -109,7 +112,11 @@ class Runtime:
                 import subprocess
 
                 out = subprocess.run(
-                    ["openssl", "x509", "-in", cert, "-noout", "-subject", "-issuer", "-enddate"],
+                    [
+                        "openssl", "x509", "-in", cert, "-noout",
+                        "-subject", "-issuer", "-enddate",
+                        "-ext", "subjectAltName",
+                    ],
                     capture_output=True, text=True, timeout=10,
                 )
                 for line in out.stdout.splitlines():
@@ -119,6 +126,8 @@ class Runtime:
                         info["issuer"] = line.split("=", 1)[1]
                     elif line.startswith("notAfter="):
                         info["expires"] = line.split("=", 1)[1]
+                    elif line.strip() and not line.startswith("X509v3"):
+                        info.setdefault("san", line.strip())
             except Exception as exc:  # noqa: BLE001
                 info["error"] = str(exc)
         return info
@@ -135,8 +144,38 @@ class Runtime:
 
         return str(paths.tls_dir() / "self-signed.crt")
 
-    def shutdown(self):
+    async def terminate_key_resources(self, key_id: str) -> dict[str, int]:
+        """Revocation containment (PRD FR-012): terminate every live PTY
+        session and running background job owned by the key.
+
+        Called by the dashboard when a key is revoked (unless the operator
+        explicitly opts out with keep_processes). The CLI revocation path
+        uses uaeg.containment (out-of-process signals) for the same effect.
+        Rotation is intentionally NOT containment.
+        """
+        key = self.store.get_key(key_id)
+        key_name = key.get("name") if key else None
+        sessions = await self.sessions.close_by_key(key_id)
+        jobs = await self.jobs.cancel_by_key(key_id)
+        if sessions or jobs:
+            log.warning(
+                "containment for key %s: terminated %d session(s), %d job(s)",
+                key_id, sessions, jobs,
+            )
+            try:
+                self.store.add_log(
+                    key_id=key_id,
+                    key_name=key_name,
+                    tool="revocation",
+                    status="contained",
+                    meta={"terminated_sessions": sessions, "terminated_jobs": jobs},
+                )
+            except Exception:  # noqa: BLE001 - auditing must never break execution
+                log.exception("containment audit write failed")
+        return {"terminated_sessions": sessions, "terminated_jobs": jobs}
+
+    async def shutdown(self):
         try:
-            self.jobs.shutdown()
+            await self.jobs.shutdown()
         except Exception:  # noqa: BLE001
             pass

@@ -8,8 +8,6 @@
 
 from __future__ import annotations
 
-import platform
-
 from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse

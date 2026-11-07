@@ -6,13 +6,14 @@ dashboard network access, port changes, and persistence semantics.
 ## Locations and precedence
 
 The configuration file is `/etc/uaeg/config.json` (mode 0600, owned by root). Settings
-resolve as: **environment variable > config file > built-in default**.
+resolve as: **config file > built-in default** — there are no per-setting environment
+overrides. The only environment variables UAEG recognizes are:
 
 | Variable | Effect |
 |----------|--------|
 | `UAEG_CONFIG` | Path to the config file (default `/etc/uaeg/config.json`) |
 | `UAEG_DATA_DIR` | Override the data directory (default `/var/lib/uaeg`) |
-| `UAEG_DEV_INSECURE_HTTP` | When set to `1`, serves the MCP endpoint without TLS. **Development only — never in production.** |
+| `UAEG_DEV_INSECURE_HTTP` | When set to `1`, serves the MCP endpoint without TLS (a loud log warning is emitted). **Development only — never in production.** |
 
 If you relocate the data or config directory after installation, set the corresponding
 variable for both your shell and the systemd unit, or the service and CLI will disagree
@@ -22,7 +23,7 @@ about where state lives.
 
 | Path | Contents |
 |------|----------|
-| `/opt/uaeg` | Git checkout plus `.venv` (editable install) |
+| `/opt/uaeg` | Plain copy of the source plus `.venv` (editable install, no `.git`) |
 | `/usr/local/bin/uaeg` | Symlink to `/opt/uaeg/.venv/bin/uaeg` |
 | `/etc/uaeg/config.json` | Configuration (mode 0600) |
 | `/var/lib/uaeg/uaeg.db` | SQLite database (WAL mode): keys, jobs, sessions, exec logs |
@@ -71,7 +72,7 @@ Defaults shown; the config file needs only the keys you want to change.
 | `exec.max_sessions` | integer | `16` | Maximum concurrent PTY sessions |
 | `exec.pty_buffer_bytes` | integer | `262144` | Per-session PTY output ring buffer (bytes) |
 | `exec.restricted_paths` | array | `[]` | Advisory restricted directories, communicated via `server_info` — **not a security boundary** (FR-014) |
-| `network.allowed_dashboard_cidrs` | array \| null | `null` | Optional CIDR allowlist for dashboard requests (e.g. `["192.168.1.0/24", "10.0.0.0/8"]`) |
+| `network.allowed_dashboard_cidrs` | array \| null | `null` | Optional CIDR allowlist for dashboard requests (e.g. `"192.168.1.0/24"`, `"10.0.0.0/8"`). Since 0.2.0 entries are validated at startup and an invalid entry refuses to start (fail closed); `null` disables the feature |
 
 ## Validation rules
 
@@ -80,10 +81,13 @@ The service validates configuration at startup and refuses to start with clear e
 
 - `mcp.port` must not equal `dashboard.port`.
 - `tls.mode: "manual"` requires `tls.cert` and `tls.key` files that exist on disk.
-- `tls.mode: "certbot"` requires `public_host` to be a real domain (not an IP, not
-  `localhost`).
+- `tls.mode: "certbot"` rejects `public_host` set to `localhost`. A public IP technically
+  passes validation, but certbot needs a real DNS domain to issue a certificate — use a
+  domain in practice.
 - `dashboard.bind` set to a wildcard (`0.0.0.0`) is rejected unless
   `dashboard.allow_public: true` is set explicitly (FR-015).
+- `network.allowed_dashboard_cidrs` entries must be valid CIDR networks; since 0.2.0 an
+  invalid entry is a clear startup error instead of being silently ignored.
 
 ## TLS modes
 
@@ -103,12 +107,14 @@ the `UAEG_DEV_INSECURE_HTTP` development escape hatch).
 
 The dashboard has **no login**; its network placement is the boundary (FR-015, FR-018):
 
-1. **Bind address** (`dashboard.bind`) — default `127.0.0.1` (loopback only). The installer's
-   `--dashboard-bind lan` binds the first private IP; a literal IP also works. A wildcard
-   bind is refused unless `dashboard.allow_public: true` is set explicitly.
-2. **Optional CIDR allowlist** (`network.allowed_dashboard_cidrs`) — when set, requests from
-   source addresses outside the listed networks are rejected even if they reach the
-   listener.
+1. **Bind address** (`dashboard.bind`) — default `127.0.0.1` (loopback only). The
+   installer's `--dashboard-bind lan` prefers a private (RFC1918) address and refuses to
+   auto-bind a public address when no private one exists; a literal IP also works. A
+   wildcard bind is refused unless `dashboard.allow_public: true` is set explicitly.
+2. **Optional CIDR allowlist** (`network.allowed_dashboard_cidrs`) — when set, requests
+   from source addresses outside the listed networks are rejected even if they reach the
+   listener. Invalid entries are rejected at startup (fail closed) — since 0.2.0 they are
+   a startup error, not a silent ignore.
 
 Use both when the dashboard must be reachable from a LAN segment:
 
@@ -138,10 +144,12 @@ old port are gone the moment the service restarts. The same procedure applies to
 
 - The config file is the source of truth for settings and survives restarts and upgrades
   (FR-003). It is read at service start; `uaeg config set` writes the file immediately, but
-  changes take effect only after `systemctl restart uaeg`.
+  changes take effect only after `systemctl restart uaeg`. Since 0.2.0 the installer
+  preserves the existing configuration on upgrade and applies only explicitly passed
+  flags — versions before 0.2.0 reset the config on upgrade.
 - Keys, jobs, session records, and audit logs live in SQLite, not in the config; they are
   unaffected by config edits.
-- `git pull` upgrades and `uninstall.sh` without `--purge` leave `/etc/uaeg` and
+- Installer upgrades and `uninstall.sh` without `--purge` leave `/etc/uaeg` and
   `/var/lib/uaeg` intact, so configuration and state survive reinstalls (FR-019).
 
 ## Managing configuration with the CLI

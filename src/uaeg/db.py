@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
+from . import security
+
 T = TypeVar("T")
 
 
@@ -120,6 +122,7 @@ class Store:
         self._db.execute("PRAGMA busy_timeout=10000")
         self._db.execute("PRAGMA foreign_keys=ON")
         self._db.executescript(SCHEMA)
+        self._check_schema_version()
         self._set_meta("schema_version", str(SCHEMA_VERSION))
         try:
             self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -131,6 +134,27 @@ class Store:
             os.chmod(self.path, 0o600)
         except OSError:
             pass
+
+    def _check_schema_version(self) -> None:
+        """Refuse to silently misuse a database from another UAEG version."""
+        try:
+            row = self._db.execute(
+                "SELECT v FROM meta WHERE k='schema_version'"
+            ).fetchone()
+        except sqlite3.DatabaseError:
+            return  # fresh/legacy database without the meta row
+        if row is None:
+            return
+        try:
+            stored = int(row["v"])
+        except (TypeError, ValueError):
+            return
+        if stored > SCHEMA_VERSION:
+            raise sqlite3.DatabaseError(
+                f"database schema version {stored} is newer than this UAEG "
+                f"supports (schema {SCHEMA_VERSION}); upgrade UAEG first"
+            )
+        # stored < SCHEMA_VERSION would run migrations here; none exist yet.
 
     # ------------------------------------------------------------------
     # meta
@@ -177,6 +201,14 @@ class Store:
     def find_active_key_by_verifier(self, verifier_hex: str) -> dict[str, Any] | None:
         row = self._db.execute(
             "SELECT * FROM keys WHERE verifier=? AND status='active'", (verifier_hex,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    @_locked
+    def find_key_by_verifier(self, verifier_hex: str) -> dict[str, Any] | None:
+        """Return the key record for a verifier regardless of status."""
+        row = self._db.execute(
+            "SELECT * FROM keys WHERE verifier=?", (verifier_hex,)
         ).fetchone()
         return dict(row) if row else None
 
@@ -237,6 +269,9 @@ class Store:
         key_id: str | None,
         key_name: str | None,
     ) -> None:
+        # Command text is persisted (dashboard/CLI display); embedded
+        # secrets are masked before storage (PRD section 13).
+        command = security.redact_secrets(command)
         self._db.execute(
             "INSERT INTO jobs(job_id, key_id, key_name, command, cwd, status, pid, started_at)"
             " VALUES(?,?,?,?,?, 'running', ?, ?)",
@@ -291,6 +326,7 @@ class Store:
         key_id: str | None,
         key_name: str | None,
     ) -> None:
+        command = security.redact_secrets(command)
         self._db.execute(
             "INSERT INTO sessions(session_id, key_id, key_name, command, cwd, status,"
             " pid, created_at, last_activity) VALUES(?,?,?,?,?, 'open', ?, ?, ?)",
@@ -370,6 +406,15 @@ class Store:
         duration_ms: int | None = None,
         output_preview: str | None = None,
     ) -> None:
+        # Audit-log choke point: command text and output previews are
+        # redacted before persistence so credentials embedded by agents in
+        # commands (curl headers, git remotes, exports) never land in the
+        # audit trail, the dashboard or the journal (PRD section 13).
+        meta = dict(meta or {})
+        if isinstance(meta.get("command"), str):
+            meta["command"] = security.redact_secrets(meta["command"])
+        if output_preview:
+            output_preview = security.redact_secrets(output_preview)
         self._db.execute(
             "INSERT INTO exec_logs(ts, key_id, key_name, tool, meta, status, exit_code,"
             " duration_ms, output_preview) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -378,7 +423,7 @@ class Store:
                 key_id,
                 key_name,
                 tool,
-                json.dumps(meta or {}, ensure_ascii=False),
+                json.dumps(meta, ensure_ascii=False),
                 status,
                 exit_code,
                 duration_ms,
@@ -406,6 +451,15 @@ class Store:
     def count_logs(self) -> int:
         row = self._db.execute("SELECT COUNT(*) AS c FROM exec_logs").fetchone()
         return int(row["c"])
+
+    @_locked
+    def quick_check(self) -> str:
+        """SQLite integrity check ('ok' when the database is healthy)."""
+        try:
+            row = self._db.execute("PRAGMA quick_check").fetchone()
+            return str(row[0]) if row else "unknown"
+        except sqlite3.DatabaseError as exc:
+            return f"failed: {exc}"
 
     # ------------------------------------------------------------------
     @_locked

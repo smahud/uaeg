@@ -20,6 +20,9 @@ uaeg doctor
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
 | Service will not start | Config validation error, bad TLS paths, port clash | [Section 1](#1-service-will-not-start) |
+| Service starts, then immediately exits ("listener failed") | The other listener could not bind (port in use) — the service refuses to run half-alive | [Section 1](#1-service-will-not-start) |
+| Startup fails with an "invalid CIDR" / allowlist error | Invalid entry in `network.allowed_dashboard_cidrs` | [Section 1](#1-service-will-not-start) |
+| Database corrupt or unreadable | `serve` exits with code 2; `doctor` reports INTEGRITY CHECK FAILED | [Section 12](#12-database-corrupt-or-unreadable) |
 | `/healthz` unreachable | Service down, bind/firewall, TLS mismatch in probe | [Section 2](#2-healthz-unreachable) |
 | Agent gets `401 Unauthorized` | Revoked key, typo/truncated key, missing header | [Section 3](#3-agent-gets-401-unauthorized) |
 | Agent gets TLS/certificate errors | Self-signed cert, cert does not match host, expired cert, clock skew | [Section 4](#4-agent-gets-tls-errors) |
@@ -44,9 +47,18 @@ sudo journalctl -u uaeg -n 50 --no-pager
 Startup failures are almost always config validation (see
 [CONFIGURATION.md](./CONFIGURATION.md#validation-rules)): `mcp.port` equal to
 `dashboard.port`, `tls.mode: "manual"` with missing/unreadable `tls.cert`/`tls.key` files,
-`tls.mode: "certbot"` with `public_host` set to an IP or `localhost`, or a wildcard
-`dashboard.bind` without `dashboard.allow_public: true`. Malformed JSON in
+`tls.mode: "certbot"` with `public_host` set to `localhost`, a wildcard `dashboard.bind`
+without `dashboard.allow_public: true`, or an invalid entry in
+`network.allowed_dashboard_cidrs` (since 0.2.0 a fail-closed startup error, not a silent
+ignore — fix or remove the invalid entries, or set the key to `null`). Malformed JSON in
 `/etc/uaeg/config.json` is also rejected at startup with the parse error.
+
+A service that **starts and immediately exits** with a `listener failed` log line means one
+of the two listeners (MCP or dashboard) could not bind — typically the port is already in
+use. The service refuses to run half-alive and exits non-zero (systemd `Restart=on-failure`
+retries); free the port per [Section 9](#9-port-already-in-use) and the service comes back.
+A startup exit with code 2 and a clean, traceback-free error points at the database instead
+(see [Section 12](#12-database-corrupt-or-unreadable)).
 
 **Fix:** correct the setting (`uaeg config set ...` or edit the file), then
 `sudo systemctl restart uaeg`. Verify with `uaeg doctor`.
@@ -194,7 +206,8 @@ du -sh /var/lib/uaeg/jobs/* | sort -h | tail
 Background jobs write full stdout/stderr to files under `/var/lib/uaeg/jobs/<job_id>/`;
 chatty or runaway jobs can grow them without bound.
 
-**Fix:** cancel runaway jobs (`uaeg jobs cancel <JOB_ID>` or the dashboard Sessions tab).
+**Fix:** cancel runaway jobs (`uaeg jobs cancel <JOB_ID>` or the dashboard Sessions tab) —
+both terminate the job's process group (SIGTERM, then SIGKILL).
 For completed jobs whose output you no longer need, remove the job directory — job metadata
 remains in the database, but `job_output` will no longer serve output for it. Going
 forward, redirect verbose output to compressed files inside the command itself
@@ -211,22 +224,44 @@ See [Recovery procedure (FR-020)](#recovery-procedure-fr-020) below. Before rest
 UAEG, revoke the key the agent used (`uaeg keys revoke <KEY_ID>`) if the agent is acting
 against your intent.
 
+### 12. Database corrupt or unreadable
+
+**Diagnose:** `uaeg serve` exits with code 2 and a clean error (no traceback) when
+`/var/lib/uaeg/uaeg.db` cannot be opened or is corrupt; `uaeg doctor` runs
+`PRAGMA quick_check` and reports `database ... INTEGRITY CHECK FAILED`. A database written
+by a NEWER UAEG schema version is refused with an "upgrade UAEG first" error.
+
+**Fix (recovery):**
+
+```bash
+sudo systemctl stop uaeg
+mv /var/lib/uaeg/uaeg.db /var/lib/uaeg/uaeg.db.corrupt-$(date +%Y%m%d)
+sudo systemctl start uaeg        # a fresh database is created
+```
+
+Keys must be re-issued (`uaeg generate`) — the old key verifiers lived in the moved file.
+Before discarding it, the old database can be inspected read-only with `sqlite3`
+(job history, session records, the audit log).
+
 ## `uaeg doctor` walkthrough
 
-`uaeg doctor` runs every check below and prints one line per check plus a summary. Note
-that the **running-as-root warning is expected** — the service runs as root by design.
+`uaeg doctor` runs every check below and prints one line per check plus a summary. The
+**execution user check passes when the service runs as root** — that is the supported
+deployment (the service runs as root by design); a non-root run fails the check with an
+explanation.
 
 | Check | Verifies | If it fails |
 |-------|----------|-------------|
-| `version` | Installed package version | Upgrade path differs from expected; check `uaeg version` vs the repo |
 | `config` | Config file exists, parses, and passes validation | The parse/validation error is printed; fix per [Section 1](#1-service-will-not-start) |
-| `data dir` | `/var/lib/uaeg` exists and is writable | Check disk and permissions; confirm `UAEG_DATA_DIR` matches the unit's environment |
-| `database` | SQLite opens, WAL active, tables present | Backup the file, check disk space; a corrupt DB is recoverable from job files but key verifiers would be lost — restore from snapshot |
-| `service` | systemd unit active/enabled | `sudo systemctl status uaeg`; see [Section 1](#1-service-will-not-start) |
-| `ports` | 3902 and 3903 listening on the configured addresses | See [Section 9](#9-port-already-in-use); confirm bind addresses with `ss -ltnp` |
-| `health` | `/healthz` answers on the MCP listener | See [Section 2](#2-healthz-unreachable) |
-| `tls` | Certificate expiry, subject, and SAN | See [Section 4](#4-agent-gets-tls-errors); renew or replace the certificate |
-| `user` | Whether the service runs as root | Prints a warning — this is by design; see [SECURITY.md](./SECURITY.md) |
+| `data dir` | `/var/lib/uaeg` exists | Check the path and `UAEG_DATA_DIR`; confirm it matches the unit's environment |
+| `database` | SQLite opens, tables present, and `PRAGMA quick_check` (integrity check) passes | Corruption is reported as `INTEGRITY CHECK FAILED`; see [Section 12](#12-database-corrupt-or-unreadable) |
+| `systemd service` | The unit at `/etc/systemd/system/uaeg.service` (generated by the installer) is active | `sudo systemctl status uaeg`; see [Section 1](#1-service-will-not-start) |
+| `MCP listener` | The MCP port is listening on the configured address | See [Section 9](#9-port-already-in-use); confirm bind addresses with `ss -ltnp` |
+| `dashboard listener` | The dashboard port is listening on the configured address | See [Section 8](#8-dashboard-unreachable) and [Section 9](#9-port-already-in-use) |
+| `health endpoint` | `/healthz` answers on the MCP listener | See [Section 2](#2-healthz-unreachable) |
+| `TLS certificate` | Certificate subject, SAN, and expiry; warns when expiry is within 30 days | See [Section 4](#4-agent-gets-tls-errors); renew or replace the certificate |
+| `execution user` | The service runs as root | Passes on a standard install (by design). A non-root service fails with an explanation; see [SECURITY.md](./SECURITY.md) |
+| `exec shell` | The configured `exec.shell` exists on disk | Point `exec.shell` at an installed shell (e.g. `/bin/bash`) and restart |
 
 ## Recovery procedure (FR-020)
 
@@ -246,8 +281,9 @@ When UAEG is stopped, the network path is broken, or the OS is damaged, normal a
    `df -h`, `ip a`. Look for what the agent did: stopped service, removed files, changed
    firewall rules (`iptables -L` / `nft list ruleset`).
 3. **If only UAEG is down:** `sudo systemctl start uaeg`, then `uaeg doctor`. If the unit or
-   files were deleted, reinstall from the repo (state in `/etc/uaeg` and `/var/lib/uaeg`
-   survives a reinstall — [INSTALL.md](./INSTALL.md#uninstall)).
+   files were deleted, reinstall from the repo — state in `/etc/uaeg` and `/var/lib/uaeg`
+   survives a reinstall (the 0.2.0 installer preserves the existing configuration; see
+   [INSTALL.md](./INSTALL.md#upgrading)).
 4. **If the firewall locks you out:** reset rules from the provider console, or use the
    provider's firewall (outside the OS) to re-admit your management traffic.
 5. **If the OS is damaged:** restore the snapshot. This is why destructive experiments

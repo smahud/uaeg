@@ -14,7 +14,9 @@ real VPS.
 - Record the environment before starting:
 
   ```bash
-  cat /etc/debian_version; python3 --version; uaeg version; git -C /opt/uaeg rev-parse HEAD
+  cat /etc/debian_version; python3 --version; uaeg version
+  git -C /path/to/uaeg-clone rev-parse HEAD   # record before installing (if installing
+                                               # from a git clone; /opt/uaeg has no .git)
   ```
 
 - Fill in the [results table](#results) as you go. A test passes only when **all** of its
@@ -22,12 +24,12 @@ real VPS.
 
 ## Sandbox smoke coverage
 
-The repository's automated test suite (`pytest`, run by GitHub Actions CI on every push)
-covers the protocol and execution flows — MCP over Streamable HTTP, bearer authentication
-including revocation, `shell_exec`, background jobs, and PTY session logic — against a
-sandboxed service instance (sandbox-tested on Python 3.12). CI is a smoke gate for every
-change; **this VPS runbook is the final acceptance gate** (PRD section 15: the MVP is
-accepted only after these tests pass on an actual target VPS).
+The repository's automated test suite (`pytest`, run by GitHub Actions CI on every push to
+main and on pull requests, on a Python 3.11/3.12/3.13 matrix) covers the protocol and
+execution flows — MCP over Streamable HTTP, bearer authentication including revocation,
+`shell_exec`, background jobs, and PTY session logic — against a sandboxed service instance.
+CI is a smoke gate for every change; **this VPS runbook is the final acceptance gate** (PRD
+section 15: the MVP is accepted only after these tests pass on an actual target VPS).
 
 ## Test summary
 
@@ -325,6 +327,12 @@ error, not an auth error); the second probe returns `401`.
 **Pass criteria:** every request with the revoked key returns `401` immediately; the AT-03
 key still works (revoke is per key); `uaeg keys list` shows `at12-temp` as revoked.
 
+**Expected (containment):** since 0.2.0, revoking also terminates the AT-12 key's live
+PTY sessions and cancels its running background jobs — optionally leave one of each
+running under the key before revoking to verify. Use `--keep-processes` (CLI) or
+`{"keep_processes": true}` (dashboard) only if the operator wants them left running;
+sessions and jobs owned by the AT-03 key are unaffected.
+
 **Notes:** auth is checked before MCP body processing, so the empty `{}` body is fine for
 the 401 check.
 
@@ -367,8 +375,8 @@ sudo systemctl restart uaeg
 Server).
 
 **Pass criteria:** all tabs render; Keys lists the keys created above; generating a key in
-the dashboard shows the one-time secret modal; Server shows health, version, and TLS
-details.
+the dashboard shows the one-time secret modal; Server shows version, uptime, and TLS
+details (subject, issuer, SAN, expiry).
 
 **Notes:** if the dashboard is loopback-bound, this test requires rebinding (above) or an
 SSH tunnel — but the tunnel variant does not exercise LAN reachability, so rebind for the
@@ -394,7 +402,9 @@ ss -ltnp | grep 3903     # must show the LAN IP or 127.0.0.1, not 0.0.0.0
 
 **Notes:** also verify no provider-level firewall rule opens 3903 to the internet. If a
 CIDR allowlist is configured, additionally test from a LAN address outside the list if
-practical.
+practical. Since 0.2.0 an invalid CIDR entry is a startup error (fail closed), so with an
+allowlist configured a 403 or a refused/timeout connection are the only outcomes — a
+mistyped CIDR can no longer silently disable the allowlist.
 
 ## AT-16 — Restart: persisted configuration and keys (FR-003, FR-019)
 
@@ -445,7 +455,8 @@ key identity); timestamps are sane.
 
 **Notes:** environment variable values must not appear in the log — optionally verify with
 a call that passes `env={"SECRET": "at17"}` and confirm the value `at17` is absent from the
-entry.
+entry. Since 0.2.0 command text is stored redacted — high-confidence secret shapes are
+masked with `***REDACTED***` — while remaining identifiable for auditing.
 
 ## AT-18 — No SSH connection required (PRD section 1)
 

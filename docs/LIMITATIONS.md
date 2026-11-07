@@ -29,10 +29,12 @@ Read it before trusting the gateway with anything important.
 6. **The PTY buffer is capped.** Each session keeps only the most recent
    `exec.pty_buffer_bytes` (default 256 KiB) of output. An agent that stops polling loses
    older bytes (`truncated: true`). Redirect chatty programs to files and read those.
-7. **Revocation does not kill running processes.** Revoking a key blocks all new requests
-   immediately, but jobs and PTY sessions the key already started keep running until they
-   finish, fail, or are cancelled. Check `uaeg jobs list` / `uaeg sessions list` after a
-   revocation.
+7. **Revocation containment is best-effort process-group signaling.** Since 0.2.0, revoking
+   a key also terminates its live sessions (SIGHUP then SIGKILL) and cancels its running
+   background jobs (SIGTERM then SIGKILL), with a `--keep-processes` opt-out. The signals
+   target the recorded session/job process groups — a process that escaped into its own
+   process group (e.g. a double-forking daemon started inside a job) is not caught.
+   Rotation terminates nothing ([SECURITY.md](./SECURITY.md)).
 8. **Jobs can end up `interrupted`.** After a reboot (or a SIGKILL of the service), jobs
    that were running are marked `interrupted` rather than falsely reported as running
    (FR-009). Their captured output remains readable, but the process is gone.
@@ -45,9 +47,12 @@ Read it before trusting the gateway with anything important.
 10. **No RBAC and no approval workflows.** Keys are either `all` or advisory `restricted`;
     there are no roles, no per-tool permissions, and no human confirmation steps. This is
     excluded from the MVP by design (PRD section 13), not a gap to be filled soon.
-11. **The audit log stores command text.** Commands run by agents are recorded verbatim;
-    any secret embedded in a command line will appear in the log. Environment variable
-    *values* are not logged ([SECURITY.md](./SECURITY.md#audit-log-guarantees)).
+11. **The audit log stores command text (redacted, best effort).** Commands run by agents
+    are recorded with high-confidence secret shapes masked (`***REDACTED***`) since 0.2.0,
+    but redaction is pattern-based, not a guarantee — a secret in a shape the redactor does
+    not recognize still lands in the log, and raw job output files under
+    `/var/lib/uaeg/jobs/` are never altered. Environment variable *values* are not logged
+    ([SECURITY.md](./SECURITY.md#secret-redaction-in-logs)).
 12. **Self-signed certificates are rejected by most hosted clients.** Self-signed mode is
     for local testing only. Real deployments need a domain plus certbot, or trusted manual
     certificates (FR-017, [CONFIGURATION.md](./CONFIGURATION.md#tls-modes)).

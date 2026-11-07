@@ -15,13 +15,18 @@ set -euo pipefail
 # Defaults
 # ----------------------------------------------------------------------
 MCP_PORT=3902
+MCP_PORT_GIVEN=0
 DASHBOARD_PORT=3903
+DASHBOARD_PORT_GIVEN=0
 DASHBOARD_BIND="loopback"     # loopback | lan | <ip>
+DASHBOARD_BIND_GIVEN=0
 DOMAIN=""
 PUBLIC_IP=""
+PUBLIC_HOST_GIVEN=0
 CERT_FILE=""
 KEY_FILE=""
 TLS_MODE="self-signed"
+TLS_MODE_GIVEN=0
 DATA_DIR="/var/lib/uaeg"
 CONFIG_DIR="/etc/uaeg"
 INSTALL_DIR="/opt/uaeg"
@@ -29,9 +34,13 @@ SERVICE_NAME="uaeg"
 NO_SERVICE=0
 ASSUME_YES=0
 OPEN_FIREWALL=0
+UPGRADING=0
+SERVICE_WAS_ACTIVE=0
+APP_BACKUP=""
+CONFIG_BACKUP=""
 # Release this installer belongs to (used for standalone bootstrap, FR-002).
 # Override the source version at runtime with: --version X.Y.Z or UAEG_VERSION=X.Y.Z
-UAEG_RELEASE_VERSION="0.1.1"
+UAEG_RELEASE_VERSION="0.2.0"
 FETCH_VERSION=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -71,14 +80,14 @@ USAGE
 # ----------------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --port)             MCP_PORT="$2"; shift 2 ;;
-    --dashboard-port)   DASHBOARD_PORT="$2"; shift 2 ;;
-    --dashboard-bind)   DASHBOARD_BIND="$2"; shift 2 ;;
-    --domain)           DOMAIN="$2"; TLS_MODE="certbot"; shift 2 ;;
-    --public-ip)        PUBLIC_IP="$2"; shift 2 ;;
-    --cert)             CERT_FILE="$2"; TLS_MODE="manual"; shift 2 ;;
-    --key)              KEY_FILE="$2"; TLS_MODE="manual"; shift 2 ;;
-    --self-signed)      TLS_MODE="self-signed"; shift ;;
+    --port)             MCP_PORT="$2"; MCP_PORT_GIVEN=1; shift 2 ;;
+    --dashboard-port)   DASHBOARD_PORT="$2"; DASHBOARD_PORT_GIVEN=1; shift 2 ;;
+    --dashboard-bind)   DASHBOARD_BIND="$2"; DASHBOARD_BIND_GIVEN=1; shift 2 ;;
+    --domain)           DOMAIN="$2"; TLS_MODE="certbot"; TLS_MODE_GIVEN=1; PUBLIC_HOST_GIVEN=1; shift 2 ;;
+    --public-ip)        PUBLIC_IP="$2"; PUBLIC_HOST_GIVEN=1; shift 2 ;;
+    --cert)             CERT_FILE="$2"; TLS_MODE="manual"; TLS_MODE_GIVEN=1; shift 2 ;;
+    --key)              KEY_FILE="$2"; TLS_MODE="manual"; TLS_MODE_GIVEN=1; shift 2 ;;
+    --self-signed)      TLS_MODE="self-signed"; TLS_MODE_GIVEN=1; shift ;;
     --data-dir)         DATA_DIR="$2"; shift 2 ;;
     --config-dir)       CONFIG_DIR="$2"; shift 2 ;;
     --install-dir)      INSTALL_DIR="$2"; shift 2 ;;
@@ -152,13 +161,53 @@ apt-get update -qq
 apt-get install -y -qq python3 python3-venv openssl curl >/dev/null
 
 # ----------------------------------------------------------------------
-# Application installation
+# Application installation (with upgrade rollback)
 # ----------------------------------------------------------------------
 if [[ -d "$INSTALL_DIR" && -f "$INSTALL_DIR/.uaeg-installed" ]]; then
+  UPGRADING=1
   say "existing installation found at $INSTALL_DIR - upgrading in place"
   if [[ $NO_SERVICE -eq 0 ]] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+    SERVICE_WAS_ACTIVE=1
     systemctl stop "$SERVICE_NAME" || true
   fi
+fi
+
+CONFIG_FILE="$CONFIG_DIR/config.json"
+
+# Rollback on failure: an interrupted upgrade must never leave the VPS with
+# a stopped service, a half-replaced application or a reset configuration.
+rollback() {
+  local status=$?
+  if [[ $status -ne 0 && $UPGRADING -eq 1 ]]; then
+    warn "installation failed - rolling back to the previous working state"
+    if [[ -n "$CONFIG_BACKUP" && -f "$CONFIG_BACKUP" && -f "$CONFIG_FILE" ]]; then
+      if cp "$CONFIG_BACKUP" "$CONFIG_FILE"; then
+        say "restored previous configuration from $CONFIG_BACKUP"
+      else
+        warn "could not restore the configuration backup - restore manually from $CONFIG_BACKUP"
+      fi
+    fi
+    if [[ -n "$APP_BACKUP" && -d "$APP_BACKUP" ]]; then
+      rm -rf "$INSTALL_DIR"
+      if mv "$APP_BACKUP" "$INSTALL_DIR"; then
+        say "restored previous application files"
+      else
+        warn "could not restore application backup - recover manually from $APP_BACKUP"
+      fi
+    fi
+    if [[ $SERVICE_WAS_ACTIVE -eq 1 && $NO_SERVICE -eq 0 ]]; then
+      systemctl restart "$SERVICE_NAME" \
+        || warn "could not restart the previous service - start it manually: systemctl start $SERVICE_NAME"
+    fi
+  fi
+  exit $status
+}
+trap rollback EXIT
+
+if [[ $UPGRADING -eq 1 ]]; then
+  APP_BACKUP="${INSTALL_DIR}.upgrade-bak-$(date +%Y%m%d-%H%M%S)"
+  say "backing up the current application (rollback safety): $APP_BACKUP"
+  cp -a "$INSTALL_DIR" "$APP_BACKUP"
 fi
 
 say "installing application to $INSTALL_DIR"
@@ -195,10 +244,24 @@ resolve_dashboard_bind() {
     loopback|127.0.0.1|localhost)
       echo "127.0.0.1" ;;
     lan)
+      # Prefer a proper private (RFC1918) address. The dashboard has no
+      # login: "lan" must never silently bind it to a public interface.
       local ip
-      ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="src"){print $(i+1); exit}}' || true)
-      [[ -n "$ip" ]] || ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+      ip=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 \
+           | while read -r a; do
+               case "$a" in
+                 10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*) echo "$a"; break ;;
+               esac
+             done)
+      [[ -z "$ip" ]] && ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="src"){print $(i+1); exit}}' || true)
+      [[ -z "$ip" ]] && ip=$(hostname -I 2>/dev/null | awk '{print $1}')
       [[ -n "$ip" ]] || die "could not detect a LAN address; use --dashboard-bind <ip> or loopback"
+      if ! python3 -c "import ipaddress,sys; sys.exit(0 if ipaddress.ip_address(sys.argv[1]).is_private else 1)" "$ip" >/dev/null 2>&1; then
+        warn "no private (RFC1918) address was found on this host."
+        warn "The only detected address is '$ip', which appears to be PUBLIC; the"
+        warn "dashboard has no login, so auto-binding it to a public address is refused."
+        die "use --dashboard-bind loopback, --dashboard-bind <private-ip>, or add a private interface"
+      fi
       echo "$ip" ;;
     *) echo "$DASHBOARD_BIND" ;;
   esac
@@ -208,18 +271,28 @@ DASH_BIND_IP="$(resolve_dashboard_bind)"
 # ----------------------------------------------------------------------
 # Public host
 # ----------------------------------------------------------------------
-PUBLIC_HOST="${DOMAIN:-$PUBLIC_IP}"
-if [[ -z "$PUBLIC_HOST" ]]; then
-  # best-effort: primary interface address
-  PUBLIC_HOST=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="src"){print $(i+1); exit}}' || true)
-  [[ -n "$PUBLIC_HOST" ]] || PUBLIC_HOST="localhost"
-  warn "no --domain/--public-ip given; using detected address '$PUBLIC_HOST' (self-signed TLS only)"
-  TLS_MODE="self-signed"
+if [[ $UPGRADING -eq 1 && $PUBLIC_HOST_GIVEN -eq 0 && $TLS_MODE_GIVEN -eq 0 ]]; then
+  say "upgrade: keeping the existing public_host and TLS configuration"
+else
+  PUBLIC_HOST="${DOMAIN:-$PUBLIC_IP}"
+  if [[ -z "$PUBLIC_HOST" ]]; then
+    # best-effort: primary interface address
+    PUBLIC_HOST=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="src"){print $(i+1); exit}}' || true)
+    [[ -n "$PUBLIC_HOST" ]] || PUBLIC_HOST="localhost"
+    warn "no --domain/--public-ip given; using detected address '$PUBLIC_HOST' (self-signed TLS only)"
+    TLS_MODE="self-signed"
+  fi
 fi
 
 # ----------------------------------------------------------------------
 # TLS provisioning
 # ----------------------------------------------------------------------
+RUN_TLS_PROVISION=0
+if [[ $UPGRADING -eq 0 || $TLS_MODE_GIVEN -eq 1 ]]; then
+  RUN_TLS_PROVISION=1
+fi
+
+if [[ $RUN_TLS_PROVISION -eq 1 ]]; then
 if [[ "$TLS_MODE" == "certbot" ]]; then
   say "provisioning Let's Encrypt certificate for $DOMAIN (requires open port 80)"
   if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE '(:|\])80$'; then
@@ -262,36 +335,77 @@ else
     chmod 0600 "$KEY_OUT"
   fi
 fi
+fi  # end RUN_TLS_PROVISION
 
 # ----------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------
-CONFIG_FILE="$CONFIG_DIR/config.json"
+# Fresh install: write a new config from the installer flags.
+# Upgrade: PRESERVE the existing configuration (FR-003) and apply ONLY the
+# values explicitly passed on this invocation's flags; everything the
+# operator changed with `uaeg config set` or the dashboard survives.
+# ----------------------------------------------------------------------
 if [[ -f "$CONFIG_FILE" ]]; then
-  BACKUP="$CONFIG_DIR/config.json.bak-$(date +%Y%m%d-%H%M%S)"
-  cp "$CONFIG_FILE" "$BACKUP"
-  say "existing configuration found - backing up to $BACKUP"
-  warn "installer will write a fresh config from the flags given; custom edits are in the backup"
+  CONFIG_BACKUP="$CONFIG_DIR/config.json.bak-$(date +%Y%m%d-%H%M%S)"
+  cp "$CONFIG_FILE" "$CONFIG_BACKUP"
+  say "existing configuration found - backing up to $CONFIG_BACKUP"
 fi
-say "writing configuration: $CONFIG_FILE"
-TLS_CERT_LINE=""
-TLS_KEY_LINE=""
-if [[ -n "$CERT_FILE" ]]; then TLS_CERT_LINE="cfg.tls.cert = '''$CERT_FILE'''"; fi
-if [[ -n "$KEY_FILE" ]];  then TLS_KEY_LINE="cfg.tls.key = '''$KEY_FILE'''"; fi
-UAEG_CONFIG="$CONFIG_FILE" UAEG_DATA_DIR="$DATA_DIR" "$VENV_DIR/bin/python" - <<PY
-from uaeg.config import Config
+CONFIG_EXISTS=0
+[[ -f "$CONFIG_FILE" ]] && CONFIG_EXISTS=1
 
-cfg = Config()
-cfg.public_host = "$PUBLIC_HOST"
-cfg.mcp.bind = "0.0.0.0"
-cfg.mcp.port = $MCP_PORT
-cfg.dashboard.bind = "$DASH_BIND_IP"
-cfg.dashboard.port = $DASHBOARD_PORT
-cfg.tls.mode = "$TLS_MODE"
-$TLS_CERT_LINE
-$TLS_KEY_LINE
-cfg.save("$CONFIG_FILE")
-print("config written")
+say "writing configuration: $CONFIG_FILE"
+UAEG_CONFIG="$CONFIG_FILE" UAEG_DATA_DIR="$DATA_DIR" "$VENV_DIR/bin/python" - "$CONFIG_FILE" \
+  "$CONFIG_EXISTS" "$PUBLIC_HOST" "$MCP_PORT" "$MCP_PORT_GIVEN" \
+  "$DASHBOARD_PORT" "$DASHBOARD_PORT_GIVEN" "$DASH_BIND_IP" "$DASHBOARD_BIND_GIVEN" \
+  "$TLS_MODE" "$TLS_MODE_GIVEN" "$CERT_FILE" "$KEY_FILE" "$PUBLIC_HOST_GIVEN" <<'PY' \
+  || die "configuration could not be written - see the error above"
+import sys
+
+from uaeg.config import Config, ConfigError
+
+(
+    config_file, config_exists, public_host,
+    mcp_port, mcp_port_given,
+    dash_port, dash_port_given,
+    dash_bind, dash_bind_given,
+    tls_mode, tls_mode_given, cert_file, key_file,
+    public_host_given,
+) = sys.argv[1:15]
+
+if config_exists == "1":
+    try:
+        cfg = Config.load(config_file)  # operator's values survive upgrades
+    except ConfigError as exc:
+        print(f"CONFIG_ERROR: existing configuration is invalid: {exc}", file=sys.stderr)
+        sys.exit(9)
+else:
+    cfg = Config()
+
+if mcp_port_given == "1":
+    cfg.mcp.port = int(mcp_port)
+if dash_port_given == "1":
+    cfg.dashboard.port = int(dash_port)
+if dash_bind_given == "1":
+    cfg.dashboard.bind = dash_bind
+if tls_mode_given == "1":
+    cfg.tls.mode = tls_mode
+    cfg.tls.cert = cert_file or None
+    cfg.tls.key = key_file or None
+if public_host_given == "1" and public_host:
+    cfg.public_host = public_host
+elif config_exists == "0" and public_host:
+    # fresh install: the detected/explicit host is the initial value
+    cfg.public_host = public_host
+
+try:
+    warnings = cfg.validate()
+except ConfigError as exc:
+    print(f"CONFIG_ERROR: {exc}", file=sys.stderr)
+    sys.exit(9)
+cfg.save(config_file)
+for w in warnings:
+    print(f"config warning: {w}", file=sys.stderr)
+print(f"config written ({'preserved existing settings' if config_exists == '1' else 'fresh install'})")
 PY
 
 # ----------------------------------------------------------------------
@@ -332,11 +446,27 @@ fi
 # ----------------------------------------------------------------------
 # Health verification
 # ----------------------------------------------------------------------
+# Use the EFFECTIVE values from the (possibly preserved) configuration -
+# not the installer defaults - so upgrades of customized installs verify
+# the real listener.
+EFFECTIVE_PORTS="$($VENV_DIR/bin/python - "$CONFIG_FILE" <<'PY'
+import json, sys
+
+cfg = json.load(open(sys.argv[1]))
+print(cfg["mcp"]["port"])
+print(cfg["dashboard"]["port"])
+print(cfg.get("public_host", ""))
+PY
+)" || die "could not read the effective configuration"
+EFFECTIVE_MCP_PORT="$(echo "$EFFECTIVE_PORTS" | sed -n 1p)"
+EFFECTIVE_DASH_PORT="$(echo "$EFFECTIVE_PORTS" | sed -n 2p)"
+EFFECTIVE_HOST="$(echo "$EFFECTIVE_PORTS" | sed -n 3p)"
+
 if [[ $NO_SERVICE -eq 0 ]]; then
   say "verifying service health"
   HEALTH_OK=0
   for _ in $(seq 1 30); do
-    if curl -sk --max-time 2 "https://127.0.0.1:${MCP_PORT}/healthz" | grep -q '"ok"'; then
+    if curl -sk --max-time 2 "https://127.0.0.1:${EFFECTIVE_MCP_PORT}/healthz" | grep -q '"ok"'; then
       HEALTH_OK=1
       break
     fi
@@ -345,9 +475,16 @@ if [[ $NO_SERVICE -eq 0 ]]; then
   if [[ $HEALTH_OK -eq 0 ]]; then
     warn "service did not become healthy in 30s"
     journalctl -u "$SERVICE_NAME" -n 30 --no-pager || true
-    die "installation incomplete - inspect the logs above and re-run after fixing"
+    die "installation incomplete - rolling back; inspect the logs above, fix the cause and re-run"
   fi
   say "health check passed"
+fi
+
+# Upgrade completed successfully: drop the rollback backup.
+if [[ -n "$APP_BACKUP" && -d "$APP_BACKUP" ]]; then
+  say "upgrade verified - removing rollback backup $APP_BACKUP"
+  rm -rf "$APP_BACKUP"
+  APP_BACKUP=""
 fi
 
 # ----------------------------------------------------------------------
@@ -355,12 +492,12 @@ fi
 # ----------------------------------------------------------------------
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
   if [[ $OPEN_FIREWALL -eq 1 ]]; then
-    say "opening MCP port $MCP_PORT/tcp in ufw"
-    ufw allow "$MCP_PORT/tcp"
+    say "opening MCP port $EFFECTIVE_MCP_PORT/tcp in ufw"
+    ufw allow "$EFFECTIVE_MCP_PORT/tcp"
   else
     warn "ufw is active. Allow the MCP port yourself, e.g.:"
-    warn "    ufw allow ${MCP_PORT}/tcp"
-    warn "(do NOT open ${DASHBOARD_PORT} - keep the dashboard LAN-private)"
+    warn "    ufw allow ${EFFECTIVE_MCP_PORT}/tcp"
+    warn "(do NOT open ${EFFECTIVE_DASH_PORT} - keep the dashboard LAN-private)"
   fi
 fi
 
@@ -370,8 +507,8 @@ fi
 echo
 printf '\033[1mUAEG installed successfully.\033[0m\n'
 echo
-echo "  MCP endpoint : https://${PUBLIC_HOST}:${MCP_PORT}/mcp"
-echo "  Dashboard    : http://${DASH_BIND_IP}:${DASHBOARD_PORT} (LAN/loopback only)"
+echo "  MCP endpoint : https://${EFFECTIVE_HOST}:${EFFECTIVE_MCP_PORT}/mcp"
+echo "  Dashboard    : http://${DASH_BIND_IP}:${EFFECTIVE_DASH_PORT} (LAN/loopback only)"
 echo "  Config       : $CONFIG_FILE"
 echo "  Data         : $DATA_DIR"
 echo "  TLS mode     : $TLS_MODE"
@@ -381,7 +518,7 @@ echo "Next steps:"
 echo "  1. Create an agent key:"
 echo "       uaeg generate --name \"Claude\""
 echo "  2. Configure your hosted agent's MCP connector:"
-echo "       URL:                  https://${PUBLIC_HOST}:${MCP_PORT}/mcp"
+echo "       URL:                  https://${EFFECTIVE_HOST}:${EFFECTIVE_MCP_PORT}/mcp"
 echo "       Authentication:       Bearer token (the generated uaeg_... secret)"
 echo "  3. Verify health:"
 echo "       uaeg doctor"

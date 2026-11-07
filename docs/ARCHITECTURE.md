@@ -29,6 +29,13 @@ PTY session manager, and the audit log. Sharing the runtime is what makes the da
 live view of exactly what the MCP side is doing — and why there is deliberately no public
 unauthenticated administrative route anywhere.
 
+The listeners are supervised: if either fails to start or dies for any reason (a bind
+failure, an unexpected exception), the whole process stops with a non-zero exit code and a
+clear log line — a regular failure in one listener no longer leaves a half-running service.
+systemd (`Restart=on-failure`) restarts it. SIGTERM/SIGINT stop both listeners cleanly
+(detached background jobs keep running); an unreadable/corrupt database or invalid TLS
+material is a clean startup error (exit code 2, no traceback).
+
 ## Request flows
 
 ### MCP tool call
@@ -123,14 +130,15 @@ jobs survive restarts, sessions do not.
 ## Data model
 
 SQLite at `/var/lib/uaeg/uaeg.db`, opened in WAL mode for concurrent reader access from both
-listeners. Four tables plus per-job files on disk:
+listeners. Five tables plus per-job files on disk:
 
 | Table | Contents |
 |-------|----------|
+| `meta` | Service metadata, including the schema version (a database from a newer UAEG is refused at startup) |
 | `keys` | Key ID, name, prefix, SHA-256 verifier (never the secret), status, permission mode, created, last used |
-| `jobs` | Job ID, command, owning key, status, pid, started/finished timestamps, exit code |
-| `sessions` | PTY session records: session ID, command, owning key, opened/closed, exit code |
-| `exec_logs` | Audit log: timestamp, key identity, tool, status, exit code, duration, command text, metadata, output preview |
+| `jobs` | Job ID, command (secret-redacted), owning key, status, pid, started/finished timestamps, exit code |
+| `sessions` | PTY session records: session ID, command (secret-redacted), owning key, opened/closed, exit code |
+| `exec_logs` | Audit log: timestamp, key identity, tool, status, exit code, duration, command text (secret-redacted), metadata, output preview (redacted) |
 
 Job output itself lives on the filesystem at `/var/lib/uaeg/jobs/<job_id>/`
 (`stdout`, `stderr`, `pid`, `exit`) so large outputs never bloat the database and remain
@@ -149,22 +157,27 @@ readable even while the service is stopped.
   MCP protocol handling occurs for unauthenticated requests, and `tools/list` cannot leak
   tool schemas to strangers.
 - **TLS mandatory on the public listener.** The only bypass is the explicit
-  `UAEG_DEV_INSECURE_HTTP` development flag (never in production).
+  `UAEG_DEV_INSECURE_HTTP=1` development flag, which serves plain HTTP on the MCP listener
+  with a loud warning (never in production).
 - **Network placement instead of login for the dashboard.** No application login exists, so
   the design refuses wildcard binds by default and supports a CIDR allowlist; the dashboard
   and MCP listeners never share a public unauthenticated route (FR-018).
 - **Bounded memory.** Sync capture caps, the PTY ring buffer, and `max_sessions` exist so a
   runaway command cannot exhaust the service.
-- **Env values are not logged.** The audit log records command text and metadata, but not
-  environment variable values, reducing (not eliminating — see [SECURITY.md](./SECURITY.md))
-  secret leakage through logs.
+- **Env values are not logged; command text is redacted.** The audit log records command
+  text and metadata — masked with `security.redact_secrets()`, so high-confidence secret
+  shapes become `***REDACTED***` — but not environment variable values, reducing (not
+  eliminating — see [SECURITY.md](./SECURITY.md#secret-redaction-in-logs)) secret leakage
+  through logs.
 
 ## Why state lives outside the install directory
 
-`/opt/uaeg` is a git checkout. Keeping configuration in `/etc/uaeg` and state in
-`/var/lib/uaeg` (FR-019) means:
+`/opt/uaeg` is a plain copy of the source (no `.git`). Keeping configuration in `/etc/uaeg`
+and state in `/var/lib/uaeg` (FR-019) means:
 
-- `git pull` upgrades and editable reinstalls cannot clobber operator state.
+- Installer upgrades and editable reinstalls cannot clobber operator state — since 0.2.0
+  the installer preserves the existing configuration on upgrade (before 0.2.0 the config
+  was reset), while keys and data always live outside the install directory.
 - `uninstall.sh` without `--purge` can remove the code cleanly while leaving keys, config,
   and job history for a later reinstall.
 - It matches normal Linux conventions (`/etc` config, `/var` state), so backup and monitoring

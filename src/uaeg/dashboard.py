@@ -48,18 +48,13 @@ def build_dashboard_asgi_app(runtime: Runtime) -> Starlette:
         try:
             allowed_cidrs.append(ipaddress.ip_network(raw, strict=False))
         except ValueError:
-            log.warning("ignoring invalid dashboard CIDR: %r", raw)
-
-    async def check_client(request: Request, call_next):
-        if request.url.path.startswith("/api") or request.url.path == "/":
-            peer = request.client.host if request.client else ""
-            if allowed_cidrs and not _peer_allowed(peer):
-                log.warning("dashboard request from %s rejected by CIDR allowlist", peer)
-                return JSONResponse(
-                    {"error": "forbidden: source address not in dashboard allowlist"},
-                    status_code=403,
-                )
-        return await call_next(request)
+            # Config.validate() already rejects invalid entries at load
+            # time; this guard covers programmatic construction paths. The
+            # dashboard must FAIL CLOSED - never silently drop the list.
+            raise ConfigError(
+                f"invalid dashboard CIDR {raw!r}: refusing to serve the "
+                "dashboard with a broken allowlist (fail closed)"
+            )
 
     def _peer_allowed(peer: str) -> bool:
         try:
@@ -119,11 +114,32 @@ def build_dashboard_asgi_app(runtime: Runtime) -> Starlette:
 
     async def revoke_key(request: Request) -> Response:
         key_id = request.path_params["key_id"]
+        if not store.get_key(key_id):
+            return _err(f"unknown key_id: {key_id}", 404)
+        keep_processes = False
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                keep_processes = bool(body.get("keep_processes", False))
+        except Exception:  # noqa: BLE001 - body optional
+            pass
         key = store.revoke_key(key_id)
         if not key:
             return _err(f"unknown key_id: {key_id}", 404)
-        log.info("dashboard revoked key %s", key_id)
-        return _json_ok({"key": _key_public(key)})
+        # Revocation containment: a revoked (possibly compromised) agent
+        # must not keep live sessions or background jobs running. Operators
+        # can opt out per revocation with keep_processes=true.
+        containment = {"terminated_sessions": 0, "terminated_jobs": 0}
+        if not keep_processes:
+            try:
+                containment = await runtime.terminate_key_resources(key_id)
+            except Exception as exc:  # noqa: BLE001
+                containment = {"error": str(exc)}
+        log.info(
+            "dashboard revoked key %s (containment=%s, keep_processes=%s)",
+            key_id, containment, keep_processes,
+        )
+        return _json_ok({"key": _key_public(key), "containment": containment})
 
     async def rotate_key(request: Request) -> Response:
         key_id = request.path_params["key_id"]
@@ -208,7 +224,9 @@ def build_dashboard_asgi_app(runtime: Runtime) -> Starlette:
         live = []
         for s in runtime.sessions.list():
             entry = dict(s)
-            entry["preview_tail"] = runtime.sessions.get(s["session_id"]).preview_tail(160)
+            entry["preview_tail"] = security.redact_secrets(
+                runtime.sessions.get(s["session_id"]).preview_tail(160)
+            )
             live.append(entry)
         history = store.list_sessions(limit=100)
         return _json_ok({"live": live, "history": history})
@@ -301,7 +319,6 @@ def build_dashboard_asgi_app(runtime: Runtime) -> Starlette:
     if allowed_cidrs:
         app.add_middleware(_ClientCheckMiddleware, peer_allowed=_peer_allowed)
     return app
-
 
 def _key_public(key: dict[str, Any]) -> dict[str, Any]:
     return {

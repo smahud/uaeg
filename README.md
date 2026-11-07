@@ -28,14 +28,18 @@ native capabilities of the server, up to and including root.
 - Native execution on the real host — not a simulated filesystem or cloud sandbox (FR-007).
 - Full root control for authenticated agents, by design (FR-010, FR-013).
 - Remote MCP over Streamable HTTPS with bearer-key authentication; multiple independent
-  keys with immediate revocation (FR-004, FR-005, FR-011, FR-012).
-- Background jobs that survive client disconnects and reboots with honest state reporting
-  (FR-009).
+  keys with immediate revocation — revoking a key also terminates that key's live
+  sessions and background jobs (FR-004, FR-005, FR-011, FR-012).
+- Background jobs that survive client disconnects and service restarts with honest
+  state reporting across reboots (interrupted, never falsely running) (FR-009).
 - Interactive persistent terminals (real PTYs) with input, resize, and reconnection (FR-008).
 - LAN/loopback dashboard for key management, live sessions, audit logs, and server status
-  (FR-015, FR-016).
-- One systemd service, one SQLite database, three runtime dependencies (FR-019).
-- Guided installer with an integrity-verified one-line option (FR-001, FR-002).
+  (FR-015, FR-016); command text and output previews are secret-redacted in the audit trail.
+- One systemd service, one SQLite database, three runtime dependencies (FR-019). Fail-closed
+  startup: a broken listener, config, certificate or database stops the whole service with a
+  clear error instead of running half-alive.
+- Guided installer with an integrity-verified one-line option (FR-001, FR-002); upgrades
+  preserve operator configuration and roll back automatically on failure.
 
 ## Architecture
 
@@ -130,12 +134,12 @@ Parameter-level reference with worked examples: [docs/USAGE.md](docs/USAGE.md).
 | `uaeg init` | Write a default config file (advanced/manual setups) |
 | `uaeg generate` | Create an agent key; the secret is printed exactly once |
 | `uaeg keys list` | List keys: ID, name, prefix, status, permissions, created, last used |
-| `uaeg keys revoke <KEY_ID>` | Revoke a key (takes effect immediately) |
+| `uaeg keys revoke <KEY_ID>` | Revoke a key (immediate) and terminate its live sessions/jobs; `--keep-processes` opts out |
 | `uaeg keys rotate <KEY_ID>` | Issue a replacement secret for a key |
-| `uaeg jobs list` / `status` / `output` / `cancel` | Inspect and control background jobs |
-| `uaeg sessions list` / `kill` | Inspect and terminate PTY sessions |
+| `uaeg jobs list` / `status` / `output` / `cancel` | Inspect and control background jobs (cancel = SIGTERM/SIGKILL the process group) |
+| `uaeg sessions list` / `kill` | Inspect recorded sessions and terminate live ones (SIGHUP/SIGKILL) |
 | `uaeg status` | Service state, health check, port listeners, counts |
-| `uaeg doctor` | Full diagnostics: config, data, DB, service, ports, TLS, version |
+| `uaeg doctor` | Full diagnostics: config, data, DB (incl. integrity check), service, ports, TLS (incl. SAN), exec user |
 | `uaeg config show` / `get` / `set` | Read and change configuration |
 | `uaeg version` | Print the version |
 
@@ -176,4 +180,4 @@ soft restrictions are advisory, and the dashboard trusts the network. Before dep
 
 ## License
 
-MIT — see [LICENSE](LICENSE). UAEG is experimental software (v0.1.0); treat it accordingly.
+MIT — see [LICENSE](LICENSE). UAEG is experimental software (v0.2.0); treat it accordingly.

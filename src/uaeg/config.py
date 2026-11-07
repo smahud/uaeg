@@ -8,6 +8,7 @@ the dashboard Permissions section and ``uaeg config set`` mutate it.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 from dataclasses import asdict, dataclass, field, replace
@@ -84,16 +85,18 @@ class Config:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Config":
         cfg = cls()
-        cfg.public_host = str(data.get("public_host", cfg.public_host))
-        cfg.mcp = McpConfig(**{**asdict(cfg.mcp), **_sub(data, "mcp")})
-        cfg.dashboard = DashboardConfig(
-            **{**asdict(cfg.dashboard), **_sub(data, "dashboard")}
-        )
-        cfg.tls = TlsConfig(**{**asdict(cfg.tls), **_sub(data, "tls")})
-        cfg.exec = ExecConfig(**{**asdict(cfg.exec), **_sub(data, "exec")})
-        cfg.network = NetworkConfig(
-            **{**asdict(cfg.network), **_sub(data, "network")}
-        )
+        try:
+            cfg.public_host = str(data.get("public_host", cfg.public_host))
+            cfg.mcp = _merge_section(McpConfig, data, "mcp")
+            cfg.dashboard = _merge_section(DashboardConfig, data, "dashboard")
+            cfg.tls = _merge_section(TlsConfig, data, "tls")
+            cfg.exec = _merge_section(ExecConfig, data, "exec")
+            cfg.network = _merge_section(NetworkConfig, data, "network")
+        except TypeError as exc:
+            raise ConfigError(
+                f"configuration contains an unknown or mistyped field: {exc}. "
+                "Remove fields that do not belong to this UAEG version."
+            ) from exc
         return cfg
 
     def save(self, path: Path | str | None = None) -> None:
@@ -110,10 +113,10 @@ class Config:
             pass
 
     @classmethod
-    def load(cls, path: Path | None = None) -> "Config":
+    def load(cls, path: Path | str | None = None) -> "Config":
         from . import paths
 
-        target = path or paths.config_path()
+        target = Path(path) if path is not None else paths.config_path()
         if not target.exists():
             raise ConfigError(
                 f"Configuration file not found: {target}\n"
@@ -141,7 +144,12 @@ class Config:
         warnings: list[str] = []
 
         def _port_ok(value: Any) -> bool:
-            return isinstance(value, int) and 1 <= value <= 65535
+            # bool is an int subclass in Python; True must not pass as port 1.
+            return (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and 1 <= value <= 65535
+            )
 
         if not _port_ok(self.mcp.port):
             raise ConfigError(f"mcp.port must be an integer in 1..65535 (got {self.mcp.port!r})")
@@ -200,6 +208,30 @@ class Config:
                 "this certificate. Use a domain + Let's Encrypt (certbot) or "
                 "provide trusted certificates for real agent connections."
             )
+
+        # Dashboard CIDR allowlist: an unparseable entry must never silently
+        # weaken the access control (audit finding: if every entry fails to
+        # parse, the allowlist used to disappear entirely - fail closed
+        # instead, at configuration load time).
+        cidrs = self.network.allowed_dashboard_cidrs
+        if cidrs is not None:
+            if not isinstance(cidrs, list) or not all(
+                isinstance(c, str) for c in cidrs
+            ):
+                raise ConfigError(
+                    "network.allowed_dashboard_cidrs must be a list of CIDR "
+                    "strings (e.g. [\"192.168.1.0/24\"], or null to disable)"
+                )
+            bad = [c for c in cidrs if not _valid_cidr(c)]
+            if bad:
+                raise ConfigError(
+                    "network.allowed_dashboard_cidrs contains invalid CIDR "
+                    "entries: "
+                    + ", ".join(repr(c) for c in bad)
+                    + ". Refusing to start: an unparseable dashboard allowlist "
+                    "must not silently disable access control. Fix or remove "
+                    "the entries, or set the value to null."
+                )
         return warnings
 
     def mcp_url(self) -> str:
@@ -212,3 +244,17 @@ class Config:
 def _sub(data: dict[str, Any], key: str) -> dict[str, Any]:
     value = data.get(key, {})
     return value if isinstance(value, dict) else {}
+
+
+def _merge_section(section_cls: type, data: dict[str, Any], key: str):
+    """Construct a config section from defaults + the file's overrides."""
+    defaults = asdict(section_cls())
+    return section_cls(**{**defaults, **_sub(data, key)})
+
+
+def _valid_cidr(raw: str) -> bool:
+    try:
+        ipaddress.ip_network(raw, strict=False)
+        return True
+    except ValueError:
+        return False
