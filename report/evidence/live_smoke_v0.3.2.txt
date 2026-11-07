@@ -1,0 +1,23 @@
+config written
+key generated: uaeg_jTTP-uV... (disposable)
+1) healthz            : {"status":"ok","service":"UAEG","version":"0.3.2","uptime_seconds":0.4}
+2) initialize         : serverInfo="serverInfo" session=e1da54bb79...
+3) server_info        : version=0.3.2
+4) shell_exec         : LIVE-SMOKE-OK-42
+5) shell_open         : session=2a44041679ce...
+   pty output         : PTY-OK-9
+   pty resize/close   : resize=ok close=True
+   shell_sessions     : count=0
+6) job submit         : job_id=job-b717346e26d5...
+   job_status         : status=running
+   job_list           : count=1
+   job_cancel         : status=cancelled
+   job_status after   : status=cancelled (harus bukan running)
+   job_output         : status=cancelled
+   job_wait           : ok=True
+7) unauth MCP         : HTTP 401 (harus 401)
+8) bad key MCP        : HTTP 401 (harus 401)
+9) no-session tools   : Missing session ID
+10) dash unauth API   : HTTP 200 (loopback tanpa password: info-page by design)
+11) version           : uaeg 0.3.2
+LIVE SMOKE DONE

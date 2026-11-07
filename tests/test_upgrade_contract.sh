@@ -247,9 +247,11 @@ git -C "$WORK" push -q origin main --tags
 # contract v2 requires it to survive byte-for-byte untouched
 git -C "$WORK" -c user.email=ci@test -c user.name=ci commit -q --allow-empty -m "local operator wip"
 OP_HEAD_BEFORE="$(git -C "$WORK" rev-parse HEAD)"
-OP_STATUS_BEFORE="$(git -C "$WORK" status --porcelain)"
 patch_installsh "$WORK/install.sh" > "$WORK/install-test.sh"
 patch_upgradesh "$WORK/upgrade.sh" > "$WORK/upgrade-test.sh"
+# capture AFTER the harness scripts exist, so the comparison isolates what
+# the UPGRADE itself does to the tree
+OP_STATUS_BEFORE="$(git -C "$WORK" status --porcelain)"
 run "$LOG" bash "$WORK/upgrade-test.sh" "${UPGRADE_ARGS[@]}" --installer "$WORK/install-test.sh"
 assert_rc 0 "T-13 remote upgrade rc=0"
 assert_eq "$(installed_version)" "7.7.7" "T-13 versi sekarang 7.7.7"
