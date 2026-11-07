@@ -1,0 +1,118 @@
+==============================================================
+ UAEG safe-upgrade contract test suite
+ repo: /home/z/my-project/uaeg (v0.3.1)   base: /tmp/uaeg-upgtest.XXXX
+==============================================================
+
+[1;36m[20:36:24][0m T-01: fresh install via (patched) install.sh — isolated dirs
+  [1;32mPASS[0m T-01 installer selesai (rc)
+  [1;32mPASS[0m T-01 marker instalasi ada
+  [1;32mPASS[0m T-01 versi terpasang == 0.3.1
+
+[1;36m[20:36:32][0m T-02: dua agent key + perubahan config oleh operator
+  [1;32mPASS[0m T-02 ada 2 kunci agent
+  [1;32mPASS[0m T-02 operator mengubah dashboard.port -> 3954
+
+[1;36m[20:36:33][0m T-03: upgrade.sh --check mendeteksi instalasi (U-2, U-10)
+  [1;32mPASS[0m T-03 --check rc=0
+  [1;32mPASS[0m T-03 menampilkan install dir
+  [1;32mPASS[0m T-03 menampilkan versi terpasang
+  [1;32mPASS[0m T-03 menampilkan data dir
+  [1;32mPASS[0m T-03 status terdeteksi
+
+[1;36m[20:36:34][0m T-04: --dry-run menampilkan rencana tanpa perubahan (U-11)
+  [1;32mPASS[0m T-04 dry-run rc=0
+  [1;32mPASS[0m T-04 menampilkan rencana
+  [1;32mPASS[0m T-04 menyatakan tidak ada perubahan
+  [1;32mPASS[0m T-04 tidak membuat backup
+
+[1;36m[20:36:34][0m T-GUARD: dashboard publik tanpa password -> upgrade ditolak (U-8)
+  [1;32mPASS[0m T-GUARD rc=1 (ditolak)
+  [1;32mPASS[0m T-GUARD pesan mengarah ke 'sudo uaeg pass'
+  [1;32mPASS[0m T-GUARD tidak membuat backup (belum ada yang berubah)
+  [1;32mPASS[0m T-GUARD versi tidak berubah
+
+[1;36m[20:36:34][0m T-13: git-mode upgrade ke tag terbaru (7.7.7) dari remote lokal (U-1, U-2, U-12)
+  [1;32mPASS[0m T-13 git-mode upgrade rc=0
+  [1;32mPASS[0m T-13 versi sekarang 7.7.7
+  [1;32mPASS[0m T-13 clone sumber berada di tag v7.7.7
+  [1;32mPASS[0m T-13 kunci agent identik
+  [1;32mPASS[0m T-13 RECORD to_version=7.7.7
+  [1;32mPASS[0m T-13 RECORD result=success
+
+[1;36m[20:36:40][0m T-14: git tree kotor -> ditolak exit 4 (U-12)
+  [1;32mPASS[0m T-14 rc=4 (tree kotor)
+  [1;32mPASS[0m T-14 pesan tree kotor
+  [1;32mPASS[0m T-14 versi tidak berubah
+
+[1;36m[20:36:41][0m T-05: upgrade --source 9.9.9 — zero data loss + bukti (U-1, U-3, U-4, U-8)
+  [1;32mPASS[0m T-05 upgrade rc=0
+  [1;32mPASS[0m T-05 versi sekarang 9.9.9
+  [1;32mPASS[0m T-05 kunci agent identik (key_id+status)
+  [1;32mPASS[0m T-05 integritas DB ok
+  [1;32mPASS[0m T-05 config operator dipertahankan (port 3954)
+  [1;32mPASS[0m T-05 RECORD.json ada
+  [1;32mPASS[0m T-05 before-state.json ada (bukti audit)
+  [1;32mPASS[0m T-05 after-state.json ada (bukti audit)
+  [1;32mPASS[0m T-05 install.log ada
+  [1;32mPASS[0m T-05 backup DB konsisten ada
+  [1;32mPASS[0m T-05 backup app/ dihapus setelah sukses terverifikasi
+  [1;32mPASS[0m T-05 RECORD from_version=7.7.7
+  [1;32mPASS[0m T-05 RECORD to_version=9.9.9
+  [1;32mPASS[0m T-05 RECORD result=success
+  [1;32mPASS[0m T-05 RECORD verification=all-checks-passed
+
+[1;36m[20:36:47][0m T-06: idempoten — jalankan ulang, aman (U-7)
+  [1;32mPASS[0m T-06 re-run rc=0
+  [1;32mPASS[0m T-06 versi tetap 9.9.9
+  [1;32mPASS[0m T-06 kunci tetap identik
+  [1;32mPASS[0m T-06 backup ketiga dibuat (T-13+T-05+T-06 = 3 direktori)
+
+[1;36m[20:36:53][0m T-07: bukti smoke test / healthz tercatat (U-4)
+  [1;32mPASS[0m T-07 smoke-serve.log ada
+  [1;32mPASS[0m T-07 output menyebut smoke test
+
+[1;36m[20:36:53][0m T-08: release rusak -> rollback OTOMATIS, exit 2 (U-5)
+  [1;32mPASS[0m T-08 rc=2 (gagal -> sudah di-rollback)
+  [1;32mPASS[0m T-08 aplikasi kembali ke 9.9.9 (berfungsi)
+  [1;32mPASS[0m T-08 kunci agent tetap utuh
+  [1;32mPASS[0m T-08 integritas DB ok
+  [1;32mPASS[0m T-08 config tetap 3954
+  [1;32mPASS[0m T-08 RECORD result=rolled-back
+  [1;32mPASS[0m T-08 rollback diverifikasi ulang (app lama hidup)
+  [1;32mPASS[0m T-08 backup app/ dipertahankan untuk pemulihan manual
+
+[1;36m[20:37:24][0m T-09: rollback manual memulihkan data pra-upgrade (U-6)
+  [1;32mPASS[0m T-09 kunci ketiga dibuat (3 kunci)
+  [1;32mPASS[0m T-09 --rollback rc=0
+  [1;32mPASS[0m T-09 data kembali ke 2 kunci pra-backup
+  [1;32mPASS[0m T-09 config tetap konsisten
+  [1;32mPASS[0m T-09 event manual-rollback tercatat di RECORD
+
+[1;36m[20:37:25][0m T-10: tanpa instalasi -> menolak, exit 3 (U-2)
+  [1;32mPASS[0m T-10 rc=3 (tidak terinstal)
+
+[1;36m[20:37:26][0m T-11: rahasia tidak pernah bocor ke log/record (U-9)
+  [1;32mPASS[0m T-11 secret key tidak muncul di log/RECORD manapun
+  [1;32mPASS[0m T-11 state JSON tidak memuat verifier
+
+[1;36m[20:37:26][0m T-12: retensi backup --keep-backups (U-7)
+  [1;32mPASS[0m T-12 upgrade dengan keep=1 rc=0
+  [1;32mPASS[0m T-12 hanya 1 backup tersisa
+
+[1;36m[20:37:31][0m T-16: downgrade diam-diam -> ditolak exit 5 (U-12)
+  [1;32mPASS[0m T-16 rc=5 (downgrade ditolak)
+  [1;32mPASS[0m T-16 pesan downgrade
+  [1;32mPASS[0m T-16 versi tidak berubah
+  [1;32mPASS[0m T-16 tidak ada backup baru
+
+[1;36m[20:37:32][0m T-15: skrip standalone (tanpa repo) — dry-run menemukan target (U-2, U-11)
+  [1;32mPASS[0m T-15 standalone dry-run rc=0
+  [1;32mPASS[0m T-15 menemukan target v7.7.7 via ls-remote
+  [1;32mPASS[0m T-15 tidak membuat backup
+
+==============================================================
+ HASIL: [1;32m73 PASS[0m / [1;31m0 FAIL[0m
+==============================================================
+
+[suite selesai rc=0 | base=/tmp/uaeg-upgtest.XXXX]
+SUITE_RC=0
