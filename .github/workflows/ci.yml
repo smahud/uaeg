@@ -41,6 +41,20 @@ jobs:
       - name: Run end-to-end dashboard auth tests (login, HTTPS, public bind)
         run: python -m pytest tests/test_e2e_dashboard_auth.py tests/test_e2e_hardening.py -v
 
+  upgrade-contract:
+    name: Safe-upgrade contract tests (upgrade.sh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run the upgrade contract suite (isolated dirs, no root/systemd)
+        run: bash tests/test_upgrade_contract.sh
+
   installer:
     name: Install script smoke (no-service mode)
     runs-on: ubuntu-latest

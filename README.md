@@ -44,8 +44,9 @@ native capabilities of the server, up to and including root.
 - One systemd service, one SQLite database, three runtime dependencies (FR-019). Fail-closed
   startup: a broken listener, config, certificate or database stops the whole service with a
   clear error instead of running half-alive.
-- Guided installer with an integrity-verified one-line option (FR-001, FR-002); upgrades
-  preserve operator configuration and roll back automatically on failure.
+- Guided installer with an integrity-verified one-line option (FR-001, FR-002); safe upgrades via
+  `sudo bash upgrade.sh` — auto-detected, backed up, verified, and rolled back automatically on
+  failure under the [upgrade contract](docs/UPGRADE_CONTRACT.md).
 
 ## Architecture
 
@@ -100,6 +101,14 @@ Verify from the VPS:
 ```bash
 sudo uaeg status
 sudo uaeg doctor
+```
+
+Upgrading an existing installation later is one command — it auto-detects the install, backs
+up data + config, verifies zero data loss afterwards, and rolls back automatically if anything
+fails (see the [safe-upgrade contract](docs/UPGRADE_CONTRACT.md)):
+
+```bash
+sudo bash upgrade.sh          # or first: sudo bash upgrade.sh --check / --dry-run
 ```
 
 The first tool an agent should call is `server_info`, which reports the execution context and

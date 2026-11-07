@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "uaeg"
-version = "0.3.0"
+version = "0.3.1"
 description = "UAEG - Universal Agent Execution Gateway: MCP-over-HTTPS bridge from hosted AI agents to full native execution on a Linux VPS"
 readme = "README.md"
 license = "MIT"

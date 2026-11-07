@@ -8,6 +8,27 @@ Runbook ini mengeksekusi master prompt P0 Anda langkah demi langkah, di VPS yang
 
 ---
 
+## Upgrade selanjutnya (v0.3.1+): SATU PERINTAH
+
+Runbook manual di bawah ini adalah prosedur v0.3.0 yang lama. Sejak v0.3.1,
+seluruh proses di halaman ini (backup, catat identitas, deploy, verifikasi
+zero-data-loss, rollback) sudah diotomatisasi oleh `upgrade.sh` dan dijamin
+oleh [kontrak upgrade aman](../docs/UPGRADE_CONTRACT.md). Untuk upgrade
+berikutnya cukup:
+
+```bash
+cd /opt/uaeg-src        # klon repo operator di VPS
+sudo git pull           # ambil upgrade.sh (hanya perlu sekali)
+sudo bash upgrade.sh    # deteksi otomatis -> backup -> upgrade -> verifikasi
+```
+
+Lihat dulu tanpa risiko: `sudo bash upgrade.sh --check` (status) atau
+`--dry-run` (rencana). Rollback kapan pun: `sudo bash upgrade.sh --rollback`.
+Bukti verifikasi tersimpan di `/var/backups/uaeg/upgrade-<ts>/RECORD.json`.
+
+---
+
+
 ## Pra-deployment (wajib, 5 menit)
 
 ```bash

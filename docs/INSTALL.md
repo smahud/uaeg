@@ -154,37 +154,71 @@ the new certificate is loaded.
 
 ## Upgrading
 
-State lives outside the install directory, so upgrades do not touch keys, jobs, or logs
-(FR-019). `/opt/uaeg` is a plain copy of the source (no `.git`), so upgrade by re-running
-the installer from a fresh checkout — it detects the existing installation and refreshes
-it in place:
+Since v0.3.1 upgrading is **one command**, governed by the
+[safe-upgrade contract](./UPGRADE_CONTRACT.md): automatic installation
+detection, a consistent pre-upgrade backup (database, config, keys metadata,
+TLS material, the app itself), in-place upgrade with the existing
+configuration preserved, post-upgrade zero-data-loss verification, and
+automatic rollback to the pre-upgrade state if anything fails.
+
+From the operator's git checkout on the VPS:
 
 ```bash
-cd "$(mktemp -d)"
-git clone https://github.com/smahud/uaeg.git .
-sudo ./install.sh                            # existing configuration is preserved
-uaeg version        # confirm the new version
-uaeg doctor         # confirm health
+cd /path/to/uaeg-checkout
+sudo git pull            # get upgrade.sh itself (first time only)
+sudo bash upgrade.sh
 ```
 
-Since 0.2.0 the upgrade path preserves configuration and protects itself (FR-003):
+Or without a checkout — download the script, verify its checksum, run it
+(it clones the target release by itself):
 
-- **Configuration is preserved.** Only values explicitly passed as flags on this
-  invocation (`--port`, `--dashboard-port`, `--dashboard-bind`, `--domain`, `--public-ip`,
-  `--cert`/`--key`, `--self-signed`) are applied; everything set via `uaeg config set` or
-  the dashboard survives. A timestamped backup `config.json.bak-<ts>` is still written
-  next to the config.
-- **Automatic rollback.** The current application directory is backed up to
-  `/opt/uaeg.upgrade-bak-<ts>` before anything is replaced. If any step fails — including
-  the post-install health check — the installer restores the previous application files
-  and configuration and restarts the previous service; on success the rollback backup is
-  removed.
-- **Effective health check.** The health check uses the effective port/public host from
-  the (possibly preserved) configuration, not the installer defaults, so customized
-  installs verify correctly.
-- **Changing the host or TLS mode on an upgrade** requires passing the TLS flags
-  (`--domain`, or `--cert`/`--key`, or `--self-signed`); without TLS flags the existing
-  TLS configuration is kept.
+```bash
+curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh
+curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh.sha256
+sha256sum -c upgrade.sh.sha256
+sudo bash upgrade.sh
+```
+
+Useful modes (all safe to run at any time):
+
+| Command | What it does |
+|---------|--------------|
+| `sudo bash upgrade.sh --check` | Read-only status: install, version, service, keys, backups, available target |
+| `sudo bash upgrade.sh --dry-run` | Show the full plan (from → to, backup, downtime) without changing anything |
+| `sudo bash upgrade.sh --rollback` | Restore data + config (and app, if retained) from the latest backup |
+| `sudo bash upgrade.sh --version X.Y.Z` | Upgrade to a specific release tag |
+| `sudo bash upgrade.sh --source DIR` | Upgrade from a local source tree (offline) |
+| `sudo bash upgrade.sh --allow-downgrade` | Explicitly permit a downgrade |
+
+What the upgrade guarantees (details and enforcement in
+[UPGRADE_CONTRACT.md](./UPGRADE_CONTRACT.md)):
+
+- **Zero data loss.** Agent keys, jobs, sessions, audit logs and the
+  dashboard password are never touched; the database is backed up through
+  SQLite's online backup API (a transactionally consistent snapshot) before
+  anything changes, and after the upgrade the script *proves* the keys are
+  identical, the DB passes `quick_check`, row counts did not decrease and
+  the effective configuration is unchanged — evidence is written to
+  `RECORD.json` + `before/after-state.json` in the backup directory
+  (`/var/backups/uaeg/upgrade-<ts>/`).
+- **Automatic rollback.** Any failure (installer error, failed health check,
+  failed verification, Ctrl+C) restores the pre-upgrade app, data and
+  configuration, restarts the service and exits with code `2`.
+- **Non-disruptive.** No bind/TLS/port flags are ever applied during an
+  upgrade; the existing configuration wins (FR-003). MCP agent keys and
+  connections stay valid; the only impact is one controlled service restart
+  (±15–60 s downtime).
+- **No secrets in logs.** The script never creates, prints or stores
+  passwords; `uaeg pass` stays interactive-only. Verifier hashes never
+  appear in logs or records; backups stay on the VPS with `0700`
+  permissions and are never committed to the repository.
+
+Exit codes: `0` ok · `1` refused/failed · `2` failed and rolled back ·
+`3` no installation found · `4` dirty git tree · `5` downgrade refused.
+
+The old manual procedure (re-run `install.sh` from a fresh checkout) still
+works — `upgrade.sh` uses it internally in upgrade mode — but it performs
+none of the backup/verification steps above, so prefer `upgrade.sh`.
 
 ## Uninstall
 
