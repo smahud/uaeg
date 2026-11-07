@@ -8,14 +8,16 @@
 # the root-check is disabled and apt is skipped. Everything else — backup,
 # upgrade, verification, rollback — runs exactly as on the VPS.
 #
-# Contract matrix (docs/UPGRADE_CONTRACT.md):
+# Contract matrix (docs/UPGRADE_CONTRACT.md, contract v2):
 #   T-01     fresh install (prerequisite)
 #   T-02     keys + operator config changes (prerequisite)
 #   T-03     --check detects installation, version, paths       (U-2, U-10)
 #   T-04     --dry-run shows plan, changes nothing              (U-11)
 #   T-GUARD  public dashboard without password -> refuse        (U-8)
-#   T-13     git-mode upgrade to latest tag (7.7.7)             (U-1, U-2, U-12)
-#   T-14     dirty git tree -> refuse (exit 4)                  (U-12)
+#   T-13     remote upgrade to latest tag (7.7.7) via staging   (U-1, U-2, U-12)
+#             - operator clone HEAD/branch/status NOT modified
+#   T-14     dirty git tree -> upgrade STILL safe, tree preserved (U-12 v2:
+#             operator trees are never read or mutated)
 #   T-05     --source upgrade: zero data loss + evidence        (U-1, U-3, U-4, U-8)
 #   T-06     idempotent re-run                                   (U-7)
 #   T-07     smoke-test evidence in RECORD/log                   (U-4)
@@ -26,6 +28,12 @@
 #   T-12     backup retention --keep-backups                     (U-7)
 #   T-16     silent downgrade -> refuse (exit 5)                (U-12)
 #   T-15     standalone script: dry-run resolves target         (U-2, U-11)
+#   T-17     INCIDENT v0.3.1 regression: downloaded upgrade.sh inside
+#             the operator clone (untracked, collides with the target
+#             tag) -> upgrade must SUCCEED, tree untouched        (U-12 v2)
+#   T-18     missing tag -> accurate message (never misreported
+#             as a fetch/clone failure)                          (U-2, U-10)
+#   T-19     standalone script (no local repo): FULL upgrade     (U-1, U-2)
 #
 set -uo pipefail
 
@@ -223,7 +231,7 @@ json.dump(cfg, open(p, 'w'), indent=2)
 assert_eq "$(installed_version)" "$REPO_VERSION" "T-GUARD versi tidak berubah"
 
 # ----------------------------------------------------------------------
-t "T-13: git-mode upgrade ke tag terbaru (7.7.7) dari remote lokal (U-1, U-2, U-12)"
+t "T-13: remote upgrade ke tag terbaru (7.7.7) via staging terisolasi (U-1, U-2, U-12)"
 # ----------------------------------------------------------------------
 WORK="$BASE/work"; REMOTE="$BASE/remote.git"
 git init --bare -q "$REMOTE"
@@ -234,24 +242,38 @@ sed -i 's/^__version__[[:space:]]*=[[:space:]]*".*"/__version__ = "7.7.7"/' "$WO
 git -C "$WORK" -c user.email=ci@test -c user.name=ci commit -qam "test: bump 7.7.7"
 git -C "$WORK" tag v7.7.7
 git -C "$WORK" push -q origin main --tags
+# the operator keeps a LOCAL (unpushed) commit on top of the tag: with the
+# v0.3.1 design this was the tree upgrade.sh would check out / refuse on;
+# contract v2 requires it to survive byte-for-byte untouched
+git -C "$WORK" -c user.email=ci@test -c user.name=ci commit -q --allow-empty -m "local operator wip"
+OP_HEAD_BEFORE="$(git -C "$WORK" rev-parse HEAD)"
+OP_STATUS_BEFORE="$(git -C "$WORK" status --porcelain)"
 patch_installsh "$WORK/install.sh" > "$WORK/install-test.sh"
 patch_upgradesh "$WORK/upgrade.sh" > "$WORK/upgrade-test.sh"
 run "$LOG" bash "$WORK/upgrade-test.sh" "${UPGRADE_ARGS[@]}" --installer "$WORK/install-test.sh"
-assert_rc 0 "T-13 git-mode upgrade rc=0"
+assert_rc 0 "T-13 remote upgrade rc=0"
 assert_eq "$(installed_version)" "7.7.7" "T-13 versi sekarang 7.7.7"
-assert_eq "$(git -C "$WORK" describe --tags)" "v7.7.7" "T-13 clone sumber berada di tag v7.7.7"
+assert_eq "$(git -C "$WORK" rev-parse HEAD)" "$OP_HEAD_BEFORE" "T-13 clone operator TIDAK diubah (HEAD identik)"
+assert_eq "$(git -C "$WORK" rev-parse --abbrev-ref HEAD)" "main" "T-13 clone operator tetap di branch main (bukan detached)"
+assert_eq "$(git -C "$WORK" status --porcelain)" "$OP_STATUS_BEFORE" "T-13 status clone operator identik (tidak ada perubahan baru)"
+assert_in "$LOG" "staging terisolasi" "T-13 sumber dari staging terisolasi"
+assert_in "$LOG" "TIDAK disentuh" "T-13 script menyatakan clone operator tidak disentuh"
 assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-13 kunci agent identik"
 assert_eq "$(latest_record to_version)" "7.7.7" "T-13 RECORD to_version=7.7.7"
 assert_eq "$(latest_record result)" "success" "T-13 RECORD result=success"
+assert_eq "$(latest_record contract_version)" "2" "T-13 RECORD contract_version=2"
 
 # ----------------------------------------------------------------------
-t "T-14: git tree kotor -> ditolak exit 4 (U-12)"
+t "T-14: git tree kotor -> TETAP aman; tree dipertahankan (U-12 kontrak v2)"
 # ----------------------------------------------------------------------
-echo "local edit" >> "$WORK/README.md"
+# v0.3.1 refused this with exit 4. Contract v2: the operator tree is never
+# read or mutated, so dirty files must not block the upgrade.
+echo "local edit by operator" >> "$WORK/README.md"
 run "$LOG" bash "$WORK/upgrade-test.sh" "${UPGRADE_ARGS[@]}" --installer "$WORK/install-test.sh"
-assert_rc 4 "T-14 rc=4 (tree kotor)"
-assert_in "$LOG" "kotor" "T-14 pesan tree kotor"
-assert_eq "$(installed_version)" "7.7.7" "T-14 versi tidak berubah"
+assert_rc 0 "T-14 rc=0 (tree kotor tidak lagi menghalangi)"
+assert_eq "$(installed_version)" "7.7.7" "T-14 versi tetap 7.7.7 (re-install/repair)"
+assert_in "$WORK/README.md" "local edit by operator" "T-14 perubahan lokal operator dipertahankan"
+assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-14 kunci agent identik"
 git -C "$WORK" checkout -q -- README.md
 
 # ----------------------------------------------------------------------
@@ -286,7 +308,7 @@ run "$LOG" bash "$SRC_NEXT/upgrade-test.sh" "${UPGRADE_ARGS[@]}" \
 assert_rc 0 "T-06 re-run rc=0"
 assert_eq "$(installed_version)" "9.9.9" "T-06 versi tetap 9.9.9"
 assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-06 kunci tetap identik"
-assert_eq "$(backup_count)" "3" "T-06 backup ketiga dibuat (T-13+T-05+T-06 = 3 direktori)"
+assert_eq "$(backup_count)" "4" "T-06 backup keempat dibuat (T-13+T-14+T-05+T-06 = 4 direktori)"
 
 # ----------------------------------------------------------------------
 t "T-07: bukti smoke test / healthz tercatat (U-4)"
@@ -383,6 +405,86 @@ run "$LOG" bash "$STANDALONE/upgrade-test.sh" --dry-run "${UPGRADE_ARGS[@]}" --r
 assert_rc 0 "T-15 standalone dry-run rc=0"
 assert_in "$LOG" "v7.7.7" "T-15 menemukan target v7.7.7 via ls-remote"
 assert_eq "$(backup_count)" "$N_BEFORE" "T-15 tidak membuat backup"
+
+# ----------------------------------------------------------------------
+t "T-17: INSIDEN v0.3.1 — upgrade.sh terunduh DI DALAM clone operator (regresi)"
+# ----------------------------------------------------------------------
+# The exact MicroTix operator scenario: a clone whose local tags are stale,
+# with the release assets downloaded INTO the working tree as untracked
+# files that collide with the target tag's tracked upgrade.sh. The v0.3.1
+# design ran `git checkout <tag>` in that tree, failed on the collision and
+# misreported it as "tag not found". Contract v2 must upgrade successfully
+# while leaving the operator's tree byte-for-byte untouched.
+# ----------------------------------------------------------------------
+INCREMOTE="$BASE/incident-remote.git"
+INCWORK="$BASE/incident-work"
+INC="$BASE/incident"
+mkdir -p "$INC"
+git init --bare -q "$INCREMOTE"
+git clone -q "$REPO_DIR" "$INCWORK"
+git -C "$INCWORK" remote set-url origin "$INCREMOTE"
+sed -i 's/^version[[:space:]]*=[[:space:]]*".*"/version = "10.0.0"/' "$INCWORK/pyproject.toml"
+sed -i 's/^__version__[[:space:]]*=[[:space:]]*".*"/__version__ = "10.0.0"/' "$INCWORK/src/uaeg/__init__.py"
+git -C "$INCWORK" -c user.email=ci@test -c user.name=ci commit -qam "test: bump 10.0.0"
+git -C "$INCWORK" tag v10.0.0
+git -C "$INCWORK" push -q origin main --tags
+patch_installsh "$INCWORK/install.sh" > "$INCWORK/install-test.sh"
+# operator clone at v0.3.0 (the incident state: upgrade.sh did not exist in
+# that tree yet, so the downloaded asset is genuinely UNTRACKED), stale
+# tags, origin = the remote
+git clone -q "$REPO_DIR" "$INC/uaeg"
+git -C "$INC/uaeg" remote set-url origin "$INCREMOTE"
+git -C "$INC/uaeg" checkout -q v0.3.0
+# ...release assets downloaded INTO the working tree (untracked!):
+patch_upgradesh "$REPO_DIR/upgrade.sh" > "$INC/uaeg/upgrade.sh"
+( cd "$INC/uaeg" && sha256sum upgrade.sh > upgrade.sh.sha256 )
+if ( cd "$INC/uaeg" && sha256sum -c upgrade.sh.sha256 >/dev/null 2>&1 ); then
+  ok "T-17 checksum asset terverifikasi"
+else
+  no "T-17 checksum asset gagal"
+fi
+INC_HEAD_BEFORE="$(git -C "$INC/uaeg" rev-parse HEAD)"
+INC_STATUS_BEFORE="$(git -C "$INC/uaeg" status --porcelain)"
+run "$LOG" bash "$INC/uaeg/upgrade.sh" "${UPGRADE_ARGS[@]}" --installer "$INCWORK/install-test.sh"
+assert_rc 0 "T-17 rc=0 (insiden v0.3.1 tidak terulang)"
+assert_eq "$(installed_version)" "10.0.0" "T-17 versi sekarang 10.0.0"
+assert_eq "$(git -C "$INC/uaeg" rev-parse HEAD)" "$INC_HEAD_BEFORE" "T-17 clone operator tidak berubah (HEAD identik)"
+assert_eq "$(git -C "$INC/uaeg" status --porcelain)" "$INC_STATUS_BEFORE" "T-17 file terunduh tetap ada, tidak ada perubahan lain"
+assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-17 kunci agent identik"
+assert_in "$LOG" "TIDAK disentuh" "T-17 script menyatakan clone operator tidak disentuh"
+
+# ----------------------------------------------------------------------
+t "T-18: tag tidak ada -> pesan akurat, bukan misreporting (U-2, U-10)"
+# ----------------------------------------------------------------------
+# The v0.3.1 incident also misclassified failures. A tag that does not
+# exist must be reported as a missing tag - never as a fetch/clone/network
+# failure, and never with the old misleading "tidak ditemukan setelah fetch".
+# ----------------------------------------------------------------------
+N_BEFORE="$(backup_count)"
+run "$LOG" bash "$SRC_NEXT/upgrade-test.sh" "${UPGRADE_ARGS[@]}" \
+  --repo "$INCREMOTE" --installer "$INCWORK/install-test.sh" --version 0.0.42
+assert_rc 1 "T-18 rc=1 (tag tidak ada -> ditolak)"
+assert_in "$LOG" "tidak ditemukan di remote" "T-18 pesan menyebut tag tidak ada di remote"
+if grep -q "tidak ditemukan setelah fetch" "$LOG" 2>/dev/null; then
+  no "T-18 pesan misleading lama (v0.3.1) masih muncul"
+else
+  ok "T-18 pesan misleading lama (v0.3.1) tidak muncul"
+fi
+assert_eq "$(installed_version)" "10.0.0" "T-18 versi tidak berubah"
+assert_eq "$(backup_count)" "$N_BEFORE" "T-18 tidak membuat backup (belum ada yang berubah)"
+
+# ----------------------------------------------------------------------
+t "T-19: skrip standalone (tanpa repo lokal) — upgrade PENUH dari remote (U-1, U-2)"
+# ----------------------------------------------------------------------
+STANDALONE="$BASE/standalone-full"
+mkdir -p "$STANDALONE"
+patch_upgradesh "$REPO_DIR/upgrade.sh" > "$STANDALONE/upgrade.sh"
+run "$LOG" bash "$STANDALONE/upgrade.sh" "${UPGRADE_ARGS[@]}" \
+  --repo "$INCREMOTE" --installer "$INCWORK/install-test.sh"
+assert_rc 0 "T-19 standalone upgrade rc=0"
+assert_eq "$(installed_version)" "10.0.0" "T-19 versi 10.0.0 (re-install dari standalone)"
+assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-19 kunci agent identik"
+assert_in "$LOG" "staging terisolasi" "T-19 sumber dari staging terisolasi"
 
 # ----------------------------------------------------------------------
 echo

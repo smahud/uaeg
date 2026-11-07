@@ -155,27 +155,33 @@ the new certificate is loaded.
 ## Upgrading
 
 Since v0.3.1 upgrading is **one command**, governed by the
-[safe-upgrade contract](./UPGRADE_CONTRACT.md): automatic installation
-detection, a consistent pre-upgrade backup (database, config, keys metadata,
-TLS material, the app itself), in-place upgrade with the existing
-configuration preserved, post-upgrade zero-data-loss verification, and
-automatic rollback to the pre-upgrade state if anything fails.
+[safe-upgrade contract](./UPGRADE_CONTRACT.md) (contract v2 since v0.3.2):
+automatic installation detection, a consistent pre-upgrade backup (database,
+config, keys metadata, TLS material, the app itself), in-place upgrade with
+the existing configuration preserved, post-upgrade zero-data-loss
+verification, and automatic rollback to the pre-upgrade state if anything
+fails.
 
-From the operator's git checkout on the VPS:
+Since v0.3.2 the release source is always fetched into an **isolated staging
+directory** — your git checkout (if any) is never read for content or
+modified, and an untracked `upgrade.sh` downloaded into it cannot block the
+upgrade (this was the v0.3.1 incident). Both flows below are equivalent:
 
-```bash
-cd /path/to/uaeg-checkout
-sudo git pull            # get upgrade.sh itself (first time only)
-sudo bash upgrade.sh
-```
-
-Or without a checkout — download the script, verify its checksum, run it
-(it clones the target release by itself):
+From any directory on the VPS — download the script, verify its checksum,
+run it (it clones the target release by itself):
 
 ```bash
 curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh
 curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh.sha256
 sha256sum -c upgrade.sh.sha256
+sudo bash upgrade.sh
+```
+
+Or from the operator's git checkout (no `git pull` needed — the checkout is
+left untouched):
+
+```bash
+cd /path/to/uaeg-checkout
 sudo bash upgrade.sh
 ```
 

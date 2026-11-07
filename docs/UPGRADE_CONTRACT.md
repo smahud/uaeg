@@ -6,7 +6,8 @@
 > (dijalankan di CI pada setiap push/PR). Perubahan pada `upgrade.sh` yang
 > melanggar salah satu klausul wajib dianggap bug regresi dan harus gagal di CI.
 >
-> Versi kontrak: **1** — berlaku sejak UAEG v0.3.1.
+> Versi kontrak: **2** — berlaku sejak UAEG v0.3.2. (Versi 1 berlaku sejak
+> v0.3.1; lihat “Perubahan kontrak” di bawah.)
 
 ## Ringkasan satu kalimat
 
@@ -17,8 +18,8 @@
 ## Perintah
 
 ```bash
-# di VPS yang sudah terinstal (klon repo operator, mis. /opt/uaeg-src):
-cd /path/ke/klon-uaeg && sudo git pull
+# di VPS yang sudah terinstal — dari dalam klon repo operator ATAUPUN dari
+# direktori mana pun (clone operator Anda TIDAK pernah disentuh):
 sudo bash upgrade.sh
 
 # tanpa klon repo (unduh skrip saja, verifikasi checksum dulu — lihat INSTALL.md):
@@ -32,7 +33,8 @@ sudo bash upgrade.sh --version X.Y.Z --allow-downgrade   # turun versi (eksplisi
 ```
 
 Kode keluar: `0` sukses · `1` error/ditolak · `2` gagal → sudah di-rollback ·
-`3` instalasi tidak ditemukan · `4` git tree kotor · `5` downgrade ditolak.
+`3` instalasi tidak ditemukan · `4` reserved (tidak dipakai sejak kontrak v2) ·
+`5` downgrade ditolak.
 
 ---
 
@@ -165,11 +167,22 @@ selalu tahu apa yang akan terjadi sebelum terjadi.
 Upgrade didukung dari instalasi ≥ v0.2.0 (schema database kompatibel
 mundur; check `schema_version` menolak DB yang lebih baru dari aplikasi).
 Downgrade **ditolak** kecuali eksplisit `--allow-downgrade` (mencegah
-"upgrade" yang tanpa sadar memasang versi lebih lama). Git tree yang kotor
-ditolak (exit 4) agar source yang terpasang selalu bisa direproduksi dari
-commit/tag yang jelas.
+"upgrade" yang tanpa sadar memasang versi lebih lama).
 
-*Ditegakkan oleh:* T-13, T-14.
+**Kontrak v2:** source yang terpasang SELALU diambil dari *staging clone*
+terisolasi (`mktemp`, mode 0700) pada tag/commit immutable yang dicatat di
+`RECORD.json` (`target_ref` + `target_git_sha` + `repo_url`), lalu staging
+dihapus. Clone git operator **tidak pernah dibaca isinya atau diubah** —
+tidak ada fetch-into-clone, checkout, reset, atau clean. Akibatnya: tree
+kotor, file untracked (termasuk `upgrade.sh` yang terunduh ke dalam
+klon), detached HEAD, atau clone shallow **tidak dapat menghalangi
+upgrade** dan tidak pernah dirusak. Kegagalan selalu dilaporkan dengan
+kategori yang akurat (tag tidak ada vs clone/jaringan gagal) — kegagalan
+checkout tidak boleh pernah dilaporkan sebagai "tag tidak ditemukan"
+(insiden v0.3.1; lihat `report/ROOT_CAUSE_ANALYSIS.md`). Exit code `4`
+(versi 1: "git tree kotor") kini reserved.
+
+*Ditegakkan oleh:* T-13, T-14, T-17, T-18, T-19.
 
 ---
 
@@ -190,7 +203,12 @@ commit/tag yang jelas.
 
 Setelah upgrade **sukses terverifikasi**, `app/` dihapus dari backup
 (menghemat disk; data + config tetap tersedia untuk `--rollback`).
-Retensi default 5 backup terbaru (`--keep-backups N`).
+Pemulihan APLIKASI dari backup yang `app/`-nya sudah dihapus dilakukan
+dengan: `install.sh` dari tag `v<from_version>` yang immutable (versi
+tersebut tercatat di `RECORD.json` backup) + `--rollback` untuk data &
+config; `--rollback` mencetak petunjuk pemulihan ini saat `app/` tidak
+tersimpan. Retensi default 5 backup terbaru (`--keep-backups N`, minimum
+efektif 1 — retensi tidak pernah menghapus satu-satunya recovery point).
 
 ## Batasan yang disadari (bukan pelanggaran kontrak)
 
@@ -206,3 +224,18 @@ Retensi default 5 backup terbaru (`--keep-backups N`).
 Kontrak ini berversi (`contract_version` di `RECORD.json`). Perubahan klausul
 harus: (1) menaikkan versi kontrak, (2) memperbarui test suite di commit yang
 sama, (3) dicatat di `report/`.
+
+### v2 (UAEG v0.3.2)
+
+- **U-12 dirumuskan ulang** setelah insiden upgrade v0.3.1 di VPS MicroTix
+  (`git checkout <tag>` di dalam klon operator bertabrakan dengan
+  `upgrade.sh` untracked yang terunduh, dan kegagalan itu dikelirukan sebagai
+  "tag tidak ditemukan"). Source rilis kini selalu di-*stage* di direktori
+  terisolasi; klon operator tidak pernah disentuh; exit 4 menjadi reserved.
+- **U-4 diperketat**: perbandingan "konfigurasi efektif" kini menormalkan
+  kunci yang absen ke nilai bawaan aplikasi (config lama tanpa kunci baru
+  tidak lagi memicu rollback palsu).
+- `--keep-backups` divalidasi (angka) dan di-clamp minimum 1.
+- `RECORD.json` kini mencatat `repo_url` yang benar-benar dipakai.
+
+### v1 (UAEG v0.3.1)

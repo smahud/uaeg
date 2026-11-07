@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
 #
-# UAEG safe-upgrade installer — implements docs/UPGRADE_CONTRACT.md (contract v1).
+# UAEG safe-upgrade installer — implements docs/UPGRADE_CONTRACT.md (contract v2).
 #
 # ONE command is enough: it auto-detects the existing installation (install
 # dir, data dir, config, systemd service), snapshots the pre-upgrade state
-# (consistent SQLite backup + config + app), fetches the target release,
-# runs the in-place upgrade, then VERIFIES zero data loss (keys identical,
-# DB integrity, config preserved, dashboard password intact, service
-# healthy). Any failure rolls the system back to the pre-upgrade state
-# automatically.
+# (consistent SQLite backup + config + app), fetches the target release
+# into an ISOLATED STAGING CLONE, runs the in-place upgrade, then VERIFIES
+# zero data loss (keys identical, DB integrity, config preserved, dashboard
+# password intact, service healthy). Any failure rolls the system back to
+# the pre-upgrade state automatically.
+#
+# CONTRACT v2 (since v0.3.2): the operator's git working tree is NEVER read
+# for content and NEVER mutated — no fetch-into-clone, no checkout, no
+# reset, no clean. The release source is always materialized in a private
+# staging directory (mktemp, mode 0700) and removed afterwards. This fixes
+# the v0.3.1 incident where `git checkout <tag>` inside the operator's
+# clone collided with the downloaded (untracked) upgrade.sh and was
+# misreported as "tag not found" (see report/ROOT_CAUSE_ANALYSIS.md).
 #
 # Usage:
 #   sudo bash upgrade.sh                 # upgrade to the latest release tag
@@ -22,7 +30,7 @@
 #
 # Exit codes:
 #   0 success                 3 no existing installation found
-#   1 error (refused/failed)  4 source git checkout is dirty
+#   1 error (refused/failed)  4 reserved (unused since contract v2)
 #   2 failure -> rolled back  5 downgrade refused (use --allow-downgrade)
 #
 set -euo pipefail
@@ -48,6 +56,8 @@ OPT_MAIN=0
 OPT_SOURCE=""
 OPT_INSTALLER=""
 OPT_REPO="https://github.com/smahud/uaeg.git"
+REPO_GIVEN=0                 # 1 = --repo was passed explicitly
+REPO_URL=""                  # resolved by resolve_repo_url()
 ROLLBACK_TARGET=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -95,7 +105,11 @@ Target selection (upgrade mode):
   --version X.Y.Z        upgrade to release tag vX.Y.Z (default: latest tag)
   --main                 target origin/main instead of a release tag
   --source DIR           upgrade from a local source tree (offline installs)
-  --repo URL             git remote for fetch/clone (default: the public repo)
+  --repo URL             git remote to fetch the release from
+                         (default: the operator clone's origin, else the
+                         public repo). The release source is ALWAYS fetched
+                         into an isolated staging directory - the operator's
+                         git working tree is never read or modified.
 
 Options:
   --installer PATH       installer to invoke (default: <source>/install.sh)
@@ -112,7 +126,8 @@ Options:
   -h, --help             show this help
 
 Exit codes: 0 ok | 1 error | 2 rolled back | 3 not installed |
-            4 dirty git tree | 5 downgrade refused
+            4 reserved (unused: operator git trees are never mutated) |
+            5 downgrade refused
 USAGE
 }
 
@@ -129,7 +144,7 @@ while [[ $# -gt 0 ]]; do
     --main)              OPT_MAIN=1; shift ;;
     --source)            OPT_SOURCE="$2"; shift 2 ;;
     --installer)         OPT_INSTALLER="$2"; shift 2 ;;
-    --repo)              OPT_REPO="$2"; shift 2 ;;
+    --repo)              OPT_REPO="$2"; REPO_GIVEN=1; shift 2 ;;
     --yes|-y)            ASSUME_YES=1; shift ;;
     --allow-downgrade)   ALLOW_DOWNGRADE=1; shift ;;
     --skip-smoke)        SKIP_SMOKE=1; shift ;;
@@ -137,7 +152,8 @@ while [[ $# -gt 0 ]]; do
     --data-dir)          DATA_DIR="$2"; shift 2 ;;
     --config-dir)        CONFIG_DIR="$2"; shift 2 ;;
     --backups-dir)       BACKUPS_DIR="$2"; shift 2 ;;
-    --keep-backups)      KEEP_BACKUPS="$2"; shift 2 ;;
+    --keep-backups)      KEEP_BACKUPS="$2"; [[ "$KEEP_BACKUPS" =~ ^[0-9]+$ ]] \
+                           || die "--keep-backups harus berupa angka >= 0"; shift 2 ;;
     --service-name)      SERVICE_NAME="$2"; shift 2 ;;
     --no-service)        NO_SERVICE=1; shift ;;
     -h|--help)           usage; exit 0 ;;
@@ -323,13 +339,19 @@ if state["config_exists"]:
         raw = open(cfg_path, encoding="utf-8").read()
         state["config_sha256"] = hashlib.sha256(raw.encode()).hexdigest()
         cfg = json.loads(raw)
+        # absent key == application default (mirrors src/uaeg/config.py):
+        # "effective configuration" must not false-positive when a version
+        # adds an explicit default for a key an older config file lacks
+        mcp = cfg.get("mcp") if isinstance(cfg.get("mcp"), dict) else {}
+        dash = cfg.get("dashboard") if isinstance(cfg.get("dashboard"), dict) else {}
+        tls = cfg.get("tls") if isinstance(cfg.get("tls"), dict) else {}
         state["effective"] = {
-            "mcp_port": cfg.get("mcp", {}).get("port"),
-            "dash_port": cfg.get("dashboard", {}).get("port"),
-            "dash_bind": cfg.get("dashboard", {}).get("bind"),
-            "dash_tls": cfg.get("dashboard", {}).get("tls"),
-            "allow_public": cfg.get("dashboard", {}).get("allow_public"),
-            "tls_mode": cfg.get("tls", {}).get("mode"),
+            "mcp_port": mcp.get("port", 3902),
+            "dash_port": dash.get("port", 3903),
+            "dash_bind": dash.get("bind", "127.0.0.1"),
+            "dash_tls": dash.get("tls", False),
+            "allow_public": dash.get("allow_public", False),
+            "tls_mode": tls.get("mode", "self-signed"),
             "public_host": cfg.get("public_host"),
         }
     except (OSError, ValueError) as exc:
@@ -446,12 +468,16 @@ restore_backup() {  # $1 = backup dir; restores data + config (+ app if present)
   svc_restart
 }
 
-prune_backups() {  # keep the newest $KEEP_BACKUPS upgrade dirs
+prune_backups() {  # keep the newest $KEEP_BACKUPS upgrade dirs (always >= 1:
+                   # retention must never remove the only recovery point)
+  local keep="$KEEP_BACKUPS"
+  [[ "$keep" =~ ^[0-9]+$ ]] || keep=5
+  [[ "$keep" -ge 1 ]] || keep=1
   local old
   while IFS= read -r old; do
-    warn "retensi: menghapus backup lama $old (keep=$KEEP_BACKUPS)"
+    warn "retensi: menghapus backup lama $old (keep=$keep)"
     safe_rm "$old"
-  done < <(find "$BACKUP_ROOT" -maxdepth 1 -name 'upgrade-*' -type d 2>/dev/null | sort -r | tail -n +$((KEEP_BACKUPS + 1)))
+  done < <(find "$BACKUP_ROOT" -maxdepth 1 -name 'upgrade-*' -type d 2>/dev/null | sort -r | tail -n +$((keep + 1)))
 }
 
 # ----------------------------------------------------------------------
@@ -516,80 +542,131 @@ pyproject_version() {  # $1 = source dir
 }
 
 # ----------------------------------------------------------------------
-# Target source resolution (contract U-1, U-2)
+# Target source resolution (contract U-1, U-2) — CONTRACT v2:
+# the release source is ALWAYS fetched into an isolated staging clone.
+# The operator's git working tree is never read for content and never
+# mutated (no fetch-into-clone, no checkout, no reset, no clean), so a
+# downloaded upgrade.sh inside the operator's clone can never block an
+# upgrade (v0.3.1 incident — see report/ROOT_CAUSE_ANALYSIS.md).
 # ----------------------------------------------------------------------
-resolve_target_ref() {
-  if [[ -n "$OPT_SOURCE" ]]; then return 0; fi   # --source decides the target, no ref needed
-  if [[ "$MODE" == "dry-run" || "$MODE" == "check" ]] && [[ -d "$SCRIPT_DIR/.git" ]]; then
-    # best effort only (does not touch the working tree)
-    git -C "$SCRIPT_DIR" fetch --tags --quiet origin 2>/dev/null || true
-  fi
-  if [[ -n "$OPT_VERSION" ]]; then
-    TARGET_REF="v${OPT_VERSION#v}"
-  elif [[ $OPT_MAIN -eq 1 ]]; then
-    TARGET_REF="origin/main"
-  else
-    if [[ -d "$SCRIPT_DIR/.git" ]]; then
-      TARGET_REF="$(git -C "$SCRIPT_DIR" tag -l 'v[0-9]*' | sort -V | tail -1)"
+resolve_repo_url() {
+  # precedence: --repo flag > operator clone's origin > public default.
+  # The operator's choice of clone origin is respected (mirrors/forks),
+  # and the URL actually used is always printed and recorded.
+  if [[ $REPO_GIVEN -eq 1 ]]; then
+    REPO_URL="$OPT_REPO"
+  elif [[ -d "$SCRIPT_DIR/.git" ]]; then
+    local u=""
+    u="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || true)" || true
+    if [[ -n "$u" ]]; then
+      REPO_URL="$u"
     else
-      TARGET_REF="$(timeout 20 git ls-remote --tags --refs "$OPT_REPO" 'v*' 2>/dev/null \
-                    | awk -F/ '{print $NF}' | sort -V | tail -1 || true)"
+      REPO_URL="$OPT_REPO"
     fi
-    if [[ -z "$TARGET_REF" ]]; then
-      TARGET_REF="origin/main"
-      warn "tidak ada release tag ditemukan - menggunakan origin/main"
-    fi
+  else
+    REPO_URL="$OPT_REPO"
   fi
 }
 
-materialize_source() {
+resolve_target_ref() {
+  resolve_repo_url
+  if [[ -n "$OPT_SOURCE" ]]; then return 0; fi   # --source decides the target, no ref needed
+  if [[ -n "$OPT_VERSION" ]]; then
+    TARGET_REF="v${OPT_VERSION#v}"
+    return 0
+  fi
+  if [[ $OPT_MAIN -eq 1 ]]; then
+    TARGET_REF="origin/main"
+    return 0
+  fi
+  # Latest tag straight from the REMOTE (network truth, read-only).
+  # Never resolved from the operator's possibly-stale local tags, and no
+  # fetch is performed inside the operator's clone.
+  TARGET_REF="$(timeout 30 git ls-remote --tags --refs "$REPO_URL" 'v*' 2>/dev/null \
+                | awk -F/ '{print $NF}' | sort -V | tail -1 || true)"
+  if [[ -z "$TARGET_REF" && -d "$SCRIPT_DIR/.git" ]]; then
+    # offline fallback: local tags may be stale — say so explicitly
+    TARGET_REF="$(git -C "$SCRIPT_DIR" tag -l 'v[0-9]*' | sort -V | tail -1)"
+    [[ -n "$TARGET_REF" ]] && warn "ls-remote gagal - memakai tag lokal (mungkin kadaluarsa): $TARGET_REF"
+  fi
+  if [[ -z "$TARGET_REF" ]]; then
+    TARGET_REF="origin/main"
+    warn "tidak ada release tag ditemukan - menggunakan origin/main"
+  fi
+}
+
+tag_exists_on_remote() {  # is TARGET_REF present on $REPO_URL?
+  # Distinguishes "tag missing" (operator asked for a wrong version) from
+  # "network/remote failure" so neither is misreported as the other
+  # (the v0.3.1 incident misreported a checkout conflict as a missing tag).
+  local out="" rc=0
+  out="$(timeout 30 git ls-remote --tags --refs "$REPO_URL" 2>/dev/null)" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    die "git ls-remote gagal ke $REPO_URL (offline? remote salah?) - tidak ada yang berubah"
+  fi
+  printf '%s\n' "$out" | awk -v t="refs/tags/$TARGET_REF" '$2==t{f=1} END{exit !f}'
+}
+
+handle_stage_failure() {  # $1 = message, $2 = tolerance ("required"|"best-effort")
+  if [[ -n "$TMP_CLONE" && -d "$TMP_CLONE" ]]; then rm -rf "$TMP_CLONE"; TMP_CLONE=""; fi
+  if [[ "$2" == "best-effort" ]]; then
+    warn "dry-run: $1"
+    return 1
+  fi
+  die "$1"
+}
+
+materialize_source() {  # $1 = "required" | "best-effort" (dry-run tolerance)
+  local tolerance="${1:-required}"
+  resolve_repo_url
+
   if [[ -n "$OPT_SOURCE" ]]; then
     SOURCE_DIR="$OPT_SOURCE"
     [[ -f "$SOURCE_DIR/pyproject.toml" ]] \
       || die "--source tidak valid: pyproject.toml tidak ditemukan di $SOURCE_DIR"
     TARGET_REF="--source"
-  elif [[ -f "$SCRIPT_DIR/pyproject.toml" && -d "$SCRIPT_DIR/.git" ]]; then
-    # git checkout mode: upgrade.sh lives inside the operator's clone
-    if [[ -n "$(git -C "$SCRIPT_DIR" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
-      die "working tree di $SCRIPT_DIR kotor (ada perubahan yang belum di-commit).
-Commit atau stash perubahan Anda dulu, lalu jalankan ulang upgrade.sh.
-(alternatif: sudo bash upgrade.sh --source DIR dari tree yang bersih)" 4
-    fi
-    say "mengambil update terbaru dari origin ($OPT_REPO)"
-    git -C "$SCRIPT_DIR" fetch --tags --quiet origin \
-      || die "git fetch gagal (offline?). Gunakan: sudo bash upgrade.sh --source <dir-source-baru>"
-
-    # re-resolve the default target now that tags are fresh (the local
-    # tags were possibly stale when resolve_target_ref first ran)
-    if [[ -z "$OPT_VERSION" && $OPT_MAIN -eq 0 ]]; then
-      TARGET_REF="$(git -C "$SCRIPT_DIR" tag -l 'v[0-9]*' | sort -V | tail -1)"
-      [[ -n "$TARGET_REF" ]] || TARGET_REF="origin/main"
-      say "target rilis terbaru: $TARGET_REF"
-    fi
-
-    if [[ "$TARGET_REF" == "origin/main" ]] \
-       && [[ "$(git -C "$SCRIPT_DIR" branch --show-current)" == "main" ]]; then
-      git -C "$SCRIPT_DIR" merge --ff-only origin/main \
-        || die "origin/main tidak bisa di-fast-forward; selesaikan manual (git pull --rebase)"
-    else
-      git -C "$SCRIPT_DIR" -c advice.detachedHead=false checkout -q --detach "$TARGET_REF" \
-        || die "tag/ref '$TARGET_REF' tidak ditemukan setelah fetch"
-      say "clone sumber sekarang berada di $TARGET_REF (detached HEAD - normal untuk upgrade)"
-    fi
-    SOURCE_DIR="$SCRIPT_DIR"
   else
-    # standalone mode: this script was downloaded on its own; clone the target
-    command -v git >/dev/null 2>&1 || die "git tidak ditemukan (wajib untuk mode standalone)"
-    say "mode standalone: meng-clone $OPT_REPO (${TARGET_REF:-default branch})"
-    TMP_CLONE="$(mktemp -d /tmp/uaeg-upgrade-src.XXXXXX)"
-    if [[ -z "$TARGET_REF" || "$TARGET_REF" == "origin/main" ]]; then
-      git clone --quiet --depth 1 "$OPT_REPO" "$TMP_CLONE/uaeg" \
-        || die "clone $OPT_REPO gagal"
+    # Fetch the immutable release source into an ISOLATED STAGING clone.
+    # The operator's working tree ($SCRIPT_DIR) is never touched: this is
+    # the v0.3.2 fix for the v0.3.1 incident where `git checkout <tag>`
+    # inside the operator's clone collided with the downloaded (untracked)
+    # upgrade.sh and was misreported as "tag not found".
+    command -v git >/dev/null 2>&1 || die "git tidak ditemukan (wajib untuk mengambil source rilis)"
+
+    TMP_CLONE="$(mktemp -d /tmp/uaeg-upgrade-src.XXXXXX)"   # mode 0700
+    if [[ "$TARGET_REF" == "origin/main" ]]; then
+      say "meng-clone branch utama dari $REPO_URL ke staging terisolasi"
+      if ! git clone --quiet --depth 1 "$REPO_URL" "$TMP_CLONE/uaeg" 2>/dev/null; then
+        handle_stage_failure "git clone gagal dari $REPO_URL (offline? remote salah?) - tidak ada yang berubah" "$tolerance"
+        return 1
+      fi
     else
-      git clone --quiet --depth 1 --branch "$TARGET_REF" "$OPT_REPO" "$TMP_CLONE/uaeg" \
-        || die "clone $TARGET_REF gagal"
+      # Verify the tag exists BEFORE cloning, so a missing tag is never
+      # misreported as a clone/network failure (and vice versa).
+      if ! tag_exists_on_remote; then
+        handle_stage_failure "tag '$TARGET_REF' tidak ditemukan di remote $REPO_URL.
+Daftar tag yang tersedia: git ls-remote --tags $REPO_URL" "$tolerance"
+        return 1
+      fi
+      say "meng-clone tag $TARGET_REF dari $REPO_URL ke staging terisolasi"
+      if ! git clone --quiet --depth 1 --branch "$TARGET_REF" "$REPO_URL" "$TMP_CLONE/uaeg" 2>/dev/null; then
+        handle_stage_failure "git clone tag $TARGET_REF gagal dari $REPO_URL (offline? remote salah?) - tidak ada yang berubah" "$tolerance"
+        return 1
+      fi
+      # Prove the staging clone is EXACTLY at the requested tag's commit.
+      local want="" got=""
+      want="$(git -C "$TMP_CLONE/uaeg" rev-parse "refs/tags/${TARGET_REF}^{commit}" 2>/dev/null || true)"
+      got="$(git -C "$TMP_CLONE/uaeg" rev-parse HEAD 2>/dev/null || true)"
+      if [[ -z "$want" || "$want" != "$got" ]]; then
+        handle_stage_failure "staging clone tidak berada di commit tag $TARGET_REF (HEAD=$got, tag=$want) - tidak ada yang berubah" "$tolerance"
+        return 1
+      fi
     fi
     SOURCE_DIR="$TMP_CLONE/uaeg"
+
+    if [[ -d "$SCRIPT_DIR/.git" ]]; then
+      say "clone operator di $SCRIPT_DIR TIDAK disentuh (tetap pada kondisi semula)"
+    fi
   fi
 
   TARGET_VERSION="$(pyproject_version "$SOURCE_DIR")"
@@ -902,6 +979,17 @@ print(f\"  asal     : {r.get('from_version','?')} -> {r.get('to_version','?')}  
 "
   fi
   echo "  aplikasi : $([[ -d "$target/app" ]] && echo 'ikut dipulihkan' || echo 'TIDAK tersimpan (data+config saja)')"
+  if [[ ! -d "$target/app" && -f "$target/RECORD.json" ]]; then
+    # honest recovery path: the app itself is re-installable from the
+    # immutable release tag recorded in this backup (contract U-6/U-7)
+    local from_v=""
+    from_v="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('from_version','?'))" \
+               "$target/RECORD.json" 2>/dev/null || true)"
+    if [[ -n "$from_v" && "$from_v" != "?" ]]; then
+      echo "             (pemulihan aplikasi: install.sh dari tag v$from_v yang immutable,"
+      echo "              lalu --rollback untuk data+config dari backup ini)"
+    fi
+  fi
   echo
   warn "rollback mengganti data & konfigurasi dengan kondisi PRA-UPGRADE."
   warn "perubahan yang dibuat SETELAH backup itu (key baru, job baru) akan hilang."
@@ -956,19 +1044,23 @@ Instalasi baru: git clone $OPT_REPO && cd uaeg && sudo ./install.sh --domain <do
   # ---- resolve target --------------------------------------------------
   resolve_target_ref
   if [[ "$MODE" == "dry-run" ]]; then
-    local tv="(tidak terbaca)"
-    if [[ -n "$OPT_SOURCE" ]]; then
-      tv="$(pyproject_version "$OPT_SOURCE")"
-    elif [[ -d "$SCRIPT_DIR/.git" ]]; then
-      tv="$(git -C "$SCRIPT_DIR" show "$TARGET_REF:pyproject.toml" 2>/dev/null | sed -n 's/^version[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' | head -1)"
-      [[ -n "$tv" ]] || tv="(tidak terbaca)"
-    else
-      tv="rilis $TARGET_REF (mode standalone)"
+    # Stage the target source too (isolated, read-only for the operator), so
+    # the plan shows the REAL target version + commit — without changing
+    # anything. If the source cannot be fetched (e.g. offline), degrade to a
+    # plan without the version instead of failing the dry-run.
+    if ! materialize_source best-effort; then
+      TARGET_VERSION="(tidak terbaca)"
+      TARGET_SHA="n/a"
     fi
     echo
     printf '\033[1mRENCANA UPGRADE (dry-run - tidak ada perubahan)\033[0m\n'
     echo "  instalasi   : $INSTALL_DIR (v$CUR_VERSION)"
-    echo "  target      : $TARGET_REF (v$tv)"
+    echo "  target      : v$TARGET_VERSION ($TARGET_REF, commit $TARGET_SHA)"
+    if [[ -n "$OPT_SOURCE" ]]; then
+      echo "  sumber      : $OPT_SOURCE (lokal, --source)"
+    else
+      echo "  sumber      : $REPO_URL (staging terisolasi; clone operator tidak disentuh)"
+    fi
     echo "  data        : $DATA_DIR"
     echo "  konfigurasi : $CONFIG_FILE (dipertahankan apa adanya - tidak diubah)"
     echo "  backup      : $BACKUP_ROOT/upgrade-<ts> (DB konsisten + config + aplikasi)"
@@ -979,7 +1071,7 @@ Instalasi baru: git clone $OPT_REPO && cd uaeg && sudo ./install.sh --domain <do
     return 0
   fi
 
-  materialize_source
+  materialize_source required
 
   # ---- version guards ---------------------------------------------------
   if ver_gt "$CUR_VERSION" "$TARGET_VERSION" && [[ $ALLOW_DOWNGRADE -eq 0 ]]; then
@@ -1026,10 +1118,11 @@ Jika memang disengaja: sudo bash upgrade.sh --version $TARGET_VERSION --allow-do
   cp "$pre" "$BACKUP_DIR/before-state.json"
   rm -f "$pre"
   record_set "$BACKUP_DIR/RECORD.json" \
-    "tool=upgrade.sh" "contract_version=1" "mode=upgrade" \
+    "tool=upgrade.sh" "contract_version=2" "mode=upgrade" \
     "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     "from_version=$CUR_VERSION" "to_version=$TARGET_VERSION" \
     "target_ref=$TARGET_REF" "target_git_sha=$TARGET_SHA" \
+    "repo_url=$REPO_URL" \
     "source_dir=$SOURCE_DIR" "install_dir=$INSTALL_DIR" "data_dir=$DATA_DIR" \
     "config_file=$CONFIG_FILE" "service_name=$SERVICE_NAME" \
     "service_managed=$( [[ $NO_SERVICE -eq 0 ]] && echo true || echo false )" \
@@ -1072,6 +1165,10 @@ Jika memang disengaja: sudo bash upgrade.sh --version $TARGET_VERSION --allow-do
   echo "                  konfigurasi dipertahankan, password dashboard utuh"
   echo "  backup        : $BACKUP_DIR (data + config; rollback: sudo bash upgrade.sh --rollback)"
   echo "  log installer : $BACKUP_DIR/install.log"
+  if [[ -d "$SCRIPT_DIR/.git" ]]; then
+    echo "  catatan       : clone operator $SCRIPT_DIR TIDAK diubah (sumber diambil"
+    echo "                  dari staging terisolasi $REPO_URL)"
+  fi
   echo
   echo "Langkah berikutnya:"
   echo "  uaeg version && sudo uaeg doctor"
@@ -1084,7 +1181,7 @@ Jika memang disengaja: sudo bash upgrade.sh --version $TARGET_VERSION --allow-do
 # Main
 # ----------------------------------------------------------------------
 main() {
-  say "UAEG safe-upgrade installer (contract: docs/UPGRADE_CONTRACT.md)"
+  say "UAEG safe-upgrade installer (contract: docs/UPGRADE_CONTRACT.md, v2)"
 
   detect_installation
   make_backups
