@@ -1,0 +1,74 @@
+name: Release
+
+# Publishes the documented release assets whenever a version tag is pushed.
+#
+# Why this exists: docs/INSTALL.md promises
+#   https://github.com/smahud/uaeg/releases/latest/download/install.sh
+#   https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh
+# (plus .sha256 sidecars). A tag without a GitHub Release carrying those
+# assets breaks the documented one-line install and standalone upgrade
+# paths with a 404 (observed for v0.2.0-v0.3.1). This workflow makes the
+# asset set a mandatory, automatic part of tagging.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish release assets (install.sh / upgrade.sh + checksums)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@v4
+
+      - name: Verify the tagged tree ships the documented scripts
+        run: |
+          test -f install.sh  || { echo "::error::install.sh missing at tag $GITHUB_REF_NAME"; exit 1; }
+          test -f upgrade.sh || { echo "::error::upgrade.sh missing at tag $GITHUB_REF_NAME"; exit 1; }
+
+      - name: Generate SHA-256 sidecars (sha256sum -c compatible)
+        run: |
+          sha256sum install.sh  > install.sh.sha256
+          sha256sum upgrade.sh  > upgrade.sh.sha256
+          cat install.sh.sha256 upgrade.sh.sha256
+
+      - name: Verify the installer pins this tag's version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PINNED_VERSION="$(grep -oP '^UAEG_RELEASE_VERSION="\K[^"]+' install.sh || true)"
+          if [ -n "$PINNED_VERSION" ] && [ "$PINNED_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::install.sh pins $PINNED_VERSION but tag is $TAG_VERSION — a one-line install from this release would fetch the wrong version"
+            exit 1
+          fi
+
+      - name: Create the GitHub Release with assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "UAEG $GITHUB_REF_NAME" \
+            --notes "Assets:
+          - \`install.sh\` + \`install.sh.sha256\` — verified one-line installer (docs/INSTALL.md, Option B). Pins $GITHUB_REF_NAME.
+          - \`upgrade.sh\` + \`upgrade.sh.sha256\` — standalone safe-upgrade entry point (docs/UPGRADE_CONTRACT.md, contract v1).
+
+          Verify before running: \`curl -fsSLO ...\` both files, then \`sha256sum -c install.sh.sha256\` / \`sha256sum -c upgrade.sh.sha256\`.
+
+          Audit trail (release decision, security findings, test evidence): see the \`report/\` directory on this tag." \
+            --verify-tag \
+            install.sh install.sh.sha256 upgrade.sh upgrade.sh.sha256
+
+      - name: Smoke-check the documented download URLs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sleep 5  # allow the asset URLs to propagate
+          for f in install.sh install.sh.sha256 upgrade.sh upgrade.sh.sha256; do
+            gh release view "$GITHUB_REF_NAME" --json assets --jq ".assets[].name" | grep -qx "$f" \
+              || { echo "::error::asset $f missing from release $GITHUB_REF_NAME"; exit 1; }
+          done
+          echo "release $GITHUB_REF_NAME published with all four documented assets"
