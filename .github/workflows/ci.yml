@@ -99,15 +99,17 @@ jobs:
           export UAEG_SYSTEM_UAEG_BIN="$BASE/bin/uaeg"
           # --version (bare) prints the installer version
           bash install-test.sh --version
-          # service commands on a --no-service install must refuse cleanly
-          if bash install-test.sh --start > start.log 2>&1; then
-            echo "::error::--start unexpectedly succeeded on a --no-service install"; exit 1
-          fi
-          grep -q "systemd" start.log || { echo "::error::--start refusal must explain the systemd requirement"; cat start.log; exit 1; }
-          # --dry-run on a fresh-host shape must not change anything
-          bash install-test.sh --dry-run --install-dir "$BASE/opt/uaeg" \
-            --config-dir "$BASE/etc/uaeg" --data-dir "$BASE/var/lib/uaeg" \
-            --no-service | grep -q "FRESH INSTALL PLAN\|UPGRADE PLAN"
+          # service commands on a --no-service install must refuse cleanly.
+          # (The full bootstrap-path coverage -- --check/--dry-run/--rollback
+          #  through a verified release channel -- lives in the contract
+          #  suite, which runs these as root-free patched scripts; here the
+          #  REAL updater would rightly insist on root, so it is not invoked.)
+          for sc in --start --stop --restart --status; do
+            if bash install-test.sh "$sc" > "$sc.log" 2>&1; then
+              echo "::error::$sc unexpectedly succeeded on a --no-service install"; exit 1
+            fi
+            grep -q "systemd" "$sc.log" || { echo "::error::$sc refusal must explain the systemd requirement"; cat "$sc.log"; exit 1; }
+          done
           echo "unified command smoke passed"
 
       - name: Serve from installed location and verify MCP
