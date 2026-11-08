@@ -2,6 +2,13 @@
 
 **Date:** 2026-11-08 · **Status: PENDING (OPERATOR ACTION REQUIRED).**
 
+> **SUPERSEDED RUNBOOK (v0.4.0):** this document predates the unified
+> installer. The current, authoritative production runbook — including the
+> v0.3.3 → v0.4.0 upgrade via the single `install.sh` file and the
+> public-dashboard enablement steps — is
+> **[report/DASHBOARD_PRODUCTION_CHECK.md](./DASHBOARD_PRODUCTION_CHECK.md)**.
+> The commands below that download `upgrade.sh` are kept for history only.
+
 The audit environment has no SSH credentials or ZeroTier membership for the
 MicroTix VPS (mission clause: "If production access ... is unavailable,
 complete all repository-side work and explicitly report the blocked

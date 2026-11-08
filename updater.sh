@@ -70,7 +70,9 @@ CONFIG_FILE=""
 SERVICE_NAME="uaeg"
 NO_SERVICE=0                 # 1 = do not manage systemd (containers/tests)
 HAS_SERVICE=0
-BACKUPS_DIR=""               # default: /var/backups/uaeg
+# Env overrides (mirrors, contract tests) alongside the --backups-dir and
+# --repo flags; flag > env > default.
+BACKUPS_DIR="${UAEG_BACKUPS_DIR:-}"
 KEEP_BACKUPS=5
 ASSUME_YES=0
 ALLOW_DOWNGRADE=0
@@ -79,7 +81,7 @@ OPT_VERSION=""
 OPT_MAIN=0
 OPT_SOURCE=""
 OPT_INSTALLER=""
-OPT_REPO="https://github.com/smahud/uaeg.git"
+OPT_REPO="${UAEG_REPO_URL:-https://github.com/smahud/uaeg.git}"
 REPO_GIVEN=0                 # 1 = --repo was passed explicitly
 REPO_URL=""                  # resolved by resolve_repo_url()
 ROLLBACK_TARGET=""
@@ -204,6 +206,12 @@ Options:
 
 Exit codes: 0 ok | 1 error | 2 rolled back | 3 not installed |
             4 reserved | 5 downgrade refused
+
+Environment (mirrors, contract tests; flags always win):
+  UAEG_RELEASE_API_BASE / UAEG_RELEASE_DOWNLOAD_BASE  release channel
+  UAEG_REPO_URL        default git remote for release staging
+  UAEG_BACKUPS_DIR     default backup root [/var/backups/uaeg]
+  UAEG_UPGRADE_CACHE_DIR  verified-updater cache dir
 USAGE
 }
 

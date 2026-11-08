@@ -1,21 +1,23 @@
 # Kontrak Upgrade Aman UAEG (Safe-Upgrade Contract)
 
 > **Status: BINDING.** Dokumen ini adalah kontrak resmi proses upgrade UAEG.
-> Setiap klausul (U-1 .. U-14) di bawah ini **dijamin oleh `upgrade.sh`
-> (bootstrap) + `updater.sh` (versioned updater)** dan **ditegakkan oleh test
+> Setiap klausul (U-1 .. U-16) di bawah ini **dijamin oleh `install.sh`
+> (installer/entrypoint terpadu sejak v0.4.0), `upgrade.sh` (bootstrap
+> standalone) + `updater.sh` (versioned updater)** dan **ditegakkan oleh test
 > suite otomatis** `tests/test_upgrade_contract.sh` (dijalankan di CI pada
 > setiap push/PR). Perubahan yang melanggar salah satu klausul wajib dianggap
 > bug regresi dan harus gagal di CI.
 >
-> Versi kontrak: **3** — berlaku sejak UAEG v0.3.3. (Versi 2 sejak v0.3.2;
-> versi 1 sejak v0.3.1; lihat “Perubahan kontrak” di bawah.)
+> Versi kontrak: **4** — berlaku sejak UAEG v0.4.0. (Versi 3 sejak v0.3.3;
+> versi 2 sejak v0.3.2; versi 1 sejak v0.3.1; lihat “Perubahan kontrak”.)
 
 ## Ringkasan satu kalimat
 
-> Upgrade UAEG = **satu perintah** (`sudo bash upgrade.sh`), **file yang sama
-> selamanya** (unduh bootstrap sekali), **otomatis terdeteksi**, **ditandatangani
-> + diverifikasi**, **dicadangkan**, dan **bisa dibatalkan** — tanpa langkah
-> manual, tanpa menghafal flag, tanpa risiko kehilangan data.
+> Upgrade UAEG = **satu perintah** (`sudo bash install.sh`), **file yang sama
+> selamanya** (unduh sekali), **otomatis terdeteksi** (install baru bila belum
+> ada, upgrade aman bila sudah ada), **ditandatangani + diverifikasi**,
+> **dicadangkan**, dan **bisa dibatalkan** — tanpa langkah manual, tanpa
+> menghafal flag, tanpa risiko kehilangan data.
 
 ## Arsitektur permanen (kontrak v3)
 
@@ -40,31 +42,47 @@ upgrade mana pun; implementasi upgrade terperinci hidup di aset rilis
 `uaeg-updater-<version>.sh` yang diverifikasi tanda tangannya sebelum
 dieksekusi. Detail lengkap: [docs/BOOTSTRAP.md](./BOOTSTRAP.md).
 
-## Perintah
+## Perintah (kontrak v4 — install.sh adalah entrypoint terpadu)
 
 ```bash
-# PERTAMA (sekali saja — transisi dari model v0.3.2, atau instalasi baru):
-curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh
-curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh.sha256
-sha256sum -c upgrade.sh.sha256
+# PERTAMA (sekali saja — satu file untuk semuanya):
+curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/install.sh
+curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/install.sh.sha256
+sha256sum -c install.sh.sha256
+
+sudo bash install.sh --domain gw.example.com     # instalasi baru (flag lengkap:
+                                                 # lihat docs/INSTALL.md)
 
 # SELANJUTNYA — file lokal yang sama, untuk semua rilis mendatang:
-sudo bash upgrade.sh
+sudo bash install.sh                            # safe upgrade ke rilis stabil terbaru
 
-# mode lain (kompatibel penuh dengan v0.3.2):
-sudo bash upgrade.sh --check        # status instalasi (read-only)
-sudo bash upgrade.sh --dry-run      # tampilkan rencana tanpa eksekusi
-sudo bash upgrade.sh --rollback     # pulihkan backup upgrade terakhir
-                                     # (bekerja OFFLINE dari updater ter-cache)
-sudo bash upgrade.sh --version X.Y.Z                  # pin rilis eksplisit
-sudo bash upgrade.sh --version X.Y.Z --allow-downgrade # turun versi (eksplisit)
-sudo bash upgrade.sh --source DIR   # pohon source lokal (offline)
-sudo bash upgrade.sh --main         # bleeding edge (eksplisit; BUKAN default)
+# perintah lain:
+sudo bash install.sh --check                    # status instalasi + pembaruan tersedia
+sudo bash install.sh --dry-run                   # tampilkan rencana tanpa eksekusi
+sudo bash install.sh --rollback                  # pulihkan backup upgrade terakhir
+                                                 # (bekerja OFFLINE dari updater ter-cache)
+sudo bash install.sh --start|--stop|--restart|--status   # kelola service systemd
+sudo bash install.sh --repair                    # pasang ulang in-place; data persisten
+                                                 # (kunci, DB, password, TLS) dipertahankan
+sudo bash install.sh --version                   # cetak versi installer
+sudo bash install.sh --version X.Y.Z             # pin rilis target (install baru / upgrade)
+                                                 # downgrade eksplisit tetap memakai
+                                                 # --allow-downgrade via upgrade.sh
 ```
 
+Aturan dispatch (U-16): invokasi **bare** (tanpa flag, atau hanya `--yes` dan/atau
+`--version X.Y.Z`) pada instalasi yang sudah ada **selalu** memilih jalur safe
+upgrade terverifikasi; flag konfigurasi apa pun (`--port`, `--dashboard-bind`,
+`--domain`, ...) memilih jalur in-place (rekonfigurasi, perilaku v0.3.x);
+`--repair` adalah bentuk eksplisit dari jalur in-place.
+
+`upgrade.sh` tetap tersedia sebagai aset rilis (bootstrap standalone, kontrak
+v3) untuk operator yang sudah mengunduhnya; perilaku dan antarmukanya tidak
+berubah. Dokumentasi publik sekarang mengarah ke `install.sh`.
+
 Kode keluar: `0` sukses · `1` error/ditolak (termasuk verifikasi gagal) ·
-`2` gagal → sudah di-rollback · `3` instalasi tidak ditemukan · `4` reserved ·
-`5` downgrade ditolak.
+`2` gagal → sudah di-rollback · `3` instalasi tidak ditemukan (mode
+`--check`/`--rollback`) · `4` reserved · `5` downgrade ditolak.
 
 ---
 
@@ -284,6 +302,45 @@ curl|bash), T-34 (jawaban n), T-35 (tanpa terminal + tanpa jawaban),
 T-36 (otomasi terpipah), T-37 (konfirmasi rollback), T-38 (probe helper
 byte-exact dari kedua skrip).
 
+### U-16 — Entrypoint terpadu (kontrak v4): install.sh meng-instal DAN meng-upgrade
+
+`install.sh` adalah satu-satunya file publik yang perlu diunduh operator
+(sejak v0.4.0). Perilaku wajib:
+
+1. **Dispatch tanpa argumen**: belum terpasang → instalasi baru; sudah
+   terpasang + invokasi bare → safe upgrade ke rilis stabil terbaru **melalui
+   rantai verifikasi yang sama dengan bootstrap** (manifest bertanda tangan
+   Ed25519 diverifikasi terhadap keyring ter-embed di dalam install.sh,
+   kemudian sha256+size updater diverifikasi terhadap manifest, baru
+   updater dieksekusi). Interface bootstrap↔updater (v1) tidak berubah.
+2. **Perintah layanan**: `--start` / `--stop` / `--restart` mengelola unit
+   systemd `uaeg`; `--status` menampilkan status service. Tanpa systemd/unit
+   → penolakan jelas (rc 1), tidak pernah mengubah apa pun.
+3. **`--check`** read-only (status instalasi + target tersedia; exit 3 bila
+   belum terpasang), **`--dry-run`** menampilkan rencana tanpa mengubah apa pun
+   (rencana install baru bila belum terpasang), **`--rollback [ID]`**
+   memulihkan backup upgrade (preferensi updater ter-cache; offline),
+   **`--repair`** menjalankan ulang installer in-place dengan data persisten
+   dan konfigurasi dipertahankan.
+4. **Ambiguitas `--version` diselesaikan**: tanpa argumen → mencetak versi
+   file; dengan `X.Y.Z` → pin rilis target (tag instalasi baru ATAU target
+   safe upgrade).
+5. **Anti-loop**: dipanggil oleh updater (lingkungan `UAEG_BOOTSTRAP=1`) atau
+   dengan flag penargetan (`--install-dir` dst.) → SELALU jalur installer
+   in-place, tidak pernah dispatch ulang ke safe upgrade.
+6. Semua flag first-install v0.3.x tetap berfungsi dan semantiknya tidak
+   berubah; `upgrade.sh` tetap berfungsi sebagai bootstrap standalone.
+
+*Ditegakkan oleh:* T-39 (help/version), T-40 (bare → upgrade terverifikasi;
+RECORD bootstrap_file = install.sh operator), T-41 (reuse multi-rilis +
+updater berubah + SHA file identik), T-42 (pin --version), T-43/T-44/T-45
+(manifest tampered / kunci asing / updater tampered → ditolak), T-46
+(interface baru → tolak + instruksi refresh install.sh), T-47 (--check /
+--dry-run), T-48 (rilis rusak → rollback otomatis rc 2), T-49 (--rollback
+updater ter-cache), T-50 (perintah service tanpa systemd → rc 1), T-51
+(--repair mempertahankan data + menerapkan flag), T-52 (baseline v0.3.5 →
+upgrade terverifikasi, kunci identik).
+
 ---
 
 ## Struktur direktori backup
@@ -321,9 +378,34 @@ efektif 1 — retensi tidak pernah menghapus satu-satunya recovery point).
 
 ## Perubahan kontrak
 
-Kontrak ini berversi (`contract_version` di `RECORD.json`). Perubahan klausul
-harus: (1) menaikkan versi kontrak, (2) memperbarui test suite di commit yang
-sama, (3) dicatat di `report/`.
+Kontrak ini berversi (`contract_version` di `RECORD.json`; RECORD tetap
+mencatat `3` untuk kompatibilitas pembaca lama — klausul v4 tidak mengubah
+format RECORD). Perubahan klausul harus: (1) menaikkan versi kontrak,
+(2) memperbarui test suite di commit yang sama, (3) dicatat di `report/`.
+
+### v4 (UAEG v0.4.0)
+
+- **U-16 ditambahkan**: `install.sh` menjadi entrypoint terpadu — install
+  baru, safe upgrade terverifikasi (bootstrap ter-embed, keyring + verifikasi
+  sama), perintah layanan (`--start/--stop/--restart/--status`), `--check`,
+  `--dry-run`, `--rollback`, `--repair`, dan `--version` tanpa argumen
+  (cetak versi) vs `--version X.Y.Z` (pin target). Operator mengunduh SATU
+  file. Semua flag first-install v0.3.x tetap berfungsi; jalur safe upgrade
+  dipilih oleh invokasi bare pada instalasi yang ada.
+- **Rotasi kunci penandatanganan 2 → 3** (`uaeg-release-3`, bootstrap
+  keyring v3): kunci privat `uaeg-release-2` tidak lagi tersedia bagi
+  publisher. Keyring (install.sh dan upgrade.sh) mempercayai KETIGA kunci
+  sehingga manifest rilis historis tetap terverifikasi. Bootstrap lama
+  (keyring 1+2, termasuk operator v0.3.4/v0.3.5) akan MENOLAK manifest
+  v0.4.0+ dengan pesan rotasi eksplisit — pemulihannya satu kali unduh
+  ulang `install.sh` (prosedur istimewa, BOOTSTRAP.md). Operator v0.3.3
+  (keyring hanya kunci 1) memang sudah memerlukan refresh sejak v0.3.4.
+- **updater.sh**: penambahan env fallback yang kompatibel (`UAEG_REPO_URL`,
+`UAEG_BACKUPS_DIR`) di samping flag yang sudah ada — flag > env > default;
+perilaku default tidak berubah.
+- `upgrade.sh` tetap dipublikasikan sebagai aset (bootstrap standalone
+  kontrak v3) dengan perubahan HANYA keyring + identitas (BOOTSTRAP_VERSION
+  3); antarmuka dan perilaku tidak berubah.
 
 ### v3.1 (UAEG v0.3.5)
 

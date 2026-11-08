@@ -1,0 +1,7 @@
+== LAB MCP SMOKE (isolated env, v0.4.0) 2026-11-08T15:59:55Z ==
+-- healthz --
+{"status":"ok","service":"UAEG","version":"0.4.0","uptime_seconds":81.4}
+-- MCP initialize (valid bearer key) --
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{},"prompts":{"listChanged":false},"resources":{"subscribe":false,"listChanged":false},"tools":{"listChanged":false}},"serverInfo":{"name":"UAEG","version":"0.4.0"},"instructions":"UAEG (Universal Agent Execution Gateway) executes commands natively on this VPS on your behalf. Commands are real, persiste
+-- MCP /mcp without key (must be 401) --
+HTTP 401

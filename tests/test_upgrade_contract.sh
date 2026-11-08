@@ -119,15 +119,34 @@ patch_installsh() {  # $1 src -> stdout
       -e 's|^apt-get install -y -qq python3 python3-venv openssl curl >/dev/null$|:|' \
       -e 's|^ln -sf "\$VENV_DIR/bin/uaeg" /usr/local/bin/uaeg$|ln -sf "$VENV_DIR/bin/uaeg" __TESTBIN__/uaeg|' \
       -e 's|/usr/local/sbin/uaeg-upgrade|__TESTSBIN__/uaeg-upgrade|g' \
-      "$1" | sed -e "s|__TESTBIN__|$TESTBIN|g" -e "s|__TESTSBIN__|$BASE/sbin|g"
+      -e 's|DATA_DIR="/var/lib/uaeg"|DATA_DIR="__TESTBASE__/var/lib/uaeg"|' \
+      -e 's|CONFIG_DIR="/etc/uaeg"|CONFIG_DIR="__TESTBASE__/etc/uaeg"|' \
+      -e 's|INSTALL_DIR="/opt/uaeg"|INSTALL_DIR="__TESTBASE__/opt/uaeg"|' \
+      "$1" | sed -e "s|__TESTBIN__|$TESTBIN|g" -e "s|__TESTSBIN__|$BASE/sbin|g" -e "s|__TESTBASE__|$BASE|g"
 }
-patch_updatersh() {  # $1 src -> stdout (root-check off + system bootstrap redirect)
+patch_updatersh() {  # $1 src -> stdout (root-check off + redirects for tests)
   sed -e 's|^if \[\[ \$EUID -ne 0 \]\]; then|if false; then|' \
       -e "s|^SYSTEM_BOOTSTRAP=\".*\"|SYSTEM_BOOTSTRAP=\"$BASE/sbin/uaeg-upgrade\"|" \
-      "$1"
+      -e "s|/usr/local/bin/uaeg|$TESTBIN/uaeg|g" \
+      -e 's|CONFIG_DIR="/etc/uaeg"|CONFIG_DIR="__TESTBASE__/etc/uaeg"|' \
+      -e 's|DATA_DIR="/var/lib/uaeg"|DATA_DIR="__TESTBASE__/var/lib/uaeg"|' \
+      -e 's|INSTALL_DIR="/opt/uaeg"|INSTALL_DIR="__TESTBASE__/opt/uaeg"|' \
+      "$1" | sed -e "s|__TESTBASE__|$BASE|g"
 }
 patch_bootstrapsh() {  # $1 src -> stdout (root-check off + TEST keyring swap)
   sed -e 's|^if \[\[ \$EUID -ne 0 \]\]; then|if false; then|' "$1" \
+  | TESTKEY_PUB="$(cat "$TESTKEY_DIR/test-release.pub.pem")" awk '
+      /^_TRUSTED_KEY_1="/ { printf "_TRUSTED_KEY_1=\"%s\"\n", ENVIRON["TESTKEY_PUB"]; skip=1; next }
+      skip==1 && /"$/ { skip=0; next }
+      skip==1 { next }
+      { print }
+  '
+}
+# patch_unifiedsh: the operator's ONE unified install.sh for contract-v4
+# tests — installer redirects (patch_installsh) + the TEST bootstrap keyring
+# (patch_bootstrapsh's swap), because the unified file carries the bootstrap.
+patch_unifiedsh() {  # $1 src -> stdout
+  patch_installsh "$1" \
   | TESTKEY_PUB="$(cat "$TESTKEY_DIR/test-release.pub.pem")" awk '
       /^_TRUSTED_KEY_1="/ { printf "_TRUSTED_KEY_1=\"%s\"\n", ENVIRON["TESTKEY_PUB"]; skip=1; next }
       skip==1 && /"$/ { skip=0; next }
@@ -1002,6 +1021,315 @@ for f in "$REPO_DIR/updater.sh" "$REPO_DIR/install.sh"; do
   assert_eq "$r3" "2" "T-38 $name: EOF tanpa terminal -> tidak ada jawaban (2)"
   assert_eq "$r4" "0" "T-38 $name: stdin terputus + tty -> 'y' terbaca (0)"
 done
+
+# ----------------------------------------------------------------------
+# T-39 .. T-52 — KONTRAK v4: install.sh adalah ENTRYPOINT TERPADU
+# (install + upgrade + service management, docs/UPGRADE_CONTRACT.md U-16).
+# Operator mengunduh install.sh SEKALI; file yang sama dipakai untuk semua
+# upgrade berikutnya via bootstrap ter-embed (keyring + verifikasi
+# manifest + updater terverifikasi - rantai sama dengan upgrade.sh).
+# ----------------------------------------------------------------------
+t "T-39: setup — rilis server (hidup lagi), install.sh terpadu operator, rilis E"
+# T-31 mematikan server rilis; nyalakan lagi untuk kanal terpadu.
+RELPORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+python3 -m http.server "$RELPORT" --bind 127.0.0.1 --directory "$RELROOT" >/dev/null 2>&1 &
+RELSRV_PID=$!
+sleep 1
+curl -fsS "http://127.0.0.1:$RELPORT/releases/latest" >/dev/null 2>&1 \
+  && ok "T-39 release server hidup lagi (port $RELPORT)" \
+  || no "T-39 release server tidak hidup"
+export UAEG_RELEASE_API_BASE="http://127.0.0.1:$RELPORT"
+export UAEG_RELEASE_DOWNLOAD_BASE="http://127.0.0.1:$RELPORT/download"
+export UAEG_BACKUPS_DIR="$BACKUPS"
+export UAEG_SYSTEM_UAEG_BIN="$TESTBIN/uaeg"
+
+# File operator: SATU install.sh terpadu (patched + keyring uji), SHA dicatat.
+OPERATOR_UNI="$BASE/operator-unified"; mkdir -p "$OPERATOR_UNI"
+patch_unifiedsh "$REPO_DIR/install.sh" > "$OPERATOR_UNI/install.sh"
+UNI_SHA="$(sha256sum "$OPERATOR_UNI/install.sh" | awk '{print $1}')"
+assert_file "$OPERATOR_UNI/install.sh" "T-39 install.sh terpadu operator dibuat (sha ${UNI_SHA:0:12}…)"
+
+# make_release_repo_uni <gitdir> <remote> <version>: remote git yang POHONNYA
+# membawa install.sh ter-patch (agar updater bisa menjalankannya tanpa root).
+make_release_repo_uni() {
+  local gdir="$1" remote="$2" ver="$3"
+  git clone -q "$REPO_DIR" "$gdir"
+  git -C "$gdir" remote set-url origin "$remote"
+  sed -i "s/^version[[:space:]]*=[[:space:]]*\".*\"/version = \"$ver\"/" "$gdir/pyproject.toml"
+  sed -i "s/^__version__[[:space:]]*=[[:space:]]*\".*\"/__version__ = \"$ver\"/" "$gdir/src/uaeg/__init__.py"
+  patch_installsh "$gdir/install.sh" > "$gdir/install.sh.tmp" && mv "$gdir/install.sh.tmp" "$gdir/install.sh"
+  git -C "$gdir" -c user.email=ci@test -c user.name=ci commit -qam "release $ver (test-patched installer)"
+  git -C "$gdir" tag "v$ver"
+  git -C "$gdir" push -q origin main --tags
+}
+
+# Rilis E (v18.0.0)
+WORK_E="$BASE/work-e"; REMOTE_E="$BASE/remote-e.git"; GIT_E_DIR="$BASE/gite"
+make_source "$WORK_E" "18.0.0"
+git init --bare -q "$REMOTE_E"
+make_release_repo_uni "$GIT_E_DIR" "$REMOTE_E" "18.0.0"
+make_release "$WORK_E" "18.0.0"
+set_latest_tag "18.0.0"
+
+run "$LOG" bash "$OPERATOR_UNI/install.sh" --help
+assert_rc 0 "T-39 --help rc=0"
+assert_in "$LOG" "--check" "T-39 help memuat --check"
+assert_in "$LOG" "--rollback" "T-39 help memuat --rollback"
+assert_in "$LOG" "--repair" "T-39 help memuat --repair"
+assert_in "$LOG" "--start" "T-39 help memuat --start"
+run "$LOG" bash "$OPERATOR_UNI/install.sh" --version
+assert_rc 0 "T-39 --version (tanpa argumen) rc=0"
+assert_in "$LOG" "v0.4.0" "T-39 --version mencetak versi installer"
+
+# ----------------------------------------------------------------------
+t "T-40: BARE install.sh pada instalasi ada -> SAFE UPGRADE terverifikasi (U-16)"
+# ----------------------------------------------------------------------
+V_BEFORE="$(installed_version)"
+export UAEG_REPO_URL="$REMOTE_E"
+N_BEFORE="$(backup_count)"
+printf 'y\n' | bash "$OPERATOR_UNI/install.sh" > "$LOG" 2>&1
+RUN_RC=$?
+assert_rc 0 "T-40 bare install.sh upgrade ke 18.0.0 rc=0 (dari $V_BEFORE)"
+assert_eq "$(installed_version)" "18.0.0" "T-40 versi sekarang 18.0.0"
+assert_in "$LOG" "verifying manifest signature" "T-40 manifest signature diverifikasi (bootstrap ter-embed)"
+assert_in "$LOG" "verifying updater integrity" "T-40 integritas updater diverifikasi"
+assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-40 kunci agent identik"
+assert_eq "$(cfg_field "cfg['dashboard']['port']")" "3954" "T-40 config operator dipertahankan"
+assert_eq "$(sha256sum "$OPERATOR_UNI/install.sh" | awk '{print $1}')" "$UNI_SHA" \
+  "T-40 SHA-256 install.sh operator TIDAK berubah"
+assert_eq "$(latest_record bootstrap_invoked)" "True" "T-40 RECORD bootstrap_invoked=true"
+assert_eq "$(latest_record bootstrap_file)" "$OPERATOR_UNI/install.sh" "T-40 RECORD bootstrap_file == install.sh operator"
+assert_eq "$(latest_record to_version)" "18.0.0" "T-40 RECORD to_version=18.0.0"
+
+# ----------------------------------------------------------------------
+t "T-41: MULTI-RELEASE — file install.sh yang sama, rilis F dengan UPDATER BERUBAH"
+# ----------------------------------------------------------------------
+WORK_F="$BASE/work-f"; REMOTE_F="$BASE/remote-f.git"; GIT_F_DIR="$BASE/gitf"
+make_source "$WORK_F" "19.0.0"
+sed -i 's|^main$|say "UPDATER-IMPL-F (changed implementation)"\nmain|' "$WORK_F/updater-test.sh"
+git init --bare -q "$REMOTE_F"
+make_release_repo_uni "$GIT_F_DIR" "$REMOTE_F" "19.0.0"
+make_release "$WORK_F" "19.0.0"
+set_latest_tag "19.0.0"
+export UAEG_REPO_URL="$REMOTE_F"
+printf 'y\n' | bash "$OPERATOR_UNI/install.sh" > "$LOG" 2>&1
+RUN_RC=$?
+assert_rc 0 "T-41 file yang sama upgrade ke 19.0.0 rc=0"
+assert_eq "$(installed_version)" "19.0.0" "T-41 versi sekarang 19.0.0"
+assert_in "$LOG" "UPDATER-IMPL-F" "T-41 updater implementasi F benar-benar dijalankan"
+assert_eq "$(sha256sum "$OPERATOR_UNI/install.sh" | awk '{print $1}')" "$UNI_SHA" \
+  "T-41 SHA-256 install.sh operator MASIH identik (reuse multi-rilis)"
+assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-41 kunci agent identik"
+
+# ----------------------------------------------------------------------
+t "T-42: install.sh --version X.Y.Z pada instalasi ada -> upgrade PINNED"
+# ----------------------------------------------------------------------
+WORK_G="$BASE/work-g"; REMOTE_G="$BASE/remote-g.git"; GIT_G_DIR="$BASE/gitg"
+make_source "$WORK_G" "20.0.0"
+git init --bare -q "$REMOTE_G"
+make_release_repo_uni "$GIT_G_DIR" "$REMOTE_G" "20.0.0"
+make_release "$WORK_G" "20.0.0"
+export UAEG_REPO_URL="$REMOTE_G"
+printf 'y\n' | bash "$OPERATOR_UNI/install.sh" --version 20.0.0 > "$LOG" 2>&1
+RUN_RC=$?
+assert_rc 0 "T-42 --version 20.0.0 rc=0"
+assert_eq "$(installed_version)" "20.0.0" "T-42 versi sekarang 20.0.0 (pin terverifikasi)"
+assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-42 kunci agent identik"
+
+# ----------------------------------------------------------------------
+t "T-43: manifest di-tamper -> install.sh bare MENOLAK (U-14 via installer)"
+# ----------------------------------------------------------------------
+python3 - "$RELROOT/download/v18.0.0/uaeg-manifest.json" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read().replace('"version": "18.0.0"', '"version": "12.9.9"')
+open(p, "w", encoding="utf-8").write(s)
+PY
+set_latest_tag "18.0.0"
+export UAEG_REPO_URL="$REMOTE_E"
+N_BEFORE="$(backup_count)"
+printf 'y\n' | bash "$OPERATOR_UNI/install.sh" > "$LOG" 2>&1
+RUN_RC=$?
+assert_rc 1 "T-43 rc=1 (manifest tampered -> ditolak oleh installer terpadu)"
+assert_in "$LOG" "SIGNATURE INVALID" "T-43 pesan signature invalid"
+assert_eq "$(installed_version)" "20.0.0" "T-43 versi tidak berubah"
+assert_eq "$(backup_count)" "$N_BEFORE" "T-43 tidak ada backup baru"
+python3 - "$RELROOT/download/v18.0.0/uaeg-manifest.json" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read().replace('"version": "12.9.9"', '"version": "18.0.0"')
+open(p, "w", encoding="utf-8").write(s)
+PY
+
+# ----------------------------------------------------------------------
+t "T-44: manifest kunci asing -> install.sh bare MENOLAK"
+# ----------------------------------------------------------------------
+sign_manifest "$RELROOT/download/v18.0.0/uaeg-manifest.json" \
+  "$RELROOT/download/v18.0.0/uaeg-manifest.json.sig" "$TESTKEY_DIR/rogue.key"
+printf 'y\n' | bash "$OPERATOR_UNI/install.sh" > "$LOG" 2>&1
+RUN_RC=$?
+assert_rc 1 "T-44 rc=1 (publisher asing -> ditolak)"
+assert_in "$LOG" "not signed by" "T-44 pesan publisher tidak dipercaya"
+assert_eq "$(installed_version)" "20.0.0" "T-44 versi tidak berubah"
+sign_manifest "$RELROOT/download/v18.0.0/uaeg-manifest.json" \
+  "$RELROOT/download/v18.0.0/uaeg-manifest.json.sig" "$TESTKEY_DIR/test-release.key"
+
+# ----------------------------------------------------------------------
+t "T-45: updater di-tamper (sha mismatch) -> install.sh bare MENOLAK"
+# ----------------------------------------------------------------------
+printf '\n# tampered\n' >> "$RELROOT/download/v18.0.0/uaeg-updater-18.0.0.sh"
+printf 'y\n' | bash "$OPERATOR_UNI/install.sh" > "$LOG" 2>&1
+RUN_RC=$?
+assert_rc 1 "T-45 rc=1 (updater sha mismatch -> ditolak)"
+assert_in "$LOG" "SHA-256 MISMATCH" "T-45 pesan sha mismatch"
+assert_eq "$(installed_version)" "20.0.0" "T-45 versi tidak berubah"
+cp "$WORK_E/updater-test.sh" "$RELROOT/download/v18.0.0/uaeg-updater-18.0.0.sh"
+
+# ----------------------------------------------------------------------
+t "T-46: updater interface terlalu baru -> install.sh menolak + instruksi refresh"
+# ----------------------------------------------------------------------
+python3 - "$RELROOT/download/v19.0.0/uaeg-manifest.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+m = json.load(open(p, encoding="utf-8"))
+m["updater"]["interface"] = 99
+open(p, "w", encoding="utf-8").write(json.dumps(m, indent=2, sort_keys=True) + "\n")
+PY
+sign_manifest "$RELROOT/download/v19.0.0/uaeg-manifest.json" \
+  "$RELROOT/download/v19.0.0/uaeg-manifest.json.sig" "$TESTKEY_DIR/test-release.key"
+set_latest_tag "19.0.0"
+printf 'y\n' | bash "$OPERATOR_UNI/install.sh" > "$LOG" 2>&1
+RUN_RC=$?
+assert_rc 1 "T-46 rc=1 (interface baru -> tolak)"
+assert_in "$LOG" "interface" "T-46 pesan menyebut interface"
+assert_in "$LOG" "install.sh" "T-46 instruksi refresh mengarah ke install.sh"
+assert_eq "$(installed_version)" "20.0.0" "T-46 versi tidak berubah"
+python3 - "$RELROOT/download/v19.0.0/uaeg-manifest.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+m = json.load(open(p, encoding="utf-8"))
+m["updater"]["interface"] = 1
+open(p, "w", encoding="utf-8").write(json.dumps(m, indent=2, sort_keys=True) + "\n")
+PY
+sign_manifest "$RELROOT/download/v19.0.0/uaeg-manifest.json" \
+  "$RELROOT/download/v19.0.0/uaeg-manifest.json.sig" "$TESTKEY_DIR/test-release.key"
+
+# ----------------------------------------------------------------------
+t "T-47: install.sh --check dan --dry-run melalui kanal rilis (U-10, U-11)"
+# ----------------------------------------------------------------------
+WORK_H="$BASE/work-h"; REMOTE_H="$BASE/remote-h.git"; GIT_H_DIR="$BASE/gith"
+make_source "$WORK_H" "21.0.0"
+git init --bare -q "$REMOTE_H"
+make_release_repo_uni "$GIT_H_DIR" "$REMOTE_H" "21.0.0"
+make_release "$WORK_H" "21.0.0"
+set_latest_tag "21.0.0"
+export UAEG_REPO_URL="$REMOTE_H"
+N_BEFORE="$(backup_count)"
+run "$LOG" bash "$OPERATOR_UNI/install.sh" --check
+assert_rc 0 "T-47 --check rc=0"
+assert_in "$LOG" "20.0.0" "T-47 --check menampilkan versi terpasang"
+assert_in "$LOG" "update available" "T-47 --check menandai pembaruan tersedia"
+run "$LOG" bash "$OPERATOR_UNI/install.sh" --dry-run
+assert_rc 0 "T-47 --dry-run rc=0"
+assert_in "$LOG" "UPGRADE PLAN" "T-47 --dry-run menampilkan rencana upgrade"
+assert_eq "$(backup_count)" "$N_BEFORE" "T-47 --check/--dry-run tidak membuat backup"
+
+# ----------------------------------------------------------------------
+t "T-48: rilis rusak via install.sh bare -> ROLLBACK OTOMATIS (rc 2)"
+# ----------------------------------------------------------------------
+WORK_I="$BASE/work-i"; REMOTE_I="$BASE/remote-i.git"; GIT_I_DIR="$BASE/giti"
+make_source "$WORK_I" "22.0.0"
+printf '\ndef broken(:\n' >> "$WORK_I/src/uaeg/server.py"
+git init --bare -q "$REMOTE_I"
+make_release_repo_uni "$GIT_I_DIR" "$REMOTE_I" "22.0.0"
+printf '\ndef broken(:\n' >> "$GIT_I_DIR/src/uaeg/server.py"
+git -C "$GIT_I_DIR" -c user.email=ci@test -c user.name=ci commit -qam "release I (broken)"
+git -C "$GIT_I_DIR" tag -f v22.0.0 >/dev/null 2>&1 || git -C "$GIT_I_DIR" tag v22.0.0
+git -C "$GIT_I_DIR" push -q origin main --tags --force
+make_release "$WORK_I" "22.0.0"
+set_latest_tag "22.0.0"
+export UAEG_REPO_URL="$REMOTE_I"
+printf 'y\n' | bash "$OPERATOR_UNI/install.sh" > "$LOG" 2>&1
+RUN_RC=$?
+assert_rc 2 "T-48 rc=2 (rilis rusak -> rollback otomatis via installer terpadu)"
+assert_eq "$(installed_version)" "20.0.0" "T-48 aplikasi kembali ke 20.0.0"
+assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-48 kunci agent tetap utuh"
+
+# ----------------------------------------------------------------------
+t "T-49: install.sh --rollback (updater ter-cache, manual)"
+# ----------------------------------------------------------------------
+run "$LOG" bash "$OPERATOR_UNI/install.sh" --rollback --yes
+assert_rc 0 "T-49 --rollback rc=0"
+assert_in "$LOG" "cached updater" "T-49 menggunakan updater ter-cache"
+assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-49 data pra-upgrade dipulihkan (kunci identik)"
+
+# ----------------------------------------------------------------------
+t "T-50: perintah service tanpa systemd/unit -> penolakan bersih (rc 1)"
+# ----------------------------------------------------------------------
+for sc in --start --stop --restart --status; do
+  run "$LOG" bash "$OPERATOR_UNI/install.sh" "$sc"
+  if [[ "$RUN_RC" -eq 1 ]] && grep -q "systemd" "$LOG"; then
+    ok "T-50 $sc -> rc=1 + pesan systemd yang jelas"
+  else
+    no "T-50 $sc -> rc=$RUN_RC (harus 1 dengan pesan systemd; log: $(head -c 120 "$LOG"))"
+  fi
+done
+
+# ----------------------------------------------------------------------
+t "T-51: --repair mempertahankan data + menerapkan flag config (in-place)"
+# ----------------------------------------------------------------------
+WORK_J="$BASE/work-j"
+make_source "$WORK_J" "23.0.0"
+run "$LOG" bash "$WORK_J/install-test.sh" --repair \
+  --port 3952 --dashboard-port 3956 --dashboard-bind loopback \
+  --public-ip 127.0.0.1 --self-signed \
+  --install-dir "$INSTALL" --config-dir "$CONFIG" --data-dir "$DATA" \
+  --no-service --yes
+assert_rc 0 "T-51 --repair rc=0"
+assert_eq "$(installed_version)" "23.0.0" "T-51 versi sekarang 23.0.0 (sumber lokal)"
+assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-51 kunci agent identik (data dipertahankan)"
+assert_eq "$(cfg_field "cfg['dashboard']['port']")" "3956" "T-51 flag config diterapkan (3954 -> 3956)"
+# kembalikan port untuk konsistensi lingkungan berikutnya
+env_uaeg config set dashboard.port 3954 >/dev/null 2>&1
+
+# ----------------------------------------------------------------------
+t "T-52: UPGRADE DARI BASELINE v0.3.5 -> installer terpadu (kompatibilitas)"
+# ----------------------------------------------------------------------
+# Instal ulang dari POHON TAG v0.3.5 ASLI (installer lama, tanpa subperintah)
+# lalu upgrade dengan install.sh terpadu bare. Membuktikan jalur migrasi
+# operator rilis 0.3.2-0.3.5: kunci + data selamat, kontrak tetap berlaku.
+rm -rf "$INSTALL" "$DATA" "$CONFIG" "$TESTBIN/uaeg"
+SRC_035="$BASE/src-035"
+mkdir -p "$SRC_035"
+git -C "$REPO_DIR" archive --format=tar "v0.3.5" | tar -C "$SRC_035" -xf -
+patch_installsh "$SRC_035/install.sh" > "$SRC_035/install-test.sh"
+run "$LOG" bash "$SRC_035/install-test.sh" \
+  --port 3952 --dashboard-port 3953 --dashboard-bind loopback \
+  --public-ip 127.0.0.1 --self-signed \
+  --install-dir "$INSTALL" --config-dir "$CONFIG" --data-dir "$DATA" \
+  --no-service --yes
+assert_rc 0 "T-52 fresh install dari tag v0.3.5 rc=0"
+assert_eq "$(installed_version)" "0.3.5" "T-52 baseline terpasang: 0.3.5"
+env_uaeg generate --name "migrate-alpha" > "$BASE/key-migrate.txt" 2>&1
+env_uaeg generate --name "migrate-bravo" > "$BASE/key-migrate2.txt" 2>&1
+KEYS_035="$(db_keys)"
+WORK_K="$BASE/work-k"; REMOTE_K="$BASE/remote-k.git"; GIT_K_DIR="$BASE/gitk"
+make_source "$WORK_K" "24.0.0"
+git init --bare -q "$REMOTE_K"
+make_release_repo_uni "$GIT_K_DIR" "$REMOTE_K" "24.0.0"
+make_release "$WORK_K" "24.0.0"
+set_latest_tag "24.0.0"
+export UAEG_REPO_URL="$REMOTE_K"
+printf 'y\n' | bash "$OPERATOR_UNI/install.sh" > "$LOG" 2>&1
+RUN_RC=$?
+assert_rc 0 "T-52 upgrade v0.3.5 -> 24.0.0 via install.sh bare rc=0"
+assert_eq "$(installed_version)" "24.0.0" "T-52 versi sekarang 24.0.0"
+assert_eq "$(db_keys)" "$KEYS_035" "T-52 kunci agent dari baseline 0.3.5 identik"
+assert_eq "$(sha256sum "$OPERATOR_UNI/install.sh" | awk '{print $1}')" "$UNI_SHA" \
+  "T-52 SHA-256 install.sh operator MASIH identik (lintas baseline)"
+
+# matikan server rilis yang dinyalakan lagi di T-39
+kill "$RELSRV_PID" 2>/dev/null || true
 
 # ----------------------------------------------------------------------
 echo

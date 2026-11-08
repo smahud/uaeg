@@ -43,8 +43,8 @@ only prompt is the confirmation on an unsupported OS, which `--yes` auto-accepts
 | `--install-dir DIR` | `/opt/uaeg` | Install directory (plain copy of the source plus virtualenv) |
 | `--no-service` | — | Skip systemd unit installation (containers, testing) |
 | `--open-firewall` | — | Open the MCP port with `ufw` when `ufw` is active (otherwise the exact command is only printed) |
-| `--version X.Y.Z` | the release this script belongs to | Standalone mode: install this release tag (or set the `UAEG_VERSION` environment variable) |
-| `--yes` | — | Non-interactive; auto-accept the unsupported-OS confirmation |
+| `--version X.Y.Z` | the release this script belongs to | Pin the target release: on a fresh standalone install, fetch and install this release tag; on an existing installation (bare invocation) upgrade to it through the verified release channel. Bare `--version` (no value) prints the installer version. The `UAEG_VERSION` environment variable also works for fresh standalone installs |
+| `--yes` | — | Non-interactive; auto-accept the unsupported-OS confirmation and upgrade prompts |
 
 ### Example installs
 
@@ -100,6 +100,9 @@ versioned release archive from GitHub and installs from that. Pin a specific ver
 this `install.sh` belongs to. The integrity chain is: the script is checksum-verified by
 you, and the source archive travels over HTTPS from github.com.
 
+**Since v0.4.0 this same file is also your permanent upgrade tool — see below.**
+Keep it; you will never need to download an upgrade script again.
+
 ## What the installer does
 
 1. Checks the OS (Debian 12/13) and Python 3.11+.
@@ -152,52 +155,51 @@ re-open it before renewal is due; after each successful renewal the deploy hook
 (`/etc/letsencrypt/renewal-hooks/deploy/uaeg.sh`, written by the installer) restarts UAEG so
 the new certificate is loaded.
 
-## Upgrading
+## Upgrading and lifecycle (v0.4.0 — one file for everything)
 
-Since v0.3.3 upgrading is **one command with one file you download ONCE**,
-governed by the [safe-upgrade contract](./UPGRADE_CONTRACT.md) (contract v3;
-architecture: [BOOTSTRAP.md](./BOOTSTRAP.md)). The downloaded `upgrade.sh` is
-a small, stable **bootstrap**: it resolves the target release from the
-GitHub release channel, downloads that release's **signed manifest**
-(Ed25519), verifies the signature against the trusted public key embedded in
-the bootstrap, verifies the versioned updater against the manifest's SHA-256
-+ size, and then runs the updater — which performs automatic installation
-detection, a consistent pre-upgrade backup, the in-place upgrade with your
-configuration preserved, post-upgrade zero-data-loss verification, and
-automatic rollback on any failure.
-
-One-time setup (first upgrade, or transition from the ≤ v0.3.2 flow):
+Since v0.4.0 `install.sh` is the single public entrypoint for installing,
+upgrading and managing UAEG ([upgrade contract](./UPGRADE_CONTRACT.md)
+contract v4). Download it ONCE; every future operation reuses the same
+local file:
 
 ```bash
-cd ~   # anywhere; keep this file - it is your permanent bootstrap
-curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh
-curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh.sha256
-sha256sum -c upgrade.sh.sha256
-sudo bash upgrade.sh
+sudo bash install.sh            # no installation -> fresh install;
+                                 # existing installation -> SAFE UPGRADE to the
+                                 # latest stable release (verified, backed up,
+                                 # zero-data-loss checked, auto-rollback)
 ```
 
-Every future upgrade reuses the SAME local file — never download it again
-(the only exceptions, both exceptional and operator-visible, are a trust-key
-rotation or a bootstrap-interface break; see BOOTSTRAP.md):
-
-```bash
-sudo bash upgrade.sh
-```
-
-The installer also installs a convenience copy at
-`/usr/local/sbin/uaeg-upgrade`, so `sudo uaeg-upgrade` works the same way.
-Your git checkout (if any) is never read for content or modified.
-
-Useful modes (all safe to run at any time):
+All modes:
 
 | Command | What it does |
 |---------|--------------|
-| `sudo bash upgrade.sh --check` | Read-only status: install, version, service, keys, backups, available target |
-| `sudo bash upgrade.sh --dry-run` | Show the full plan (from → to, backup, downtime) without changing anything |
-| `sudo bash upgrade.sh --rollback` | Restore data + config (and app, if retained) from the latest backup |
-| `sudo bash upgrade.sh --version X.Y.Z` | Upgrade to a specific release tag |
-| `sudo bash upgrade.sh --source DIR` | Upgrade from a local source tree (offline) |
-| `sudo bash upgrade.sh --allow-downgrade` | Explicitly permit a downgrade |
+| `sudo bash install.sh` | Fresh install (absent) or verified safe upgrade (present, bare invocation) |
+| `sudo bash install.sh --check` | Read-only: installation status, version, keys, backups, available target (exit 3 if not installed) |
+| `sudo bash install.sh --dry-run` | Preview: the upgrade plan (or, on a fresh host, the install plan) without changing anything |
+| `sudo bash install.sh --rollback [ID]` | Restore data + config from the latest upgrade backup (or a specific one); works offline from the cached updater after the first successful upgrade |
+| `sudo bash install.sh --repair` | Re-run the installer in place: redeploys the application, rebuilds the venv, rewrites the systemd unit. Persistent data (agent keys, database, dashboard password, TLS material) and the existing configuration are preserved; first-install flags may be passed to re-apply configuration changes |
+| `sudo bash install.sh --start` / `--stop` / `--restart` | Start / stop / restart the `uaeg` systemd service |
+| `sudo bash install.sh --status` | Show the service status (plus a live health check) |
+| `sudo bash install.sh --version` | Print the installer's version |
+| `sudo bash install.sh --version X.Y.Z` | Pin the target release (fresh-install tag, or the verified upgrade target on an existing installation) |
+
+Dispatch rules (contract U-16): a **bare** invocation (no flags, or only
+`--yes` and/or `--version X.Y.Z`) on an existing installation always selects
+the verified safe-upgrade path. Passing any first-install configuration flag
+(`--port`, `--dashboard-bind`, `--domain`, ...) selects the **in-place**
+reconfiguration flow (the v0.3.x behavior) — the safe-upgrade path never
+touches your configuration. `--repair` is the explicit form of the in-place
+flow.
+
+How the safe upgrade works (unchanged since v0.3.3,
+[BOOTSTRAP.md](./BOOTSTRAP.md)): `install.sh` embeds the trusted release
+keyring; it resolves the target from the GitHub release channel, downloads
+the release's **signed manifest** (Ed25519), verifies the signature, then
+downloads the versioned updater and verifies its SHA-256 + size against the
+signed manifest before executing it. The updater performs automatic
+installation detection, a consistent pre-upgrade backup, the in-place upgrade
+with your configuration preserved, post-upgrade zero-data-loss
+verification, and automatic rollback on any failure.
 
 What the upgrade guarantees (details and enforcement in
 [UPGRADE_CONTRACT.md](./UPGRADE_CONTRACT.md)):
@@ -213,7 +215,7 @@ What the upgrade guarantees (details and enforcement in
 - **Automatic rollback.** Any failure (installer error, failed health check,
   failed verification, Ctrl+C) restores the pre-upgrade app, data and
   configuration, restarts the service and exits with code `2`.
-- **Non-disruptive.** No bind/TLS/port flags are ever applied during an
+- **Non-disruptive.** No bind/TLS/port flags are ever applied during a safe
   upgrade; the existing configuration wins (FR-003). MCP agent keys and
   connections stay valid; the only impact is one controlled service restart
   (±15–60 s downtime).
@@ -223,11 +225,31 @@ What the upgrade guarantees (details and enforcement in
   permissions and are never committed to the repository.
 
 Exit codes: `0` ok · `1` refused/failed · `2` failed and rolled back ·
-`3` no installation found · `4` dirty git tree · `5` downgrade refused.
+`3` no installation found (`--check`/`--rollback`) · `4` reserved ·
+`5` downgrade refused (explicit downgrades use
+`sudo bash upgrade.sh --version X.Y.Z --allow-downgrade`, or `uaeg-upgrade`).
 
-The old manual procedure (re-run `install.sh` from a fresh checkout) still
-works — `upgrade.sh` uses it internally in upgrade mode — but it performs
-none of the backup/verification steps above, so prefer `upgrade.sh`.
+### Compatibility with v0.3.2 – v0.3.5 installations
+
+- All existing installations upgrade through the same verified chain; agent
+  keys, the dashboard password, SQLite data, TLS certificates, service
+  configuration and the backup/rollback machinery are preserved (enforced by
+  the contract suite, including a dedicated v0.3.5-baseline upgrade test).
+- The old v0.3.x `upgrade.sh` bootstrap **keeps working unchanged** for
+  operators who hold it (still published as a release asset), and
+  `/usr/local/sbin/uaeg-upgrade` continues to be installed/refreshed.
+- One exceptional, operator-visible event: the **release-signing key
+  rotation at v0.4.0** (`uaeg-release-2` → `uaeg-release-3`). A bootstrap
+  downloaded during v0.3.4/v0.3.5 will refuse v0.4.0+ manifests with an
+  explicit "signature invalid / key rotation" error — that is the documented
+  fail-closed behavior. Recovery is a ONE-TIME refresh, which is simply:
+  download the new `install.sh` (verified above) and run it. Operators on
+  v0.3.3-era bootstraps already needed this refresh since v0.3.4. No data is
+  affected by a rotation. See [BOOTSTRAP.md](./BOOTSTRAP.md).
+- The old manual procedure (re-run `install.sh` from a fresh checkout)
+remains available as the in-place flow (now `--repair` or any configuration
+flag) — but it performs none of the backup/verification steps of the safe
+upgrade, so prefer the bare invocation.
 
 ## Uninstall
 

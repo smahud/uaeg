@@ -8,7 +8,7 @@ native capabilities of the server, up to and including root.
 
 [![CI](https://github.com/smahud/uaeg/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/smahud/uaeg/actions/workflows/ci.yml)
 
-**Current release: v0.3.5** (tag `v0.3.5`). The repository carries its own audit trail
+**Current release: v0.4.0** (tag `v0.4.0`). The repository carries its own audit trail
 — release decisions, security findings, and test evidence — under [report/](report/).
 
 > **SECURITY WARNING — READ THIS BEFORE INSTALLING**
@@ -49,9 +49,12 @@ native capabilities of the server, up to and including root.
 - One systemd service, one SQLite database, three runtime dependencies (FR-019). Fail-closed
   startup: a broken listener, config, certificate or database stops the whole service with a
   clear error instead of running half-alive.
-- Guided installer with an integrity-verified one-line option (FR-001, FR-002); safe upgrades via
-  `sudo bash upgrade.sh` — auto-detected, backed up, verified, and rolled back automatically on
-  failure under the [upgrade contract](docs/UPGRADE_CONTRACT.md).
+- Guided installer with an integrity-verified one-line option (FR-001, FR-002); since v0.4.0
+  `install.sh` is the single public entrypoint — the same downloaded file installs UAEG, performs
+  every future safe upgrade (signature-verified release manifest, auto-backup, zero-data-loss
+  verification, automatic rollback), and manages the service
+  (`--check`, `--dry-run`, `--rollback`, `--repair`, `--start/--stop/--restart/--status`) under
+  the [upgrade contract](docs/UPGRADE_CONTRACT.md).
 
 ## Architecture
 
@@ -108,24 +111,29 @@ sudo uaeg status
 sudo uaeg doctor
 ```
 
-Upgrading is one command with one file you download **once**: since v0.3.3 the release's
-`upgrade.sh` asset is a permanent bootstrap — it fetches and Ed25519-verifies each release's
-signed manifest, then runs the versioned safe-upgrade updater (auto-detect, backup, zero-data-
-loss verification, automatic rollback). Download it one time, then reuse the same local file
+Upgrading is one command with one file you download **once**: since v0.4.0 the release's
+`install.sh` asset is a unified installer + verified upgrade bootstrap — it embeds the trusted
+release keyring, fetches and Ed25519-verifies each release's signed manifest, then runs the
+versioned safe-upgrade updater (auto-detect, backup, zero-data-loss verification, automatic
+rollback), and also manages the service. Download it one time, then reuse the same local file
 for every future release, even ones that change the upgrade implementation itself
 ([upgrade contract](docs/UPGRADE_CONTRACT.md) · [bootstrap design](docs/BOOTSTRAP.md)):
 
 ```bash
 # one-time setup (verify the download, then):
-sudo bash upgrade.sh          # and every future upgrade: the same command, same file
-# other modes: --check / --dry-run / --rollback / --version X.Y.Z
+sudo bash install.sh --domain gw.example.com   # fresh install
+# every future upgrade AND service command: the same file
+sudo bash install.sh                           # verified safe upgrade to the latest release
+sudo bash install.sh --check                   # status + available update
+sudo bash install.sh --rollback                # restore the latest upgrade backup
 ```
 
-> **v0.3.4 note (release-signing key rotation):** releases are now signed with
-> `uaeg-release-2`. A bootstrap downloaded during v0.3.3 will refuse v0.3.4+ with an
-> explicit "signature invalid / key rotation" error — that is the documented fail-closed
-> behavior; re-download `upgrade.sh` once ([docs/BOOTSTRAP.md](docs/BOOTSTRAP.md)).
-> A bootstrap downloaded fresh (or after v0.3.4) trusts both keys and needs no refresh.
+> **v0.4.0 note (release-signing key rotation + unified installer):** releases are now
+> signed with `uaeg-release-3`, and `install.sh` is the single public install/upgrade file.
+> A bootstrap downloaded during v0.3.4/v0.3.5 will refuse v0.4.0+ with an explicit
+> "signature invalid / key rotation" error — that is the documented fail-closed behavior;
+> re-download `install.sh` once ([docs/BOOTSTRAP.md](docs/BOOTSTRAP.md)).
+> A bootstrap downloaded fresh (v0.4.0+) trusts all historical keys and needs no refresh.
 
 The first tool an agent should call is `server_info`, which reports the execution context and
 the advisory usage rules. Full walkthrough: [docs/USAGE.md](docs/USAGE.md).
@@ -215,4 +223,4 @@ deploying, read [docs/SECURITY.md](docs/SECURITY.md) (threat model and hardening
 
 ## License
 
-MIT — see [LICENSE](LICENSE). UAEG is experimental software (v0.3.5); treat it accordingly.
+MIT — see [LICENSE](LICENSE). UAEG is experimental software (v0.4.0); treat it accordingly.

@@ -1,9 +1,15 @@
-# The Permanent Upgrade Bootstrap (contract v3)
+# The Permanent Upgrade Bootstrap (contract v3/v4)
 
 How UAEG's "download once, upgrade forever" mechanism works, the binding
 bootstrap↔updater interface, and the release-signing trust model with its key
 rotation policy. The behavioral contract itself is
-[UPGRADE_CONTRACT.md](./UPGRADE_CONTRACT.md) (clauses U-13, U-14).
+[UPGRADE_CONTRACT.md](./UPGRADE_CONTRACT.md) (clauses U-13, U-14, U-16).
+
+Since v0.4.0 the operator's long-lived file is **`install.sh`** — the unified
+installer AND upgrade entrypoint. It embeds the same bootstrap logic
+(trusted keyring, manifest verification, verified updater fetch) and speaks
+the same binding interface (v1) as `upgrade.sh`, which remains published as
+the standalone bootstrap for operators who downloaded it in the past.
 
 ## Why
 
@@ -23,11 +29,13 @@ v0.3.3 splits those concerns permanently.
 ```
 Operator (downloads ONCE)          GitHub Releases (per version)          VPS
 ─────────────────────────         ────────────────────────────────         ───
-upgrade.sh  = BOOTSTRAP           uaeg-manifest.json          ┐
- (~18 KB, stable,                 uaeg-manifest.json.sig      ┘ signed
-  embeds trusted Ed25519          uaeg-updater-<version>.sh     the updater
-  public key(s))                  install.sh / upgrade.sh       (assets)
+install.sh = UNIFIED              uaeg-manifest.json          ┐
+ installer + bootstrap            uaeg-manifest.json.sig      ┘ signed
+ (embeds trusted Ed25519          uaeg-updater-<version>.sh     the updater
+  public key(s); since v0.4.0)    install.sh / upgrade.sh       (assets)
         │                                 │
+        │  fresh host → full installer (flags apply)          │
+        │  existing install, bare run:                        │
         │  1. resolve target release      │
         │     (latest Release, or         │
         │      --version X.Y.Z)           │
@@ -41,14 +49,23 @@ updater = the full safe-upgrade machinery (U-1..U-12):
   detect → backup → isolated staging clone → install → verify
   → auto-rollback; then cache itself for offline --rollback and
   refresh /usr/local/sbin/uaeg-upgrade (best effort)
+
+upgrade.sh (standalone bootstrap, contract v3) performs steps 1-6 of the
+upgrade path only — identical verification chain, unchanged interface.
 ```
 
 Roles:
 
-- **Bootstrap (`upgrade.sh`)** — small, stable, operator-owned. Decides *what*
-  to install (release channel, never `main` by default), proves *who*
-  published it and *that the bytes are intact*, then delegates. It must not
-  grow per-release logic; expected to stay byte-stable for years.
+- **Unified installer/bootstrap (`install.sh`)** — operator-owned, downloaded
+  once. On a fresh host it is the full installer; on an existing installation
+  a bare invocation is the verified safe-upgrade entrypoint, and it also
+  carries the service-management and recovery commands (`--check`, `--dry-run`,
+  `--rollback`, `--repair`, `--start/--stop/--restart/--status`). See
+  UPGRADE_CONTRACT.md U-16 for the dispatch rules.
+- **Standalone bootstrap (`upgrade.sh`)** — the v0.3.3+ permanent bootstrap,
+  still published for operators who already hold it. Decides *what* to
+  install (release channel, never `main` by default), proves *who* published
+  it and *that the bytes are intact*, then delegates.
 - **Updater (`uaeg-updater-<v>.sh`, built from the repo's `updater.sh`)** —
   release-coupled. Contains all the safe-upgrade machinery and may change
   freely from release to release.
@@ -105,8 +122,8 @@ the bootstrap (see below).
   over the exact manifest bytes** (OpenSSL `pkeyutl -rawin`; no new runtime
   dependencies — curl, openssl, sha256sum, python3 are already required).
 - The bootstrap embeds the trusted public key(s) (keyring between marked
-  lines in `upgrade.sh`; committed in `release/keys/`). A manifest signed by
-  any other key is rejected.
+  lines in `install.sh` AND `upgrade.sh`; committed in `release/keys/`). A
+  manifest signed by any other key is rejected.
 - Integrity of the updater is checked against the **signed** manifest, so a
   checksum alone is never treated as proof of publisher identity (U-14).
 - Release publishing: `release/make_release.py --key <private key>` builds +
@@ -124,56 +141,76 @@ Rotation is an **exceptional, operator-visible event**, never silent:
 2. After the window, releases are signed with the new key only. Bootstraps
    that only carry the old key will refuse those releases with an explicit
    "signature invalid / key rotation" message.
-3. Recovery is a ONE-TIME bootstrap refresh (the only routine situation that
-   requires it, together with an interface bump):
+3. Recovery is a ONE-TIME refresh of the operator's long-lived file (the only
+   routine situation that requires it, together with an interface bump):
 
    ```bash
-   curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh
-   curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh.sha256
-   sha256sum -c upgrade.sh.sha256   # verify over TLS from github.com
+   curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/install.sh
+   curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/install.sh.sha256
+   sha256sum -c install.sh.sha256   # verify over TLS from github.com
    ```
 
    This is documented in the bootstrap's own failure messages and in
    TROUBLESHOOTING.md; it is NOT part of normal upgrade flow.
 
-Current keys: `uaeg-release-1` (historical: releases <= v0.3.3) and
-`uaeg-release-2` (v0.3.4+). Fingerprints (sha256 of the PEM, first 16 hex):
-see `bash upgrade.sh --bootstrap-info`.
+Current keys: `uaeg-release-1` (historical: releases <= v0.3.3),
+`uaeg-release-2` (v0.3.4 - v0.3.5) and `uaeg-release-3` (v0.4.0+).
+Fingerprints (sha256 of the PEM, first 16 hex): see
+`bash upgrade.sh --bootstrap-info`.
 
 **Rotation 1 -> 2 at v0.3.4** (bootstrap keyring v2): the publisher's
 `uaeg-release-1` private key is no longer available, so v0.3.4 and later
 manifests are signed with `uaeg-release-2`. The v0.3.4 bootstrap trusts both
 keys (historical releases keep verifying for pins/downgrades). Operators
-holding a bootstrap downloaded during v0.3.3 will see the explicit
-"signature invalid / key rotation" refusal when targeting v0.3.4+ and must
-perform the ONE-TIME refresh above. Operators who download the bootstrap
-fresh (the normal path for the MicroTix recovery, whose v0.3.1-era upgrade
-never completed) get the v0.3.4 keyring directly and need no refresh.
+holding a bootstrap downloaded during v0.3.3 saw the explicit
+"signature invalid / key rotation" refusal when targeting v0.3.4+ and had to
+perform the ONE-TIME refresh.
 
-## Migration from v0.3.2 installs
+**Rotation 2 -> 3 at v0.4.0** (bootstrap keyring v3): the publisher's
+`uaeg-release-2` private key is no longer available either, so v0.4.0+ is
+signed with `uaeg-release-3`. The keyrings in `install.sh` and `upgrade.sh`
+trust ALL THREE keys (historical releases keep verifying). Consequences per
+operator state:
 
-One-time transition (documented in INSTALL.md and the release notes):
+- **v0.3.3-era bootstrap (keyring = key 1 only)** — already required a
+  refresh since v0.3.4; nothing changes.
+- **v0.3.4/v0.3.5 bootstrap (keyring = keys 1+2)** — will refuse v0.4.0+
+  manifests with the explicit rotation message; perform the ONE-TIME refresh
+  above (which now also upgrades you to the unified installer).
+- **Fresh downloads (v0.4.0+)** — trust all three keys; no action needed.
+
+Note: an operator moving to the unified installer downloads `install.sh`
+anyway, so the rotation refresh and the v0.4.0 migration are the same single
+step. Existing installations' data, keys and configuration are never
+affected by a rotation — only the next upgrade's verification is.
+
+## Migration from v0.3.2 - v0.3.5 installs
+
+One-time transition to the unified installer (documented in INSTALL.md and
+the release notes):
 
 ```bash
-cd ~  # anywhere; the file no longer needs to live inside a clone
-curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh
-curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh.sha256
-sha256sum -c upgrade.sh.sha256
-sudo bash upgrade.sh        # upgrades to v0.3.3 via the signed manifest
+cd ~  # anywhere; this file no longer needs to live inside a clone
+curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/install.sh
+curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/install.sh.sha256
+sha256sum -c install.sh.sha256
+sudo bash install.sh        # safe upgrade to the latest release, verified
 ```
 
-From then on: `sudo bash upgrade.sh`, forever. The old v0.3.2 monolithic
-`upgrade.sh` (if present in `~/uaeg`) keeps working for one last run only if
-it is the v0.3.2 asset — operators should simply replace it with the
-bootstrap. Nothing on the operator's machine is modified by the bootstrap
-itself; the updater follows the v0.2 contract (staging clone; operator git
-trees never touched). `install.sh` additionally installs the convenience copy
-`/usr/local/sbin/uaeg-upgrade` on fresh installs and upgrades.
+From then on: `sudo bash install.sh`, forever. Operators who prefer the
+v0.3.3+ standalone bootstrap may keep using their existing `upgrade.sh`
+unchanged (it keeps working; only its keyring is refreshed at v0.4.0 for the
+signing-key rotation). Nothing on the operator's machine is modified by the
+bootstrap itself; the updater follows the v0.2 contract (staging clone;
+operator git trees never touched). `install.sh` additionally installs the
+convenience copy `/usr/local/sbin/uaeg-upgrade` on fresh installs and
+upgrades, so `sudo uaeg-upgrade` works the same way.
 
 ## Test coverage
 
-`tests/test_upgrade_contract.sh` (T-20..T-31) runs the full chain against a
-local release server with a test-only keyring substitution:
+`tests/test_upgrade_contract.sh` (T-20..T-31 for the standalone bootstrap,
+T-39..T-52 for the unified installer) runs the full chain against a local
+release server with a test-only keyring substitution:
 
 | Test | Proves |
 |------|--------|
@@ -189,6 +226,20 @@ local release server with a test-only keyring substitution:
 | T-29 | `--check` / `--dry-run` through the release channel |
 | T-30 | broken release → auto-rollback via bootstrap; retry with the same bootstrap succeeds |
 | T-31 | offline `--rollback` from the cached updater |
+| T-39 | unified `--help`/`--version`; operator file + release-channel setup |
+| T-40 | bare `install.sh` on an existing install → verified safe upgrade; file SHA unchanged; RECORD proves the chain |
+| T-41 | multi-release reuse of the SAME install.sh across a changed updater implementation |
+| T-42 | `install.sh --version X.Y.Z` pinned verified upgrade |
+| T-43/T-44/T-45 | tampered manifest / foreign key / tampered updater → rejected via install.sh |
+| T-46 | updater interface too new → refused, refresh points at install.sh |
+| T-47 | `install.sh --check` / `--dry-run` through the release channel |
+| T-48 | broken release via bare install.sh → auto-rollback (exit 2) |
+| T-49 | `install.sh --rollback` from the cached updater |
+| T-50 | service commands without systemd/unit → clean refusal |
+| T-51 | `--repair` preserves data, applies configuration flags |
+| T-52 | upgrade from a real v0.3.5 baseline → keys preserved, same file |
 
 The signature/verification chain in those tests is real (OpenSSL Ed25519);
-only the release channel and the key are simulated locally.
+only the release channel and the key are simulated locally. The updater
+additionally honors `UAEG_REPO_URL` / `UAEG_BACKUPS_DIR` env fallbacks
+(flag > env > default) used by the suite and mirrors.

@@ -1,8 +1,42 @@
 #!/usr/bin/env bash
 #
-# UAEG - Universal Agent Execution Gateway installer (PRD FR-001).
+# UAEG - Universal Agent Execution Gateway unified installer (PRD FR-001/FR-002).
 #
-# Usage:
+# Since v0.4.0 this ONE file is the public installation AND upgrade entrypoint
+# (docs/UPGRADE_CONTRACT.md, contract v4 / docs/INSTALL.md). Download it ONCE
+# and reuse the same local file forever:
+#
+#   sudo bash install.sh                  # fresh install if absent,
+#                                         # SAFE UPGRADE to the latest release
+#                                         # if already installed (signature-
+#                                         # verified bootstrap -> updater)
+#   sudo bash install.sh --check          # status + available update
+#   sudo bash install.sh --dry-run        # preview, change nothing
+#   sudo bash install.sh --rollback       # restore the latest upgrade backup
+#   sudo bash install.sh --repair         # re-run the installer in place,
+#                                         # persistent data is preserved
+#   sudo bash install.sh --start|--stop|--restart|--status
+#   sudo bash install.sh --version        # print this file's version
+#   sudo bash install.sh --version X.Y.Z  # pin the target release (fresh
+#                                         # install tag or upgrade target)
+#
+# First-install flags (--port, --domain, --cert/--key, --dashboard-bind, ...)
+# are all preserved; on an existing installation passing any of them runs the
+# IN-PLACE installer flow (reconfiguration, v0.3.x behavior) - the verified
+# safe-upgrade path is selected by the BARE invocation (optionally --yes and
+# --version X.Y.Z) and by the commands above.
+#
+# The safe-upgrade path reuses the permanent upgrade architecture (contract
+# v3/v4, docs/BOOTSTRAP.md): resolve the target release -> download the signed
+# manifest -> verify the Ed25519 signature against the trusted keyring
+# embedded below -> download the versioned updater -> verify sha256+size
+# against the signed manifest -> execute it (detect -> backup -> isolated
+# staging -> install -> verify zero data loss -> auto-rollback). The
+# bootstrap logic embedded here speaks the SAME binding interface (v1) as
+# upgrade.sh, which remains available as a standalone asset for operators
+# who downloaded it in the past.
+#
+# Usage (fresh install):
 #   git clone https://github.com/smahud/uaeg.git
 #   cd uaeg
 #   sudo ./install.sh --domain gw.example.com           # Let's Encrypt TLS
@@ -42,10 +76,56 @@ APP_BACKUP=""
 CONFIG_BACKUP=""
 # Release this installer belongs to (used for standalone bootstrap, FR-002).
 # Override the source version at runtime with: --version X.Y.Z or UAEG_VERSION=X.Y.Z
-UAEG_RELEASE_VERSION="0.3.5"
+UAEG_RELEASE_VERSION="0.4.0"
 FETCH_VERSION=""
 
+# ----------------------------------------------------------------------
+# Unified-installer state (contract v4)
+# ----------------------------------------------------------------------
+MODE_CMD=""                  # "" (install/upgrade) | start|stop|restart|status |
+                             # check|dry-run|rollback|repair
+PRINT_VERSION_ONLY=0
+FORCE_INPLACE=0              # --repair (and the updater-invoked in-place flow)
+BARE_INVOCATION=1            # 1 = only --yes/--version were given (safe-upgrade
+                             # eligible on an existing installation)
+CONFIG_FLAGS_GIVEN=0         # any first-install configuration flag was given
+TARGETING_FLAGS_GIVEN=0      # any --install-dir/--data-dir/... flag was given
+
+# Optional rollback backup ID (--rollback [ID])
+ROLLBACK_ID=""
+
+# Bootstrap identity of THIS file (docs/BOOTSTRAP.md). The embedded
+# bootstrap speaks updater interface v1 - identical to upgrade.sh.
+INSTALLER_INTERFACE="1"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SELF_FILE="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+SELF_SHA_BEFORE="$(sha256sum "$SELF_FILE" 2>/dev/null | awk '{print $1}' || echo unknown)"
+
+# Release channel (env overrides exist for mirrors and the contract test
+# suite; signature verification applies UNCONDITIONALLY).
+RELEASE_API_BASE="${UAEG_RELEASE_API_BASE:-https://api.github.com/repos/smahud/uaeg}"
+RELEASE_DOWNLOAD_BASE="${UAEG_RELEASE_DOWNLOAD_BASE:-https://github.com/smahud/uaeg/releases/download}"
+
+# System paths (env-overridable so isolated tests can redirect them).
+SYSTEM_UAEG_BIN="${UAEG_SYSTEM_UAEG_BIN:-/usr/local/bin/uaeg}"
+
+# ----------------------------------------------------------------------
+# Trusted release-signing public keys (Ed25519, PEM) - used by the embedded
+# safe-upgrade bootstrap below. Key rotation policy: docs/BOOTSTRAP.md.
+# Adding a key here is an exceptional, operator-visible bootstrap refresh -
+# never silent.
+# --- TRUSTED KEYRING BEGIN (tests substitute the key between these markers) ---
+_TRUSTED_KEY_1="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAGnV8BEK2kZMk8JER3qe+Azc2Qidn2+c1tn4LSsCB5r4=
+-----END PUBLIC KEY-----"
+_TRUSTED_KEY_2="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAS6XMyzmiARYxhkDoBsMZdNE1SXNtyGCNJV6R+Uvznq4=
+-----END PUBLIC KEY-----"
+_TRUSTED_KEY_3="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEABBIDBLITvWPB+YC0iDMYvVi3r/0gqdbaAGhy8CLuC/Q=
+-----END PUBLIC KEY-----"
+# ---- TRUSTED KEYRING END ----
 
 # ----------------------------------------------------------------------
 # Helpers
@@ -56,9 +136,8 @@ die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # confirm_ask <prompt> — read the operator's y/N answer.
 #
-# v0.3.5 fix (incident 2026-11-08, same class as the updater's): the answer
-# MUST come from the operator's KEYBOARD, never from the script's stdin.
-# The installer can execute with stdin already consumed or detached
+# The answer MUST come from the operator's KEYBOARD, never from the script's
+# stdin. The installer can execute with stdin already consumed or detached
 # (`curl ... | bash`, `bash install.sh < /dev/null`, closed stdin under
 # sudo/CI); a plain `read` then returns EOF or script text while the typed
 # "y" never arrives — previously misreported as a plain "aborted", or a
@@ -96,9 +175,39 @@ confirm_ask() {
 
 usage() {
   cat <<'USAGE'
-UAEG installer
+UAEG unified installer & upgrade entrypoint (docs/INSTALL.md, docs/UPGRADE_CONTRACT.md)
 
-Options:
+Download this file ONCE. It installs UAEG on a fresh host and performs every
+future SAFE UPGRADE of an existing installation (verified signed release
+manifest -> versioned updater -> backup -> zero-data-loss verification ->
+automatic rollback).
+
+Commands:
+  (default)              no existing installation: fresh install.
+                         existing installation + bare invocation: safe upgrade
+                         to the latest stable release
+  --check                read-only: installation status + available update
+  --dry-run              preview: upgrade plan (or fresh-install plan), no
+                         changes
+  --rollback [ID]        restore the latest upgrade backup (works offline from
+                         the cached updater after the first upgrade)
+  --repair               re-run the installer in place over the existing
+                         installation: redeploys the application, rebuilds the
+                         venv, rewrites the systemd unit - persistent data
+                         (keys, database, dashboard password, TLS material)
+                         and the existing configuration are preserved
+  --start                start the UAEG systemd service
+  --stop                 stop the UAEG systemd service
+  --restart              restart the UAEG systemd service
+  --status               show the UAEG service status
+  --version              print this installer's version and exit
+  --version X.Y.Z        pin the target release (fresh-install tag, or the
+                         safe-upgrade target on an existing installation)
+  -h, --help             show this help
+
+First-install options (a fresh install accepts all of these; on an existing
+installation they select the IN-PLACE reconfiguration flow - v0.3.x behavior
+- because the safe-upgrade path never changes your configuration):
   --port N               MCP (public HTTPS) port                    [3902]
   --dashboard-port N     dashboard port                             [3903]
   --dashboard-bind X     loopback | lan | public | <ip>            [loopback]
@@ -113,9 +222,19 @@ Options:
   --install-dir PATH     application install directory              [/opt/uaeg]
   --no-service           install without registering systemd (containers/tests)
   --open-firewall        open the MCP (and public dashboard, if any) port in ufw
-  --version X.Y.Z        standalone mode: install this release tag (default: $UAEG_RELEASE_VERSION)
   --yes                  assume yes for all prompts (unattended)
-  -h, --help             show this help
+
+Environment:
+  UAEG_RELEASE_API_BASE / UAEG_RELEASE_DOWNLOAD_BASE  release channel
+  overrides (mirrors, contract tests). Signatures are ALWAYS verified.
+  UAEG_VERSION                                          default release for a
+  standalone fresh install (same as --version X.Y.Z)
+
+Exit codes (safe-upgrade modes, propagated from the updater):
+  0 success                 3 no existing installation found
+  1 error (refused/failed)  4 reserved
+  2 failure -> rolled back  5 downgrade refused (use --allow-downgrade via
+  upgrade.sh, or re-run with --version <older> is refused the same way)
 USAGE
 }
 
@@ -124,25 +243,57 @@ USAGE
 # ----------------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --port)             MCP_PORT="$2"; MCP_PORT_GIVEN=1; shift 2 ;;
-    --dashboard-port)   DASHBOARD_PORT="$2"; DASHBOARD_PORT_GIVEN=1; shift 2 ;;
-    --dashboard-bind)   DASHBOARD_BIND="$2"; DASHBOARD_BIND_GIVEN=1; shift 2 ;;
-    --domain)           DOMAIN="$2"; TLS_MODE="certbot"; TLS_MODE_GIVEN=1; PUBLIC_HOST_GIVEN=1; shift 2 ;;
-    --public-ip)        PUBLIC_IP="$2"; PUBLIC_HOST_GIVEN=1; shift 2 ;;
-    --cert)             CERT_FILE="$2"; TLS_MODE="manual"; TLS_MODE_GIVEN=1; shift 2 ;;
-    --key)              KEY_FILE="$2"; TLS_MODE="manual"; TLS_MODE_GIVEN=1; shift 2 ;;
-    --self-signed)      TLS_MODE="self-signed"; TLS_MODE_GIVEN=1; shift ;;
-    --data-dir)         DATA_DIR="$2"; shift 2 ;;
-    --config-dir)       CONFIG_DIR="$2"; shift 2 ;;
-    --install-dir)      INSTALL_DIR="$2"; shift 2 ;;
-    --no-service)       NO_SERVICE=1; shift ;;
-    --open-firewall)    OPEN_FIREWALL=1; shift ;;
+    --start)            MODE_CMD="start"; shift ;;
+    --stop)             MODE_CMD="stop"; shift ;;
+    --restart)          MODE_CMD="restart"; shift ;;
+    --status)           MODE_CMD="status"; shift ;;
+    --check)            MODE_CMD="check"; shift ;;
+    --dry-run)          MODE_CMD="dry-run"; shift ;;
+    --rollback)
+      MODE_CMD="rollback"
+      # optional backup ID (timestamp prefix), forwarded to the updater as
+      # --backup ID - same interface as `upgrade.sh --rollback [ID]`
+      if [[ $# -ge 2 && "$2" != -* ]]; then ROLLBACK_ID="$2"; shift; fi
+      shift ;;
+    --repair)           MODE_CMD="repair"; FORCE_INPLACE=1; shift ;;
+    --port)             MCP_PORT="$2"; MCP_PORT_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --dashboard-port)   DASHBOARD_PORT="$2"; DASHBOARD_PORT_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --dashboard-bind)   DASHBOARD_BIND="$2"; DASHBOARD_BIND_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --domain)           DOMAIN="$2"; TLS_MODE="certbot"; TLS_MODE_GIVEN=1; PUBLIC_HOST_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --public-ip)        PUBLIC_IP="$2"; PUBLIC_HOST_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --cert)             CERT_FILE="$2"; TLS_MODE="manual"; TLS_MODE_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --key)              KEY_FILE="$2"; TLS_MODE="manual"; TLS_MODE_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --self-signed)      TLS_MODE="self-signed"; TLS_MODE_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift ;;
+    --data-dir)         DATA_DIR="$2"; TARGETING_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --config-dir)       CONFIG_DIR="$2"; TARGETING_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --install-dir)      INSTALL_DIR="$2"; TARGETING_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --no-service)       NO_SERVICE=1; TARGETING_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift ;;
+    --open-firewall)    OPEN_FIREWALL=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift ;;
     --yes|-y)           ASSUME_YES=1; shift ;;
-    --version)          FETCH_VERSION="$2"; shift 2 ;;
+    --version)
+      # Ambiguity resolved (contract v4): bare "--version" PRINTS this
+      # file's version; "--version X.Y.Z" pins the target release for both
+      # the fresh-install and the safe-upgrade paths.
+      if [[ $# -ge 2 && "$2" != -* ]]; then
+        FETCH_VERSION="$2"; shift 2
+      else
+        PRINT_VERSION_ONLY=1; shift
+      fi ;;
     -h|--help)          usage; exit 0 ;;
     *)                  die "unknown option: $1 (see --help)" ;;
   esac
 done
+
+if [[ $PRINT_VERSION_ONLY -eq 1 ]]; then
+  echo "UAEG unified installer v${UAEG_RELEASE_VERSION} (updater interface v${INSTALLER_INTERFACE})"
+  exit 0
+fi
+
+if [[ -n "$MODE_CMD" && $CONFIG_FLAGS_GIVEN -eq 1 && "$MODE_CMD" != "dry-run" && "$MODE_CMD" != "repair" ]]; then
+  die "configuration flags (--port, --dashboard-bind, --domain, ...) apply to the
+install flow, not to --$MODE_CMD. For a read-only preview use --dry-run;
+to APPLY configuration changes to an existing installation use --repair."
+fi
 
 # ----------------------------------------------------------------------
 # Root + OS + prerequisites
@@ -153,6 +304,353 @@ if [[ $EUID -ne 0 ]]; then
     exec sudo "$0" "$@"
   fi
   die "this installer must run as root (try: sudo ./install.sh)"
+fi
+
+# ----------------------------------------------------------------------
+# Existing-installation detection (for the unified dispatch only; the
+# install flow below keeps its own detection. Priority mirrors updater.sh:
+# systemd unit > /usr/local/bin/uaeg symlink > default marker.)
+# ----------------------------------------------------------------------
+DISPATCH_UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+[[ -f "$DISPATCH_UNIT_FILE" ]] || DISPATCH_UNIT_FILE="/lib/systemd/system/${SERVICE_NAME}.service"
+DISPATCH_INSTALL_DIR=""
+if [[ -f "$DISPATCH_UNIT_FILE" ]]; then
+  _unit_exec="$(sed -n 's/^ExecStart=//p' "$DISPATCH_UNIT_FILE" | head -1)"
+  if [[ -n "$_unit_exec" ]]; then
+    DISPATCH_INSTALL_DIR="$(dirname "$(dirname "$(dirname "$_unit_exec")")")"
+  fi
+fi
+if [[ -z "$DISPATCH_INSTALL_DIR" && -L "$SYSTEM_UAEG_BIN" ]]; then
+  _link_target="$(readlink -f "$SYSTEM_UAEG_BIN" 2>/dev/null || true)"
+  if [[ "$_link_target" == */.venv/bin/uaeg ]]; then
+    DISPATCH_INSTALL_DIR="$(dirname "$(dirname "$(dirname "$_link_target")")")"
+  fi
+fi
+[[ -n "$DISPATCH_INSTALL_DIR" ]] || DISPATCH_INSTALL_DIR="$INSTALL_DIR"
+IS_INSTALLED=0
+if [[ -f "$DISPATCH_INSTALL_DIR/.uaeg-installed" ]] \
+   || { [[ -f "$DISPATCH_INSTALL_DIR/pyproject.toml" ]] && [[ -x "$DISPATCH_INSTALL_DIR/.venv/bin/uaeg" ]]; }; then
+  IS_INSTALLED=1
+fi
+
+# ----------------------------------------------------------------------
+# Service-management commands (--start/--stop/--restart/--status)
+# ----------------------------------------------------------------------
+cmd_service() {
+  local action="$1" rc=0
+  if ! command -v systemctl >/dev/null 2>&1; then
+    die "systemctl not found: --$action requires systemd. Containers and
+--no-service installs should run the server directly:  uaeg serve"
+  fi
+  local unit="/etc/systemd/system/${SERVICE_NAME}.service"
+  [[ -f "$unit" ]] || unit="/lib/systemd/system/${SERVICE_NAME}.service"
+  if [[ ! -f "$unit" ]]; then
+    if [[ $IS_INSTALLED -eq 1 ]]; then
+      die "no systemd unit '${SERVICE_NAME}.service' found (installed with
+--no-service?). Start the server directly:
+  UAEG_CONFIG=$CONFIG_DIR/config.json UAEG_DATA_DIR=$DATA_DIR uaeg serve"
+    fi
+    die "UAEG is not installed. Install it first:  sudo bash install.sh"
+  fi
+  case "$action" in
+    start)   say "starting ${SERVICE_NAME}"; systemctl start "$SERVICE_NAME" || rc=$? ;;
+    stop)    say "stopping ${SERVICE_NAME}"; systemctl stop "$SERVICE_NAME" || rc=$? ;;
+    restart) say "restarting ${SERVICE_NAME}"; systemctl restart "$SERVICE_NAME" || rc=$? ;;
+    status)  systemctl status "$SERVICE_NAME" --no-pager -l || rc=$? ;;
+  esac
+  if [[ "$action" == "status" ]]; then
+    if command -v curl >/dev/null 2>&1; then
+      local hp
+      hp="$(python3 - "$CONFIG_DIR/config.json" <<'PY' 2>/dev/null || echo ""
+import json, sys
+try:
+    print(json.load(open(sys.argv[1]))["mcp"]["port"])
+except Exception:
+    pass
+PY
+)"
+      if [[ "$hp" =~ ^[0-9]+$ ]] \
+         && curl -sk --max-time 2 "https://127.0.0.1:${hp}/healthz" 2>/dev/null | grep -q '"ok"'; then
+        say "health check: https://127.0.0.1:${hp}/healthz OK"
+      fi
+    fi
+  else
+    [[ $rc -eq 0 ]] && say "${SERVICE_NAME} ${action}: done" || warn "${SERVICE_NAME} ${action}: systemctl exited $rc"
+  fi
+  exit "$rc"
+}
+
+# ----------------------------------------------------------------------
+# Embedded safe-upgrade bootstrap (mirrors upgrade.sh, interface v1)
+# ----------------------------------------------------------------------
+BOOTSTRAP_WORK=""
+bootstrap_cleanup() { [[ -n "$BOOTSTRAP_WORK" && -d "$BOOTSTRAP_WORK" ]] && rm -rf "$BOOTSTRAP_WORK"; return 0; }
+
+fetch_latest_tag() {
+  curl -fsSL --max-time 30 \
+    -H "Accept: application/vnd.github+json" \
+    "$RELEASE_API_BASE/releases/latest" 2>/dev/null \
+    | python3 -c "import json,sys; print(json.load(sys.stdin).get('tag_name',''))" \
+    || echo ""
+}
+
+verify_manifest_signature() {  # $1=manifest $2=signature ; 0 = trusted
+  local k
+  for k in "$BOOTSTRAP_WORK/trusted"/*.pub; do
+    if openssl pkeyutl -verify -pubin -inkey "$k" \
+      -rawin -in "$1" -sigfile "$2" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+fetch_verified_updater() {  # $1=tag $2=version ; sets UPDATER_PATH/MANIFEST_PATH
+  local tag="$1" ver="$2" manifest_url sig_url
+  manifest_url="$RELEASE_DOWNLOAD_BASE/$tag/uaeg-manifest.json"
+  sig_url="$RELEASE_DOWNLOAD_BASE/$tag/uaeg-manifest.json.sig"
+
+  say "fetching release manifest: $manifest_url"
+  curl -fsSL --max-time 120 -o "$BOOTSTRAP_WORK/manifest.json" "$manifest_url" \
+    || die "could not download the release manifest for $tag
+(network problem, or the release is missing uaeg-manifest.json - nothing was changed)"
+
+  say "fetching manifest signature: $sig_url"
+  curl -fsSL --max-time 120 -o "$BOOTSTRAP_WORK/manifest.json.sig" "$sig_url" \
+    || die "could not download the manifest signature for $tag (incomplete release; nothing was changed)"
+
+  say "verifying manifest signature (embedded trusted keyring)"
+  if ! verify_manifest_signature "$BOOTSTRAP_WORK/manifest.json" "$BOOTSTRAP_WORK/manifest.json.sig"; then
+    die "RELEASE MANIFEST SIGNATURE INVALID for $tag.
+The manifest is not signed by ANY trusted UAEG release key.
+Possible causes: release not published by the project, artifact tampering, or a
+key rotation (see docs/BOOTSTRAP.md - Recovery). NOTHING was executed or changed.
+Recovery (one-time bootstrap refresh):
+  curl -fsSLO $RELEASE_DOWNLOAD_BASE/latest-mismatch/install.sh
+  curl -fsSLO $RELEASE_DOWNLOAD_BASE/latest-mismatch/install.sh.sha256
+  sha256sum -c install.sh.sha256"
+  fi
+
+  read -r UPDATER_REL UPDATER_SHA UPDATER_SIZE UPDATER_IFACE MANIFEST_VER \
+    < <(python3 - "$BOOTSTRAP_WORK/manifest.json" <<'PY'
+import json, sys
+try:
+    m = json.load(open(sys.argv[1], encoding="utf-8"))
+except ValueError:
+    sys.exit(3)
+def fail(msg):
+    print(f"ERR {msg}", file=sys.stderr); sys.exit(2)
+if m.get("product") != "uaeg":
+    fail("manifest product is not 'uaeg'")
+up = m.get("updater") or {}
+path, sha, size, iface = up.get("path"), up.get("sha256"), up.get("size"), up.get("interface")
+ver = m.get("version", "")
+import re
+if not ver or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.-]*", ver):
+    fail("manifest version missing/invalid")
+if not path or "/" in path or path.startswith(".") or not path.endswith(".sh"):
+    fail("manifest updater.path missing or unsafe (must be a bare .sh filename)")
+if not (isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha)):
+    fail("manifest updater.sha256 missing/invalid")
+if not (isinstance(size, int) and 0 < size < 50_000_000):
+    fail("manifest updater.size missing/invalid")
+if not (isinstance(iface, int) and iface >= 1):
+    fail("manifest updater.interface missing/invalid")
+print(path, sha, size, iface, ver)
+PY
+  )
+  if [[ -z "${UPDATER_REL:-}" || -z "${UPDATER_SHA:-}" || -z "${MANIFEST_VER:-}" || -z "${UPDATER_IFACE:-}" ]]; then
+    die "the release manifest is malformed (no usable updater coordinates) - refusing to continue (nothing was changed)"
+  fi
+  if [[ "$MANIFEST_VER" != "$ver" ]]; then
+    die "manifest version ($MANIFEST_VER) does not match the requested release ($ver) - refusing to continue"
+  fi
+  if (( UPDATER_IFACE > INSTALLER_INTERFACE )); then
+    die "the updater in release $tag speaks interface v$UPDATER_IFACE, but this
+installer supports up to v$INSTALLER_INTERFACE. Refresh the installer ONCE:
+  curl -fsSLO $RELEASE_DOWNLOAD_BASE/latest-mismatch/install.sh
+  curl -fsSLO $RELEASE_DOWNLOAD_BASE/latest-mismatch/install.sh.sha256
+  sha256sum -c install.sh.sha256
+(see docs/BOOTSTRAP.md - exceptional recovery; this is the only situation
+that requires re-downloading this file)."
+  fi
+
+  say "downloading versioned updater: $UPDATER_REL ($tag)"
+  curl -fsSL --max-time 120 -o "$BOOTSTRAP_WORK/updater.sh" \
+    "$RELEASE_DOWNLOAD_BASE/$tag/$UPDATER_REL" \
+    || die "could not download the updater $UPDATER_REL (nothing was changed)"
+
+  say "verifying updater integrity (sha256 + size against the signed manifest)"
+  local got_sha got_size
+  got_sha="$(sha256sum "$BOOTSTRAP_WORK/updater.sh" | awk '{print $1}')"
+  got_size="$(wc -c < "$BOOTSTRAP_WORK/updater.sh")"
+  if [[ "$got_sha" != "$UPDATER_SHA" ]]; then
+    die "UPDATER SHA-256 MISMATCH (expected $UPDATER_SHA, got $got_sha).
+The downloaded updater does not match the signed manifest - refusing to
+execute it. Nothing was changed."
+  fi
+  if [[ "$got_size" != "$UPDATER_SIZE" ]]; then
+    die "updater size mismatch (expected $UPDATER_SIZE, got $got_size) - refusing to execute"
+  fi
+
+  UPDATER_PATH="$BOOTSTRAP_WORK/updater.sh"
+  MANIFEST_PATH="$BOOTSTRAP_WORK/manifest.json"
+}
+
+run_bootstrap_mode() {  # $1 = upgrade | check | dry-run | rollback
+  local bmode="$1"
+  local cache_dir="${UAEG_UPGRADE_CACHE_DIR:-/var/lib/uaeg/upgrade}"
+  local cached_updater="$cache_dir/last-updater.sh"
+  local cached_manifest="$cache_dir/last-manifest.json"
+  local updater_path="" manifest_path="" target_version="" target_tag=""
+  local forward_args=()
+  local rc=0
+
+  command -v curl >/dev/null 2>&1 || die "curl is required (release discovery and artifact download)"
+  command -v openssl >/dev/null 2>&1 || die "openssl is required (manifest signature verification)"
+  command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required (artifact integrity verification)"
+  command -v python3 >/dev/null 2>&1 || die "python3 is required (manifest parsing)"
+
+  # Targeting flags are valid updater flags: forward them so custom-path
+  # installations are detected correctly by the updater.
+  [[ -n "$FETCH_VERSION" ]] && forward_args+=(--version "$FETCH_VERSION")
+  [[ $ASSUME_YES -eq 1 ]] && forward_args+=(--yes)
+  [[ -n "${ROLLBACK_ID:-}" ]] && forward_args+=(--backup "$ROLLBACK_ID")
+  [[ $TARGETING_FLAGS_GIVEN -eq 1 ]] && forward_args+=(--install-dir "$INSTALL_DIR" --data-dir "$DATA_DIR" --config-dir "$CONFIG_DIR")
+  [[ $NO_SERVICE -eq 1 ]] && forward_args+=(--no-service)
+
+  if [[ "$bmode" == "rollback" && -f "$cached_updater" ]]; then
+    say "rollback: using the cached updater ($cached_updater)"
+    updater_path="$cached_updater"
+    [[ -f "$cached_manifest" ]] && manifest_path="$cached_manifest"
+  else
+    if [[ -n "$FETCH_VERSION" ]]; then
+      target_version="${FETCH_VERSION#v}"
+      target_tag="v$target_version"
+    else
+      say "resolving the latest published release from $RELEASE_API_BASE"
+      target_tag="$(fetch_latest_tag)"
+      [[ -n "$target_tag" ]] || die "could not determine the latest release
+(network problem or no published releases). For offline rollback use:
+  sudo bash install.sh --rollback   (uses the cached updater)"
+      target_version="${target_tag#v}"
+    fi
+    BOOTSTRAP_WORK="$(mktemp -d /tmp/uaeg-bootstrap.XXXXXX)"
+    chmod 700 "$BOOTSTRAP_WORK"
+    trap bootstrap_cleanup EXIT INT TERM
+    mkdir -p "$BOOTSTRAP_WORK/trusted"
+    printf '%s\n' "$_TRUSTED_KEY_1" > "$BOOTSTRAP_WORK/trusted/1.pub"
+    printf '%s\n' "$_TRUSTED_KEY_2" > "$BOOTSTRAP_WORK/trusted/2.pub"
+    printf '%s\n' "$_TRUSTED_KEY_3" > "$BOOTSTRAP_WORK/trusted/3.pub"
+    fetch_verified_updater "$target_tag" "$target_version"
+    updater_path="$UPDATER_PATH"
+    manifest_path="$MANIFEST_PATH"
+  fi
+
+  [[ -n "$updater_path" && -f "$updater_path" ]] || die "no updater available for this operation
+(network failed and no cached updater exists at $cached_updater)."
+
+  export UAEG_BOOTSTRAP="1"
+  export UAEG_BOOTSTRAP_FILE="$SELF_FILE"
+  [[ -n "$target_version" ]] && export UAEG_TARGET_VERSION="$target_version"
+  [[ -n "$target_tag" ]] && export UAEG_RELEASE_TAG="$target_tag"
+  [[ -n "$manifest_path" ]] && export UAEG_MANIFEST="$manifest_path"
+  export UAEG_UPDATER="$updater_path"
+
+  local mode_flag=""
+  [[ "$bmode" == "check" ]] && mode_flag="--check"
+  [[ "$bmode" == "dry-run" ]] && mode_flag="--dry-run"
+  [[ "$bmode" == "rollback" ]] && mode_flag="--rollback"
+
+  say "running the verified updater: $updater_path"
+  if [[ -n "$mode_flag" ]]; then
+    bash "$updater_path" $mode_flag ${forward_args[@]+"${forward_args[@]}"} || rc=$?
+  else
+    bash "$updater_path" ${forward_args[@]+"${forward_args[@]}"} || rc=$?
+  fi
+
+  bootstrap_cleanup
+  BOOTSTRAP_WORK=""
+
+  # Post-condition: this file (the operator's installer) must be untouched.
+  local self_sha_after
+  self_sha_after="$(sha256sum "$SELF_FILE" 2>/dev/null | awk '{print $1}' || echo unknown)"
+  if [[ "$SELF_SHA_BEFORE" != "$self_sha_after" ]]; then
+    warn "the installer file changed during the operation ($SELF_FILE).
+The updater is not allowed to modify it - please verify the file or re-
+download it once (docs/BOOTSTRAP.md - exceptional recovery)."
+  fi
+
+  exit "$rc"
+}
+
+# ----------------------------------------------------------------------
+# Unified dispatch
+# ----------------------------------------------------------------------
+case "$MODE_CMD" in
+  start|stop|restart|status)
+    cmd_service "$MODE_CMD"
+    ;;
+  check)
+    if [[ $IS_INSTALLED -eq 1 ]]; then
+      say "existing installation detected - running the verified status check"
+      run_bootstrap_mode "check"
+    fi
+    say "no existing UAEG installation detected"
+    latest_rel="$(fetch_latest_tag 2>/dev/null || true)"
+    [[ -n "$latest_rel" ]] && echo "  latest release : $latest_rel"
+    echo "  install with   : sudo bash install.sh --domain <your-domain>"
+    exit 3
+    ;;
+  dry-run)
+    if [[ $IS_INSTALLED -eq 1 ]]; then
+      if [[ $CONFIG_FLAGS_GIVEN -eq 1 ]]; then
+        die "configuration flags cannot be previewed on an existing installation
+with --dry-run (the safe upgrade never changes configuration). To APPLY
+configuration changes use:  sudo bash install.sh --repair <flags>"
+      fi
+      say "existing installation detected - verified upgrade preview"
+      run_bootstrap_mode "dry-run"
+    fi
+    echo
+    printf '\033[1mFRESH INSTALL PLAN (dry-run - no changes)\033[0m\n'
+    echo "  install dir    : $INSTALL_DIR"
+    echo "  data dir       : $DATA_DIR"
+    echo "  config dir     : $CONFIG_DIR"
+    echo "  MCP port       : $MCP_PORT (public HTTPS)"
+    echo "  dashboard      : $DASHBOARD_BIND:$DASHBOARD_PORT"
+    echo "  TLS mode       : $TLS_MODE"
+    [[ $NO_SERVICE -eq 1 ]] && echo "  service        : none (--no-service)" \
+                            || echo "  service        : systemd unit '${SERVICE_NAME}.service'"
+    [[ -n "$FETCH_VERSION" ]] && echo "  release        : v$FETCH_VERSION (pinned)" \
+                              || echo "  release        : v$UAEG_RELEASE_VERSION (this file's release)"
+    echo
+    echo "run without --dry-run to install."
+    exit 0
+    ;;
+  rollback)
+    if [[ $IS_INSTALLED -eq 1 ]]; then
+      run_bootstrap_mode "rollback"
+    fi
+    die "no UAEG installation detected - nothing to roll back"
+    ;;
+  repair)
+    say "--repair: re-running the installer in place (persistent data preserved)"
+    FORCE_INPLACE=1
+    ;;
+esac
+
+# Default mode: fresh install, verified safe upgrade, or in-place flow.
+if [[ "${UAEG_BOOTSTRAP:-0}" != "1" && $FORCE_INPLACE -eq 0 ]]; then
+  if [[ $IS_INSTALLED -eq 1 && $BARE_INVOCATION -eq 1 ]]; then
+    say "existing installation detected at $DISPATCH_INSTALL_DIR - safe upgrade via the verified release channel"
+    say "(to re-run the installer in place instead, use: sudo bash install.sh --repair)"
+    run_bootstrap_mode "upgrade"
+  fi
+else
+  # Invoked inside the verified upgrade pipeline (by the updater), or --repair:
+  # run the in-place installer flow below.
+  :
 fi
 
 say "UAEG installer starting"
@@ -282,9 +780,10 @@ say "installing python dependencies (pinned: mcp/starlette/uvicorn)"
 
 ln -sf "$VENV_DIR/bin/uaeg" /usr/local/bin/uaeg
 
-# System bootstrap convenience copy (upgrade contract v3): operators can run
-# `sudo uaeg-upgrade` in addition to their own downloaded upgrade.sh. The
-# operator's own bootstrap file is NEVER touched by any upgrade.
+# System bootstrap convenience copy (upgrade contract v3/v4): operators can
+# run `sudo uaeg-upgrade` in addition to their own downloaded upgrade.sh or
+# install.sh. The operator's own bootstrap files are NEVER touched by any
+# upgrade.
 if [[ -f "$SCRIPT_DIR/upgrade.sh" ]]; then
   if ! cmp -s "$SCRIPT_DIR/upgrade.sh" /usr/local/sbin/uaeg-upgrade 2>/dev/null; then
     say "installing the system upgrade bootstrap: /usr/local/sbin/uaeg-upgrade"
@@ -627,7 +1126,7 @@ echo "Next steps:"
 if [[ "$DASH_BIND_IP" != "0.0.0.0" ]]; then
   echo "  0. (optional) enable dashboard login + remote access:"
   echo "       sudo uaeg pass"
-  echo "       sudo ./install.sh --dashboard-bind public  # re-run with your TLS flags"
+  echo "       sudo bash install.sh --repair --dashboard-bind public  # + your TLS flags"
 fi
 echo "  1. Create an agent key:"
 echo "       uaeg generate --name \"Claude\""
@@ -636,6 +1135,9 @@ echo "       URL:                  https://${EFFECTIVE_HOST}:${EFFECTIVE_MCP_POR
 echo "       Authentication:       Bearer token (the generated uaeg_... secret)"
 echo "  3. Verify health:"
 echo "       uaeg doctor"
+echo "  4. Future upgrades (this same file, downloaded once):"
+echo "       sudo bash install.sh            # verified safe upgrade"
+echo "       sudo bash install.sh --check    # status + available update"
 echo
 [[ "$TLS_MODE" == "self-signed" ]] && warn "self-signed TLS: most hosted platforms will reject this certificate. Use --domain (Let's Encrypt) for real agent connections."
 echo "Docs: https://github.com/smahud/uaeg/tree/main/docs"

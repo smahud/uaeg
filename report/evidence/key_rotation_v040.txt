@@ -1,0 +1,10 @@
+== v0.4.0 ROTATION CROSS-CHECKS 2026-11-08T16:03:10Z ==
+
+-- v0.4.0 manifest vs OLD key 2 (expect: FAIL - documented refusal) --
+Signature Verification Failure
+-- v0.4.0 manifest vs NEW key 3 (expect: OK) --
+Signature Verified Successfully
+-- historical v0.3.5 manifest vs key 2 (in new keyring; expect: OK - pins/downgrades keep verifying) --
+Signature Verified Successfully
+-- historical v0.3.3 manifest vs key 1 (expect: OK) --
+Signature Verified Successfully

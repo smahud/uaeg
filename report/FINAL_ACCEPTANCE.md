@@ -1,104 +1,86 @@
-# Final Acceptance — v0.3.3
+# Final Acceptance — v0.4.0 (unified installer + focused completion audit)
 
-**Date:** 2026-11-08 · **Mission:** UAEG production recovery, end-to-end
-audit & permanent upgrade bootstrap · **Overall verdict:** repository-side
-work COMPLETE and verified; production deployment PENDING operator execution
-of the runbook (no VPS access from the audit environment — explicitly
-reported, not silently claimed).
+**Date:** 2026-11-08 · **Mission:** unified installer as the sole public
+entrypoint, production dashboard resolution, compatibility for v0.3.2–v0.3.5,
+verified release · **Overall verdict:** repository-side work COMPLETE and
+verified; **production dashboard fix BLOCKED on VPS access** (operator
+runbook delivered; no VPS credentials exist in this environment — reported
+truthfully).
 
 ---
 
-## Definition of Done — item-by-item
-
-### Dashboard
+## Definition of Done — item-by-item (mission §9)
 
 | Item | Status | Evidence |
 |---|---|---|
-| Root cause established and documented | ✅ | DASHBOARD_ROOT_CAUSE.md (loopback-bound dashboard + firewall; MCP healthy live; UI ruled out by lab browser test) |
-| Public HTTPS endpoint reachable from external network | ⏳ OPERATOR | Runbook §3 (PRODUCTION_DEPLOYMENT.md); blocked only by VPS access |
-| Login page renders correctly | ✅ (lab, published code) | evidence/lab_browser_verification_v033.txt |
-| Authentication succeeds with existing credentials | ✅ (lab; password preserved through upgrades by contract U-4) | browser evidence + contract T-05/T-21 |
-| Dashboard renders after login | ✅ (lab) | screenshots (non-blank verified) |
-| Implemented menus/actions function | ✅ (lab) | all 5 tabs + key creation with one-time secret modal |
-| Browser console has no release-blocking errors | ✅ (lab) | 0 console errors (favicon 404 fixed) |
-| Dashboard API endpoints enforce authentication | ✅ | e2e test suite (23 auth tests) + live production 401 pattern on MCP |
-| Logout and session expiration work | ✅ | browser evidence (logout → /login) + e2e expiry tests |
+| Dashboard production issue resolved and verified | **Repo-side: root cause re-confirmed with fresh evidence; fix = BLOCKED (operator)** | `evidence/production_probe_v040.txt`: 3903 refused, 3902 healthy at v0.3.3, LE cert valid. Runbook: DASHBOARD_PRODUCTION_CHECK.md §4 (one `install.sh` file, no password reset). Lab dashboard behavior fully verified in a real browser (10/10) |
+| `install.sh` is the only required public installation/upgrade file | ✅ | UNIFIED_INSTALLER.md; embedded trusted keyring + verification chain; `upgrade.sh` kept only as a compatibility asset |
+| No-argument execution selects install or upgrade correctly | ✅ | T-01 (fresh) / T-40 (bare → verified upgrade); dispatch rules in UPGRADE_CONTRACT.md U-16 |
+| Service-management flags work | ✅ | `--start/--stop/--restart/--status` (T-50 clean refusals without systemd; CI smoke with systemctl present; `--status` health probe) |
+| Existing credentials and data remain intact | ✅ | U-4 machine proofs in every upgrade test; T-51 (`--repair`); T-52 (v0.3.5 baseline, keys preserved); password never reset anywhere |
+| Multi-release bootstrap reuse passes | ✅ | Same operator file across releases E→F(changed updater)→G(pin)→v24 with SHA-256 unchanged (T-40..T-42, T-52) |
+| Release verification passes | ✅ | `release/verify_release.py`: signature (uaeg-release-3) + asset hashes + interface consistency all OK; rotation cross-checks in `evidence/key_rotation_v040.txt` |
+| README and docs are synchronized | ✅ | README, INSTALL, BOOTSTRAP, UPGRADE_CONTRACT (contract v4 / U-16) all describe the unified flow; obsolete `upgrade.sh`-download instructions replaced (old runbook marked superseded) |
+| Changes committed and pushed | ✅ | `main` + tag `v0.4.0` pushed; release published by `release.yml` (verified from public URLs — see §Release) |
+| Production status is reported truthfully | ✅ | This file: production NOT modified, dashboard NOT claimed fixed; exact diagnostics listed |
 
-### Backend
+## Test totals
 
-| Item | Status | Evidence |
-|---|---|---|
-| MCP endpoint remains operational | ✅ (live production v0.3.2; v0.3.3 in release) | evidence/production_mcp_probe_v033.txt |
-| All registered MCP tools pass integration tests | ✅ | 13/13 registry verified + e2e suites (133 pytest PASS) |
-| Existing agent keys remain valid | ✅ (upgrade preserves keys by construction; verified in every contract upgrade test) | T-05/T-13/T-19/T-21/T-23/T-30 |
-| PTY and background jobs function correctly | ✅ (improved: B-1/B-3/B-4/B-5/B-8 fixed + regression tests) | test_unit_regression_v033.py |
-| Database integrity verified | ✅ | quick_check in every U-4 verification + doctor |
-| No unresolved release-blocking security defects remain | ✅ | SECURITY_REVIEW.md (none blocking; accepted risks listed) |
+- **Contract suite: 258 PASS / 0 FAIL** (191 pre-existing assertions
+  unmodified + 67 new unified-installer assertions T-39..T-52), real
+  OpenSSL Ed25519 chain against a local release server.
+- **pytest: 150 passed** (unit + e2e incl. dashboard auth, TLS, MCP smoke,
+  hardening, regression suites).
+- **Real-browser lab matrix: 10/10** (login page, wrong-password refusal,
+  login, 5 tabs, logout, 0 console errors; 7 non-blank screenshots).
+- **Lab MCP smoke:** healthz ok (v0.4.0), MCP initialize with bearer key,
+  401 without key.
 
-### Upgrade
+## Release record (v0.4.0)
 
-| Item | Status | Evidence |
-|---|---|---|
-| Existing installations can migrate to the permanent bootstrap | ✅ | one-command transition documented + T-21; operator clone never touched (T-17/T-23) |
-| One local upgrade.sh reusable indefinitely | ✅ | **multi-release test T-23**: same file, SHA-256 unchanged, across releases A→B (CHANGED updater implementation)→retry D |
-| Bootstrap automatically fetches the selected versioned updater | ✅ | T-21/T-23 (release-channel resolution + verified download) |
-| Artifact authenticity and integrity verified | ✅ | T-24..T-28 (tamper/foreign-key/interface/missing rejections) + live asset verification |
-| Multi-release compatibility tests pass | ✅ | UPGRADE_COMPATIBILITY_TESTS.md (155/155) |
-| Local bootstrap not overwritten during normal upgrades | ✅ | SHA assertions in T-22/T-23/T-30 + post-run self-check in the bootstrap |
-| Backup and rollback work | ✅ | T-08/T-09/T-30 (auto + manual) + T-31 (offline) |
-| Configuration, credentials, persistent data survive | ✅ | U-4 zero-data-loss proof on every upgrade test |
-| Upgrade failures safely recoverable | ✅ | T-30 (failed release → rollback → retry with same bootstrap succeeds) |
-
-### Release and production
-
-| Item | Status | Evidence |
-|---|---|---|
-| All release-blocking tests pass | ✅ | 133 pytest + 155 contract + browser verification |
-| Release assets independently verified | ✅ | evidence/release_assets_v033.txt (public URLs, checksums, Ed25519, manifest consistency) |
-| GitHub release published | ✅ | v0.3.3 @ 2026-11-08T03:21:50Z, 8 assets, workflow success |
-| Production deployment verified or explicitly marked pending | ⏳ **PENDING (operator)** | PRODUCTION_DEPLOYMENT.md — exact runbook; blocked by absent VPS credentials |
-| All reports committed under report/ | ✅ | this file + 9 companions + evidence/ |
-| Final acceptance contains evidence and remaining risks | ✅ | below |
-
-## Key numbers
-
-- **Repository:** HEAD `fff55c3` (main), tag `v0.3.3`, release published
-  with 8 verified assets.
-- **Tests:** 133/133 pytest (20 new regressions) · 155/155 upgrade-contract
-  assertions (95 new bootstrap assertions) · real-browser matrix 12/12 ·
-  release asset chain 8/8.
-- **Audit findings:** 23 (1×P1, 4×P2, 12×P3, 6×P4) — **all fixed** in
-  v0.3.3 except the production-configuration gap (operator runbook) and
-  documented accepted risks.
-- **Production (live measurements):** UAEG v0.3.2, MCP healthy (401 auth
-  enforced, valid Let's Encrypt cert), dashboard unreachable publicly.
+- Version: `0.4.0` (pyproject, `__init__`, installer pin) — minor bump: new
+  backwards-compatible operator interface (contract v4 / U-16).
+- Signing: **`uaeg-release-3`** (rotation 2→3; the release-2 private key is
+  no longer available to the publisher — same situation and procedure as the
+  v0.3.4 rotation). Keyring now trusts keys 1+2+3 in both `install.sh` and
+  `upgrade.sh`, so historical releases keep verifying for pins/downgrades
+  (proven in `evidence/key_rotation_v040.txt`).
+- Assets published by `.github/workflows/release.yml` after re-verification:
+  `install.sh`(+sha256), `upgrade.sh`(+sha256),
+  `uaeg-updater-0.4.0.sh`(+sha256), `uaeg-manifest.json`(+sig) — eight
+  assets, same set as previous releases.
+- The **uaeg-release-3 private key is handed to the operator out-of-band**
+  (never committed); it must be moved to secure operator-only storage. If it
+  cannot be secured, the documented rotation procedure applies again.
 
 ## Remaining risks & operator actions
 
-1. **Execute the production runbook** (PRODUCTION_DEPLOYMENT.md §2–§3):
-   one-time bootstrap download + `sudo bash upgrade.sh` (→ v0.3.3), then
-   enable the public dashboard (password → bind/allow_public/tls → restart
-   → firewall). ~5 minutes, with automatic rollback protection during the
-   upgrade.
-2. Until upgraded, the production v0.3.2 host carries the B-1 freeze defect
-   (one Ctrl-Z + input away from a full-service freeze) — upgrade promptly.
-3. **Safeguard the release-signing private key** (`uaeg-release-1`): it was
-   generated in the audit environment and must be moved to secure
-   operator-only storage; it is required for signing future releases
-   (`release/make_release.py --key ...`). If it cannot be secured, rotate
-   per docs/BOOTSTRAP.md (dual-sign window → new key) — an exceptional,
-   documented procedure.
-4. Background-job output files remain uncapped (documented,
-   LIMITATIONS.md #13) — monitor long-running verbose jobs.
-5. CI run for `fff55c3` (main): **completed, conclusion SUCCESS — all jobs
-   green** (Python 3.11/3.12/3.13 matrix, safe-upgrade contract suite,
-   installer smoke; the release-verification job on the tag also passed).
+1. **Execute the production runbook** (DASHBOARD_PRODUCTION_CHECK.md §4):
+   one-time verified download of `install.sh`, `sudo bash install.sh`
+   (v0.3.3 → v0.4.0 safe upgrade with automatic rollback protection), then
+   the public-dashboard steps (password only if not yet set — never reset;
+   bind/allow_public/tls; restart; `ufw allow 3903`). ~5 minutes. The audit
+   environment will re-verify ports 3903/3902 externally on request.
+2. **Secure the `uaeg-release-3` private key** (delivered with this report).
+   Losing it forces another documented rotation at the next release.
+3. **Key-rotation friction is real but bounded:** bootstraps downloaded
+   during v0.3.4/v0.3.5 will refuse v0.4.0+ manifests with the explicit
+   rotation message and need the one-time `install.sh` download (which the
+   v0.4.0 migration requires anyway). Production (v0.3.3-era bootstrap)
+   already required this refresh since v0.3.4. No data is affected.
+4. Unauthenticated GitHub API rate limits can transiently block
+   "latest release" resolution (unchanged from v0.3.3–v0.3.5);
+   `--version X.Y.Z` pins work around it.
+5. `install.sh --status` relies on the systemd unit; `--no-service`
+   installations get a clear refusal message with the manual command
+   (documented).
 
 ## Explicit non-claims (evidence policy)
 
 - No claim that production was modified: it was not (no VPS access).
-- No claim that the production dashboard renders: its public reachability
-  awaits the operator runbook; the CODE's dashboard behavior is fully
-  verified in a real browser.
-- No claim of tests not actually run: every number above maps to a log file
-  under `report/evidence/` or a workflow run.
+- No claim that the production dashboard renders: it is unreachable
+  (TCP refused) until the operator runbook is executed.
+- No claim that the production upgrade to v0.4.0 happened: production still
+  reports v0.3.3 (measured 2026-11-08T16:00Z).
+- Every number above maps to a log/evidence file under `report/evidence/`
+  or to a suite run in this audit (TEST_RESULTS.md).

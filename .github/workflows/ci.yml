@@ -92,6 +92,24 @@ jobs:
             --data-dir "$BASE/var/lib/uaeg" \
             --no-service --yes
 
+      - name: Unified-installer command smoke (no-service mode)
+        env:
+          BASE: ${{ runner.temp }}/uaeg-install
+        run: |
+          export UAEG_SYSTEM_UAEG_BIN="$BASE/bin/uaeg"
+          # --version (bare) prints the installer version
+          bash install-test.sh --version
+          # service commands on a --no-service install must refuse cleanly
+          if bash install-test.sh --start > start.log 2>&1; then
+            echo "::error::--start unexpectedly succeeded on a --no-service install"; exit 1
+          fi
+          grep -q "systemd" start.log || { echo "::error::--start refusal must explain the systemd requirement"; cat start.log; exit 1; }
+          # --dry-run on a fresh-host shape must not change anything
+          bash install-test.sh --dry-run --install-dir "$BASE/opt/uaeg" \
+            --config-dir "$BASE/etc/uaeg" --data-dir "$BASE/var/lib/uaeg" \
+            --no-service | grep -q "FRESH INSTALL PLAN\|UPGRADE PLAN"
+          echo "unified command smoke passed"
+
       - name: Serve from installed location and verify MCP
         env:
           BASE: ${{ runner.temp }}/uaeg-install

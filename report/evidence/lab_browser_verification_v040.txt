@@ -1,0 +1,39 @@
+== UAEG LAB BROWSER VERIFICATION (v0.4.0 code, isolated sandbox) ==
+Date: 2026-11-08 15:57-15:59 UTC
+Environment: fresh install of the v0.4.0 tree (install.sh --no-service,
+isolated dirs), real `uaeg serve` process, real Chromium browser
+(agent-browser/Playwright), dashboard password configured via the public
+dashauth API (same code path as `sudo uaeg pass`).
+
+Configuration under test:
+  dashboard: http://127.0.0.1:3963 (loopback bind, password configured)
+  MCP:       https://127.0.0.1:3962 (self-signed TLS, bearer auth)
+  password:  lab-verify-Passw0rd (set once, NOT reset during the test)
+
+Matrix (all steps executed in a real browser):
+
+| Step | Expected | Observed | Verdict |
+|---|---|---|---|
+| 1. GET / (no session) | redirect to /login, login page renders | 302 -> /login, "UAEG - Login", "Sign in" h1 + PASSWORD box + Sign in button | PASS |
+| 2. Wrong password | "Login failed.", stays on /login | "Login failed." displayed, URL /login | PASS |
+| 3. Correct password | dashboard renders, session cookie set | URL /#keys, "UAEG - Dashboard", Agent keys table with the pre-existing key (lab-browser-test, k-90e1d64accbd) | PASS |
+| 4. KEYS tab | key list + "Generate new key" | rendered, all columns present | PASS |
+| 5. SERVER tab | listener/config visibility | "Dashboard listener" section rendered | PASS |
+| 6. SESSIONS tab | sessions view | rendered, title "UAEG - Dashboard" | PASS |
+| 7. LOGS tab | audit log view | rendered | PASS |
+| 8. Browser console | no errors | 0 console errors, 0 page errors | PASS |
+| 9. Sign out | session revoked, back to /login | URL /login, title "UAEG - Login", subsequent navigation requires re-auth | PASS |
+| 10. Screenshots non-blank | all saved PNGs contain content | 7/7 non-blank (pixel check) | PASS |
+
+Screenshots: report/evidence/browser_v040/01..07 (login page, login failed,
+dashboard, server tab, sessions tab, logs tab, after logout).
+
+Companion MCP smoke (same server, same session):
+  report/evidence/lab_mcp_smoke_v040.txt - /healthz ok (v0.4.0),
+  MCP initialize with a valid bearer key returns serverInfo, /mcp without
+  a key returns 401.
+
+NOTE ON SCOPE: this is LAB evidence for the v0.4.0 code (the dashboard UI,
+auth flows and MCP endpoint behave correctly when the service is actually
+reachable). It is NOT a claim about production (host.zerotier.my.id), whose
+dashboard remains unreachable - see report/DASHBOARD_PRODUCTION_CHECK.md.
