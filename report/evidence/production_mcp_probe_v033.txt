@@ -1,0 +1,13 @@
+=== UAEG production MCP deep probe — 2026-11-08T03:08:38Z ===
+--- /healthz ---
+{"status":"ok","service":"UAEG","version":"0.3.2","uptime_seconds":7625.7}
+--- / (service info) ---
+{"service":"UAEG","version":"0.3.2","description":"Universal Agent Execution Gateway","mcp_endpoint":"https://host.zerotier.my.id:3902/mcp","health":"/healthz","docs":"https://github.com/smahud/uaeg","note":"Use an MCP client with a bearer agent key to access /mcp"}
+--- unauthenticated /mcp ---
+HTTP 401
+--- TLS certificate ---
+subject=CN=host.zerotier.my.id
+issuer=C=US, O=Let's Encrypt, CN=YE2
+notAfter=Feb  5 17:20:21 2027 GMT
+X509v3 Subject Alternative Name: 
+    DNS:host.zerotier.my.id

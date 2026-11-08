@@ -154,36 +154,39 @@ the new certificate is loaded.
 
 ## Upgrading
 
-Since v0.3.1 upgrading is **one command**, governed by the
-[safe-upgrade contract](./UPGRADE_CONTRACT.md) (contract v2 since v0.3.2):
-automatic installation detection, a consistent pre-upgrade backup (database,
-config, keys metadata, TLS material, the app itself), in-place upgrade with
-the existing configuration preserved, post-upgrade zero-data-loss
-verification, and automatic rollback to the pre-upgrade state if anything
-fails.
+Since v0.3.3 upgrading is **one command with one file you download ONCE**,
+governed by the [safe-upgrade contract](./UPGRADE_CONTRACT.md) (contract v3;
+architecture: [BOOTSTRAP.md](./BOOTSTRAP.md)). The downloaded `upgrade.sh` is
+a small, stable **bootstrap**: it resolves the target release from the
+GitHub release channel, downloads that release's **signed manifest**
+(Ed25519), verifies the signature against the trusted public key embedded in
+the bootstrap, verifies the versioned updater against the manifest's SHA-256
++ size, and then runs the updater — which performs automatic installation
+detection, a consistent pre-upgrade backup, the in-place upgrade with your
+configuration preserved, post-upgrade zero-data-loss verification, and
+automatic rollback on any failure.
 
-Since v0.3.2 the release source is always fetched into an **isolated staging
-directory** — your git checkout (if any) is never read for content or
-modified, and an untracked `upgrade.sh` downloaded into it cannot block the
-upgrade (this was the v0.3.1 incident). Both flows below are equivalent:
-
-From any directory on the VPS — download the script, verify its checksum,
-run it (it clones the target release by itself):
+One-time setup (first upgrade, or transition from the ≤ v0.3.2 flow):
 
 ```bash
+cd ~   # anywhere; keep this file - it is your permanent bootstrap
 curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh
 curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh.sha256
 sha256sum -c upgrade.sh.sha256
 sudo bash upgrade.sh
 ```
 
-Or from the operator's git checkout (no `git pull` needed — the checkout is
-left untouched):
+Every future upgrade reuses the SAME local file — never download it again
+(the only exceptions, both exceptional and operator-visible, are a trust-key
+rotation or a bootstrap-interface break; see BOOTSTRAP.md):
 
 ```bash
-cd /path/to/uaeg-checkout
 sudo bash upgrade.sh
 ```
+
+The installer also installs a convenience copy at
+`/usr/local/sbin/uaeg-upgrade`, so `sudo uaeg-upgrade` works the same way.
+Your git checkout (if any) is never read for content or modified.
 
 Useful modes (all safe to run at any time):
 

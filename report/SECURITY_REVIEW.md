@@ -1,94 +1,99 @@
-# Security Review — UAEG v0.3.2 (audit P0)
+# Security Review — v0.3.3
 
-**Tanggal:** 2026-11-07/08 · **Scope:** perubahan v0.3.2 + verifikasi batas keamanan yang diwarisi · **Metode:** review kode + pengujian aktif (unit, E2E, live smoke, fault injection)
+**Date:** 2026-11-08 · **Scope:** full v0.3.2 audit + v0.3.3 patch review ·
+**Verdict:** no unresolved release-blocking security defects; two
+security-contract degradations (B-2, B-3) and one P1 reliability defect with
+security impact (B-1) FIXED; the product's deliberate full-root execution
+model remains as documented and is restated below without softening.
 
 ---
 
-## 1. Temuan pada audit ini
+## 1. The deliberate model (unchanged, restated honestly)
 
-| ID | Temuan | Severity | Status |
-|----|--------|----------|--------|
-| SEC-1 | `upgrade.sh` v0.3.1 menjalankan `git checkout` di working tree operator → gagal pada file untracked (insiden) + **salah klasifikasi error** ("tag tidak ditemukan") yang mengarahkan operator ke diagnosis keliru | P0 | **FIXED v0.3.2** — staging terisolasi; klasifikasi akurat (lihat `ROOT_CAUSE_ANALYSIS.md`) |
-| SEC-2 | Verifikasi U-4 membandingkan config mentah: kunci absen vs default eksplisit dianggap "berubah" → bisa memicu **rollback palsu** (availability) | P2 | **FIXED v0.3.2** — normalisasi absent=default |
-| SEC-3 | `--keep-backups 0` dapat menghapus **semua** recovery point segera setelah upgrade | P2 | **FIXED v0.3.2** — clamp ≥ 1 + validasi numerik |
+UAEG gives an authenticated agent **full, unrestricted root** on the host
+(PRD FR-010/FR-013). There is no sandbox and no confirmation step. Advisory
+"restricted paths" are agent guidance, **not a security boundary** — any
+root shell bypasses them trivially (FR-014). This is accepted risk
+(documented in README/SECURITY/LIMITATIONS) for a dedicated,
+operator-controlled VPS. The security story is therefore about **the gates
+in front of root**: keys, authentication, revocation, exposure, TLS, and —
+new in v0.3.3 — **upgrade-chain authenticity**.
 
-Tidak ditemukan temuan P0/P1 baru pada area yang diaudit (di bawah).
+## 2. Gates in front of root — verified state
 
-## 2. Batas autentikasi MCP (diverifikasi aktif)
+| Gate | State (v0.3.3) |
+|---|---|
+| Agent keys | 256-bit secrets, shown once, stored only as SHA-256 verifiers; prefix-only identification in UI/CLI. Verified live in production (401 without key). |
+| MCP bearer auth | Hash-then-lookup per request, BEFORE any MCP session handling; revocation immediate (existing session id → 401 after revoke — e2e-tested). |
+| Dashboard login | scrypt (N=32768) password hashing, generation-tokened server-side sessions (password change revokes all sessions without restart), HttpOnly+SameSite cookies, `Secure` on HTTPS, per-IP sliding-window lockout (5 fails/15 min → 15 min lockout), CSRF token on every state change + Origin validation, capped request bodies. |
+| Public exposure | Fail-closed: wildcard dashboard bind requires explicit opt-in + TLS + existing password at config load AND serve time; installer and upgrader enforce the same guard (T-GUARD). |
+| TLS | Mandatory on the MCP listener (only dev-flag bypass, loud warning); production verified on a valid Let's Encrypt cert (SAN match, exp 2027-02). |
+| Audit trail | Command text + previews secret-redacted at the single `add_log` choke point; env values never logged; secrets never appear in upgrade logs/records (T-11). |
+| SQLite | WAL + busy_timeout; parameterized SQL everywhere; schema-version downgrade guard; atomic config writes. |
+| **Upgrade chain (new)** | Ed25519-signed manifests; bootstrap refuses untrusted/unsigned/tampered updaters before execution; CI re-verifies before publishing; release assets hashed in the signed manifest. |
 
-- Bearer key `uaeg_...`: generate → verifikasi → dipakai; **tanpa** key →
-  HTTP 401 (live smoke #7); key salah → 401 (#8).
-- Session MCP Streamable HTTP di-enforce: request `tools/call` tanpa
-  `mcp-session-id` ditolak "Missing session ID" (live smoke #9).
-- Revokasi key: diuji unit (`test_unit_core`) — key revoked tetap revoked
-  setelah upgrade (U-4 membandingkan `(key_id, status)`).
-- Log/redaksi: `test_unit_security_redaction` lulus; T-11 membuktikan
-  secret tidak pernah muncul di log/RECORD/state JSON; `read_state`
-  hanya membaca identifier publik (key_id/name/prefix/status), tidak
-  pernah verifier/hash password.
-- **Catatan desain (bukan cacat, sesuai PRD):** agent terautentikasi
-  memperoleh eksekusi penuh host (root pada VPS). Batasan direktori
-  (`restricted_paths`) bersifat **advisory** dan didokumentasikan sebagai
-  bukan sandbox (`docs/LIMITATIONS.md`, `test_unit_containment`) —
-  konsisten dengan peringatan README.
+## 3. v0.3.3 fixes with direct security impact
 
-## 3. Dashboard (diverifikasi aktif)
+- **B-1 (P1):** service-wide freeze via one `shell_input` into a suspended
+  session (blocking write on the event loop). Fixed with a non-blocking
+  master + bounded backlog; regression-tested. Security relevance: a single
+  agent tool call could take down the operator's entire control plane
+  (dashboard included) with no in-band recovery.
+- **B-2:** revocation containment blindness beyond the newest 1000 session
+  rows — a revoked (possibly compromised) agent's old open root PTY survived
+  CLI revocation. Fixed (`open_sessions()`), regression-tested with 1100
+  noise rows.
+- **B-3:** `job_cancel` reported `cancelled` while TERM-ignoring processes
+  kept running — containment and the audit state lied. Fixed with
+  group-liveness escalation; regression-tested with `trap '' TERM`.
+- **B-4:** pid recycling after reboots could aim containment signals at an
+  **unrelated root process group**. Fixed with boot-id stamping.
+- **B-9:** audit-log redaction now covers `mysql -ppassword123`-style short
+  flags (best-effort contract, documented limits unchanged).
+- **B-12:** rotation crash-window no longer leaves zero valid keys.
+- **B-11:** bounded audit-log growth (startup retention 20k rows) — plus
+  the dangling-write-lock fix found by the new tests themselves.
+- Dashboard hardening (F-1..F-10, favicon): error-state truthfulness during
+  incidents, CSRF self-healing, double-submit protection for one-time
+  secrets, no-stale-cache after logout.
 
-- Alur wajib: halaman login **sebelum** dashboard (E2E 23 test lulus:
-  login benar/salah, logout, sesi kedaluwarsa, cookie, CSRF, rate limit,
-  rotasi password mencabut sesi tanpa restart).
-- Bind publik (`0.0.0.0`/`::`) **tanpa** password: ditolak fail-closed —
-  di `config.py` (validasi wildcard) + serve-time + installer
-  (`--dashboard-bind public` menolak sebelum reconfigure) + **upgrade**
-  (T-GUARD: upgrade ditolak bila publik tanpa password).
-- Bind publik **dengan** password: HTTPS + login dipaksa (E2E).
-- Bind loopback tanpa password: hanya halaman info lokal (by design,
-  tidak dapat dijangkau dari luar host) — bukan pelanggaran "no publicly
-  reachable unauthenticated dashboard".
+## 4. Threat-model notes on the new upgrade chain
 
-## 4. Keamanan proses upgrade (perubahan v0.3.2)
+- **Compromised GitHub account/release channel:** signatures bind to the
+  committed Ed25519 key; a release published without a valid signature by
+  `uaeg-release-1` is refused by every deployed bootstrap. (If the account
+  itself is compromised, the attacker could also replace the bootstrap for
+  NEW downloads — same trust level as any GitHub-distributed software; the
+  embedded key at least protects EXISTING bootstraps.)
+- **Private signing key compromise:** rotate per BOOTSTRAP.md (dual-sign
+  window → new key → one-time operator refresh, loudly). The key lives only
+  with the maintainer; it is never in the repo, CI variables, or logs.
+- **MITM on the VPS:** TLS to GitHub + signature verification; channel
+  overrides (`UAEG_RELEASE_API_BASE`) exist for mirrors/tests and never
+  bypass verification — an attacker able to set a root user's environment
+  already owns the machine (env control ≡ shell control).
+- **Rollback path offline:** the cached updater is a root-owned 0700 file
+  written only from verified bytes; tampering with it requires root, at
+  which point UAEG is not the boundary.
 
-- **Kode yang diunduh tidak dieksekusi buta:** aset rilis diverifikasi
-  checksum oleh operator (`sha256sum -c`, alur dokumentasi), source
-  instalasi diambil dari **tag immutable** yang diverifikasi ada
-  (ls-remote pra-clone) dan staging clone diverifikasi berada **persis di
-  commit tag** (HEAD == `refs/tags/<tag>^{commit}`) sebelum installer
-  dijalankan.
-- Staging: `mktemp -d` (mode 0700) di `/tmp`, dihapus saat selesai
-  (trap EXIT); tidak pernah di dalam working tree operator.
-- Remote yang dipakai selalu **dicetak dan dicatat** di RECORD.json
-  (prioritas: `--repo` eksplisit > origin clone operator > default
-  publik resmi) — mencegah sumber senyap yang tidak terdokumentasi.
-- Tidak ada operasi destruktif (`reset --hard`, `clean -fd`, forced
-  checkout) terhadap repo operator — kelas operasi ini **hilang total**
-  dari script.
-- Backup material sensitif: direktori `0700`, tidak pernah di-commit
-  (T-11; `.gitignore` repo tidak meng-track direktori data).
+## 5. Remaining accepted risks (explicit, none release-blocking)
 
-## 5. TLS / jaringan
+1. **Root-by-design execution** (FR-010/FR-013) — the product itself.
+2. **Background-job output files uncapped** (documented LIMITATIONS.md #13;
+   sync exec is capped).
+3. **Best-effort redaction** — pattern-based; documented.
+4. **scrypt cost on very weak hardware** — ~80 ms/attempt by design;
+   brute-force additionally blunted by per-IP lockout.
+5. **Single-host single-operator** — no multi-tenant isolation claims.
+6. **Production gap (operator action):** the MicroTix VPS still runs v0.3.2
+   with the dashboard not publicly reachable (loopback/firewall) until the
+   runbook in PRODUCTION_DEPLOYMENT.md is executed. v0.3.2 on that host
+   carries the B-1 freeze defect; upgrading is recommended promptly.
 
-- MCP listener: HTTPS (self-signed default; certbot/manual didukung),
-  `/healthz` publik read-only.
-- Dashboard listener terpisah (default 3903), TLS menyatu dengan MCP saat
-  publik.
-- Sertifikat self-signed: `chmod 0600` pada key (installer).
-- Peringatan jujur: klien hosted menolak self-signed — installer
-  merekomendasikan `--domain` (Let's Encrypt) untuk koneksi agent nyata.
+## 6. Production exposure observation (live, 2026-11-08)
 
-## 6. Kesenjangan yang diwarisi (bukan regresi v0.3.2; risiko residual)
-
-1. **Tidak ada sandbox OS** untuk eksekusi agent (by design, PRD FR-010).
-   Mitigasi: kunci + revokasi + audit log + README warning eksplisit.
-2. Sertifikat manual/certbot bergantung operator (renewal hook tersedia).
-3. `apt-get` installer berjalan sebagai root (wajar untuk installer OS,
-   tapi menambah permukaan kepercayaan supply-chain Debian).
-4. Release assets dilindungi checksum SHA-256 (sidecar) — tanpa signature
-   GPG. Penyempurnaan possible future work, tidak memblokir rilis ini
-   (checksum + HTTPS GitHub + tag immutable).
-
-## 7. Kesimpulan
-
-Tidak ada temuan keamanan P0/P1 yang terbuka. Perbaikan v0.3.2
-**menaikkan** postur keamanan (menghilangkan mutasi repo operator,
-klasifikasi kegagalan akurat, verifikasi commit tag, retensi backup
-aman). **GO dari perspektif keamanan** untuk rilis v0.3.2.
+MCP is publicly reachable and correctly returns 401 before protocol
+handling; the dashboard is not publicly reachable (see
+DASHBOARD_ROOT_CAUSE.md). From an exposure standpoint this is the SAFE
+direction (private-by-default), but it is not the operator's intended
+state; the runbook enables it with the fail-closed prerequisites.

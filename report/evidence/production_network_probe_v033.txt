@@ -1,0 +1,28 @@
+=== UAEG production endpoint probe — 2026-11-08T03:08:13Z ===
+DNS: host.zerotier.my.id -> 125.163.142.132 (A record, no IPv6)
+
+--- TCP port scan on 125.163.142.132 ---
+port 22: OPEN
+port 80: OPEN
+port 443: OPEN
+port 3902: OPEN
+port 3903: CONNECTION REFUSED/CLOSED
+
+--- HTTPS probe: dashboard (3903) ---
+*   Trying 125.163.142.132:3903...
+* connect to 125.163.142.132 port 3903 from 21.0.2.197 port 35344 failed: Connection refused
+* Failed to connect to host.zerotier.my.id port 3903 after 122 ms: Could not connect to server
+* closing connection #0
+curl exit: 0
+
+--- HTTPS probe: MCP (3902) ---
+*   Trying 125.163.142.132:3902...
+* SSL connection using TLSv1.3 / TLS_AES_256_GCM_SHA384 / X25519MLKEM768 / id-ecPublicKey
+* using HTTP/1.x
+> GET /mcp HTTP/1.1
+< HTTP/1.1 401 Unauthorized
+curl exit: 0
+
+--- control probes (sandbox egress OK) ---
+github.com -> HTTP 200
+example.com -> HTTP 200

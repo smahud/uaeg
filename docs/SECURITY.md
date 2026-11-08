@@ -141,6 +141,18 @@ What is **not** redacted:
   directly.
 - Environment variable values passed to `shell_exec` were never logged (unchanged).
 
+## Release authenticity (v0.3.3)
+
+Every release ships `uaeg-manifest.json` + `uaeg-manifest.json.sig` — an
+Ed25519 signature over the manifest that lists each asset's SHA-256. The
+upgrade bootstrap embeds the trusted public key and refuses to execute any
+updater whose manifest is not signed by that key or whose bytes do not match
+the signed manifest (a checksum fetched next to a script is never treated as
+publisher identity). CI re-verifies the signature and every asset hash before
+a release is published; anyone can audit a checkout with
+`python3 release/verify_release.py`. Key rotation is exceptional and
+operator-visible — policy in [BOOTSTRAP.md](./BOOTSTRAP.md).
+
 ## Reporting
 
 Suspect a security-relevant bug (e.g. auth bypass, key disclosure)? Open an issue at

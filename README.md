@@ -108,12 +108,17 @@ sudo uaeg status
 sudo uaeg doctor
 ```
 
-Upgrading an existing installation later is one command — it auto-detects the install, backs
-up data + config, verifies zero data loss afterwards, and rolls back automatically if anything
-fails (see the [safe-upgrade contract](docs/UPGRADE_CONTRACT.md)):
+Upgrading is one command with one file you download **once**: since v0.3.3 the release's
+`upgrade.sh` asset is a permanent bootstrap — it fetches and Ed25519-verifies each release's
+signed manifest, then runs the versioned safe-upgrade updater (auto-detect, backup, zero-data-
+loss verification, automatic rollback). Download it one time, then reuse the same local file
+for every future release, even ones that change the upgrade implementation itself
+([upgrade contract](docs/UPGRADE_CONTRACT.md) · [bootstrap design](docs/BOOTSTRAP.md)):
 
 ```bash
-sudo bash upgrade.sh          # or first: sudo bash upgrade.sh --check / --dry-run
+# one-time setup (verify the download, then):
+sudo bash upgrade.sh          # and every future upgrade: the same command, same file
+# other modes: --check / --dry-run / --rollback / --version X.Y.Z
 ```
 
 The first tool an agent should call is `server_info`, which reports the execution context and

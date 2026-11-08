@@ -484,7 +484,7 @@ assert_eq "$(installed_version)" "10.0.0" "T-17 versi sekarang 10.0.0"
 assert_eq "$(git -C "$INC/uaeg" rev-parse HEAD)" "$INC_HEAD_BEFORE" "T-17 clone operator tidak berubah (HEAD identik)"
 assert_eq "$(git -C "$INC/uaeg" status --porcelain)" "$INC_STATUS_BEFORE" "T-17 file terunduh tetap ada, tidak ada perubahan lain"
 assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-17 kunci agent identik"
-assert_in "$LOG" "TIDAK disentuh" "T-17 script menyatakan clone operator tidak disentuh"
+assert_in "$LOG" "NOT touched" "T-17 script menyatakan clone operator tidak disentuh"
 
 # ----------------------------------------------------------------------
 t "T-18: tag tidak ada -> pesan akurat, bukan misreporting (U-2, U-10)"
@@ -849,8 +849,12 @@ sleep 0.5
 run "$LOG" bash "$OPERATOR_DIR/upgrade.sh" --rollback --yes "${UPGRADE_ARGS[@]}"
 assert_rc 0 "T-31 rollback offline rc=0 (cached updater)"
 assert_in "$LOG" "cached updater" "T-31 menggunakan updater ter-cache"
-assert_eq "$(installed_version)" "12.0.0" "T-31 kembali ke pra-upgrade-D (12.0.0)"
-assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-31 kunci agent identik"
+# The latest backup belongs to the SUCCESSFUL 14.0.0 upgrade: by contract
+# (U-3/U-7) success backups retain data+config only, so the application
+# stays at 14.0.0 while the DATA returns to the pre-upgrade state. App
+# recovery from a success backup = install.sh from the immutable tag.
+assert_eq "$(installed_version)" "14.0.0" "T-31 app tetap 14.0.0 (backup sukses tidak menyimpan app — kontrak U-7)"
+assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-31 data pra-upgrade dipulihkan (kunci identik)"
 
 # ----------------------------------------------------------------------
 echo

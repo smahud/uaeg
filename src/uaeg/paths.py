@@ -7,7 +7,9 @@ Standard production layout (created by install.sh):
     - uaeg.db                                 SQLite database
     - jobs/<job_id>/{stdout,stderr,exit}      background job artifacts
     - tls/self-signed.{crt,key}               generated self-signed certificate
-    - sessions/                               session metadata artifacts
+    - sessions/                               reserved (session records live
+                                               in the database; kept for
+                                               layout compatibility)
 
 Environment overrides exist so tests and development instances can run
 fully isolated from the system directories.

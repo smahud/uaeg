@@ -1,0 +1,24 @@
+=== UAEG v0.3.3 lab browser verification (Playwright/Chrome 157) — 2026-11-08T03:11:22Z ===
+Environment: fresh browser session, no cached credentials, ignore_https_errors (self-signed lab cert),
+config mirroring production intent: dashboard 0.0.0.0:3903 + TLS + password; prod-style login->dashboard->tabs->logout.
+{
+  "console": [
+    "[verbose] [DOM] Password forms should have (optionally hidden) username fields for accessibility: (More info: https://goo.gl/9p2vKq) %o",
+    "[info] Autofocus processing was blocked because a document already has a focused element.",
+    "[verbose] [DOM] Password forms should have (optionally hidden) username fields for accessibility: (More info: https://goo.gl/9p2vKq) %o",
+    "[info] Autofocus processing was blocked because a document already has a focused element."
+  ],
+  "pageerrors": [],
+  "network_failed": [],
+  "steps": {
+    "favicon_status": 200,
+    "after_login_url": "https://127.0.0.1:3903/#keys",
+    "title": "UAEG \u00b7 Dashboard",
+    "hash_after_tabs": "#server",
+    "tabs_visited": true,
+    "secret_modal_open": true,
+    "key_row_present": 2,
+    "after_logout_url": "https://127.0.0.1:3903/login",
+    "login_form_after_logout": 1
+  }
+}

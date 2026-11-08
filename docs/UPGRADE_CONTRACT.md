@@ -1,39 +1,69 @@
 # Kontrak Upgrade Aman UAEG (Safe-Upgrade Contract)
 
 > **Status: BINDING.** Dokumen ini adalah kontrak resmi proses upgrade UAEG.
-> Setiap klausul (U-1 .. U-12) di bawah ini **dijamin oleh `upgrade.sh`** dan
-> **ditegakkan oleh test suite otomatis** `tests/test_upgrade_contract.sh`
-> (dijalankan di CI pada setiap push/PR). Perubahan pada `upgrade.sh` yang
-> melanggar salah satu klausul wajib dianggap bug regresi dan harus gagal di CI.
+> Setiap klausul (U-1 .. U-14) di bawah ini **dijamin oleh `upgrade.sh`
+> (bootstrap) + `updater.sh` (versioned updater)** dan **ditegakkan oleh test
+> suite otomatis** `tests/test_upgrade_contract.sh` (dijalankan di CI pada
+> setiap push/PR). Perubahan yang melanggar salah satu klausul wajib dianggap
+> bug regresi dan harus gagal di CI.
 >
-> Versi kontrak: **2** — berlaku sejak UAEG v0.3.2. (Versi 1 berlaku sejak
-> v0.3.1; lihat “Perubahan kontrak” di bawah.)
+> Versi kontrak: **3** — berlaku sejak UAEG v0.3.3. (Versi 2 sejak v0.3.2;
+> versi 1 sejak v0.3.1; lihat “Perubahan kontrak” di bawah.)
 
 ## Ringkasan satu kalimat
 
-> Upgrade UAEG = **satu perintah** (`sudo bash upgrade.sh`), **otomatis
-> terdeteksi**, **dicadangkan**, **diverifikasi**, dan **bisa dibatalkan** —
-> tanpa langkah manual, tanpa menghafal flag, tanpa risiko kehilangan data.
+> Upgrade UAEG = **satu perintah** (`sudo bash upgrade.sh`), **file yang sama
+> selamanya** (unduh bootstrap sekali), **otomatis terdeteksi**, **ditandatangani
+> + diverifikasi**, **dicadangkan**, dan **bisa dibatalkan** — tanpa langkah
+> manual, tanpa menghafal flag, tanpa risiko kehilangan data.
+
+## Arsitektur permanen (kontrak v3)
+
+```
+operator (unduh SEKALI)            GitHub Releases (per versi)
+──────────────────────────         ─────────────────────────────
+bash upgrade.sh  (BOOTSTRAP)  ───►  uaeg-manifest.json
+  · resolusi rilis target           uaeg-manifest.json.sig  (Ed25519)
+  · verifikasi tanda tangan   ◄──┘  uaeg-updater-<v>.sh
+  · verifikasi sha256+size          (installer & bootstrap juga sebagai aset)
+  · eksekusi updater terverifikasi
+        │
+        ▼
+  updater (mesin safe-upgrade U-1..U-12 — berubah bebas per rilis)
+  · staging clone terisolasi → backup → install → verifikasi → rollback
+  · cache salinan dirinya di /var/lib/uaeg/upgrade/ (rollback offline)
+  · system bootstrap copy: /usr/local/sbin/uaeg-upgrade (best effort)
+```
+
+`upgrade.sh` (bootstrap) milik operator dan **tidak pernah ditimpa** oleh
+upgrade mana pun; implementasi upgrade terperinci hidup di aset rilis
+`uaeg-updater-<version>.sh` yang diverifikasi tanda tangannya sebelum
+dieksekusi. Detail lengkap: [docs/BOOTSTRAP.md](./BOOTSTRAP.md).
 
 ## Perintah
 
 ```bash
-# di VPS yang sudah terinstal — dari dalam klon repo operator ATAUPUN dari
-# direktori mana pun (clone operator Anda TIDAK pernah disentuh):
+# PERTAMA (sekali saja — transisi dari model v0.3.2, atau instalasi baru):
+curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh
+curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh.sha256
+sha256sum -c upgrade.sh.sha256
+
+# SELANJUTNYA — file lokal yang sama, untuk semua rilis mendatang:
 sudo bash upgrade.sh
 
-# tanpa klon repo (unduh skrip saja, verifikasi checksum dulu — lihat INSTALL.md):
-sudo bash upgrade.sh
-
-# mode lain:
+# mode lain (kompatibel penuh dengan v0.3.2):
 sudo bash upgrade.sh --check        # status instalasi (read-only)
 sudo bash upgrade.sh --dry-run      # tampilkan rencana tanpa eksekusi
 sudo bash upgrade.sh --rollback     # pulihkan backup upgrade terakhir
-sudo bash upgrade.sh --version X.Y.Z --allow-downgrade   # turun versi (eksplisit)
+                                     # (bekerja OFFLINE dari updater ter-cache)
+sudo bash upgrade.sh --version X.Y.Z                  # pin rilis eksplisit
+sudo bash upgrade.sh --version X.Y.Z --allow-downgrade # turun versi (eksplisit)
+sudo bash upgrade.sh --source DIR   # pohon source lokal (offline)
+sudo bash upgrade.sh --main         # bleeding edge (eksplisit; BUKAN default)
 ```
 
-Kode keluar: `0` sukses · `1` error/ditolak · `2` gagal → sudah di-rollback ·
-`3` instalasi tidak ditemukan · `4` reserved (tidak dipakai sejak kontrak v2) ·
+Kode keluar: `0` sukses · `1` error/ditolak (termasuk verifikasi gagal) ·
+`2` gagal → sudah di-rollback · `3` instalasi tidak ditemukan · `4` reserved ·
 `5` downgrade ditolak.
 
 ---
@@ -184,6 +214,44 @@ checkout tidak boleh pernah dilaporkan sebagai "tag tidak ditemukan"
 
 *Ditegakkan oleh:* T-13, T-14, T-17, T-18, T-19.
 
+### U-13 — Bootstrap permanen (satu unduhan selamanya)
+Operator mengunduh `upgrade.sh` (bootstrap) **sekali**; semua upgrade
+berikutnya memakai **file lokal yang sama** (`sudo bash upgrade.sh`).
+Bootstrap tidak pernah ditimpa oleh proses upgrade (SHA-256 file operator
+tidak berubah — diperiksa ulang oleh bootstrap setelah setiap run), dan
+tidak bergantung pada implementasi updater rilis tertentu: bootstrap yang
+sama harus berhasil men-upgrade lintas rilis yang **mengubah implementasi
+updater-nya** melalui antarmuka terdokumentasi
+([BOOTSTRAP.md](./BOOTSTRAP.md), interface v1). Sumber target default
+adalah **GitHub Releases** (kanal rilis) — **bukan** branch `main` yang
+mutable (`--main` tetap tersedia sebagai opt-in eksplisit).
+
+*Ditegakkan oleh:* T-20, T-21, T-22, T-23 (uji kompatibilitas multi-rilis:
+bootstrap SHA identik lintas rilis A → B(updater berubah) → gagal-C → retry-D),
+T-30.
+
+### U-14 — Autentisitas & integritas artifact terverifikasi
+Sebelum mengeksekusi apa pun, bootstrap memverifikasi:
+
+1. **Autentisitas publisher** — manifest rilis (`uaeg-manifest.json`) harus
+   bertanda tangan Ed25519 yang valid atas kunci publik yang tertanam di
+   bootstrap (`release/keys/`, kebijakan rotasi: BOOTSTRAP.md).
+2. **Integritas artifact** — SHA-256 + ukuran updater harus cocok dengan
+   manifest yang sudah ditandatangani; manifest harus well-formed (path
+   updater aman — tanpa `/`/`..`, versi sesuai target, interface didukung).
+
+Manifest yang di-tamper, updater yang di-tamper, tanda tangan kunci asing,
+interface terlalu baru, dan manifest yang hilang **semua ditolak sebelum
+sesuatu dieksekusi** (exit 1, instalasi tidak tersentuh). Checksum
+`.sha256` tetap disediakan untuk verifikasi manusia, tetapi **checksum
+tidak dianggap bukti identitas publisher** — hanya tanda tangan yang
+ menjadi bukti. Rilis dipublikasikan CI yang memverifikasi ulang manifest
+dan tanda tangan sebelum aset diunggah (`.github/workflows/release.yml`).
+
+*Ditegakkan oleh:* T-24 (manifest tampered), T-25 (updater tampered),
+T-26 (kunci asing), T-27 (interface baru), T-28 (manifest hilang),
+dan `release/verify_release.py` di CI.
+
 ---
 
 ## Struktur direktori backup
@@ -224,6 +292,25 @@ efektif 1 — retensi tidak pernah menghapus satu-satunya recovery point).
 Kontrak ini berversi (`contract_version` di `RECORD.json`). Perubahan klausul
 harus: (1) menaikkan versi kontrak, (2) memperbarui test suite di commit yang
 sama, (3) dicatat di `report/`.
+
+### v3 (UAEG v0.3.3)
+
+- **Arsitektur permanen (U-13):** `upgrade.sh` menjadi *bootstrap* stabil
+  milik operator (unduh sekali, dipakai selamanya); mesin safe-upgrade
+  pindah ke aset rilis `uaeg-updater-<version>.sh` yang diperbarui bebas
+  per rilis melalui antarmuka terdokumentasi (BOOTSTRAP.md interface v1).
+- **Autentisitas (U-14):** manifest rilis ditandatangani Ed25519
+  (kunci `uaeg-release-1`); bootstrap menolak manifest/updater yang tidak
+  terverifikasi. Aset rilis kini berjumlah delapan (install/upgrade/updater
+  + sidecar + manifest + signature).
+- **Operasi offline:** updater menyimpan salinan terverifikasi di
+  `/var/lib/uaeg/upgrade/` — `--rollback` (dan `--check`) tetap berfungsi
+  tanpa jaringan setelah upgrade pertama yang sukses.
+- **Salinan sistem:** `install.sh`/updater memasang bootstrap kenyamanan di
+  `/usr/local/sbin/uaeg-upgrade` (best effort; file operator tidak pernah
+  disentuh).
+- Semua flag v0.3.2 tetap berfungsi (`--check`, `--dry-run`, `--version`,
+  `--rollback`, `--source`, `--main`, `--repo`, `--installer`, dst.).
 
 ### v2 (UAEG v0.3.2)
 

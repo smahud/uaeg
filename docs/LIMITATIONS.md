@@ -56,6 +56,13 @@ Read it before trusting the gateway with anything important.
 12. **Self-signed certificates are rejected by most hosted clients.** Self-signed mode is
     for local testing only. Real deployments need a domain plus certbot, or trusted manual
     certificates (FR-017, [CONFIGURATION.md](./CONFIGURATION.md#tls-modes)).
+13. **Background-job output files are not size-capped.** Since v0.3.3 the audit log
+    (`exec_logs`) is trimmed at startup to the newest 20,000 rows, but the stdout/stderr
+    files a background job writes to `/var/lib/uaeg/jobs/<id>/` have no quota: a
+    command like `yes > /dev/stdout` in background mode grows the file until disk runs
+    out (synchronous `shell_exec` output IS capped at 1 MiB/stream). Operators can
+    monitor the jobs view and cancel such jobs; a future release may add a configurable
+    per-job cap.
 
 ## Explicitly out of scope (PRD section 16)
 

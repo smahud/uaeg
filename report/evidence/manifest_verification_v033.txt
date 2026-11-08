@@ -1,0 +1,9 @@
+=== UAEG release verification (v0.3.3) — 2026-11-08T03:10:48Z ===
+ok    manifest signature verified (uaeg-release-1)
+ok    install.sh matches the signed manifest (e7564d417fd77bfd…)
+ok    upgrade.sh matches the signed manifest (7cedc07f9ae825e0…)
+ok    updater.sh matches the signed manifest (5b7191174536637a…)
+ok    bootstrap/updater interface compatible (bootstrap v1 >= updater v1)
+
+RELEASE v0.3.3 VERIFIED: signature + assets + interface consistency
+rc=0

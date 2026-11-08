@@ -177,6 +177,33 @@ ss -ltnp | grep 3903                 # confirm the listener and its address
   and the VPS on the private interface. Never "fix" this by opening 3903 to the public
   internet — the dashboard has no login (FR-015).
 
+### 9a. Upgrade refuses: "signature invalid" / "key rotation"
+
+The release manifest is not signed by a key your bootstrap trusts. This is
+either a genuinely untrusted artifact (investigate before proceeding!) or a
+deliberate **trust-key rotation**. Recovery is a ONE-TIME bootstrap refresh
+(the only routine operation that needs re-downloading `upgrade.sh`):
+
+```bash
+curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh
+curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh.sha256
+sha256sum -c upgrade.sh.sha256
+```
+
+See [BOOTSTRAP.md](./BOOTSTRAP.md) for the rotation policy.
+
+### 9b. Upgrade refuses: "updater interface" too new
+
+A future release speaks a newer bootstrap↔updater interface than your
+bootstrap supports. Same one-time refresh as above; the bootstrap's failure
+message includes the exact commands.
+
+### 9c. Offline rollback
+
+`sudo bash upgrade.sh --rollback` works without network access after the
+first successful upgrade: the updater caches a verified copy of itself at
+`/var/lib/uaeg/upgrade/last-updater.sh`.
+
 ### 9. Port already in use
 
 **Diagnose:**

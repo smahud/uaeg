@@ -1,122 +1,96 @@
-# Test Evidence — UAEG v0.3.2 (audit P0)
+# Test Evidence — v0.3.3
 
-**Tanggal:** 2026-11-07/08 · **Commit diaudit:** `4f5ac50` → patch `5dfcb0a` · **Environment:** sandbox Debian-compatible, Python 3.12.16, git 2.47.3, tanpa root/systemd (patch test-only standar CI untuk root-check/apt — identik spirit `.github/workflows/ci.yml`)
-
-> Prinsip: **bukti, bukan klaim.** Setiap baris di bawah berasal dari
-> eksekusi nyata yang direproduksi selama audit ini; salinan log mentah
-> di `report/evidence/`.
+**Date:** 2026-11-08 · **Environment:** isolated sandbox (Debian, Python
+3.12.16, bash 5.2, OpenSSL 3.5.7), real venv/pip installs, real TLS, real
+browser (Chromium 157 via Playwright), real Ed25519 signatures. Raw logs
+under `report/evidence/`.
 
 ---
 
-## 1. Kontrak upgrade — `tests/test_upgrade_contract.sh` (kontrak v2)
+## 1. Automated matrix — summary
 
-Perintah: `bash tests/test_upgrade_contract.sh`
-Hasil: **95 PASS / 0 FAIL, exit 0** — log lengkap:
-`report/evidence/upgrade_contract_suite_v0.3.2.txt`
+| Suite | Result | Evidence file |
+|---|---|---|
+| Python tests (`pytest tests/`) | **133 passed / 0 failed** (113 pre-existing + 20 new regression) | `evidence/pytest_v033.txt` |
+| Upgrade contract (`tests/test_upgrade_contract.sh`) | **155 PASS / 0 FAIL** (T-01..T-19 + T-20..T-31) | `evidence/upgrade_contract_suite_v033.txt` |
+| Release manifest verification (`release/verify_release.py`) | **PASS** (signature + 3 asset hashes + interface) | `evidence/manifest_verification_v033.txt` |
+| Syntax gates | `bash -n` clean on upgrade.sh / updater.sh / install.sh / contract suite | (session log) |
 
-Matriks (19 grup):
+### Python coverage by area
 
-| Test | Skenario | Hasil |
-|------|----------|-------|
-| T-01 | Fresh install terisolasi (installer nyata + venv + pip) | PASS |
-| T-02 | 2 agent key + perubahan config operator | PASS |
-| T-03 | `--check` deteksi instalasi/versi/path (U-2, U-10) | PASS |
-| T-04 | `--dry-run` rencana tanpa perubahan (U-11) | PASS |
-| T-GUARD | Dashboard publik tanpa password → ditolak (U-8) | PASS |
-| T-13 | Upgrade ke tag terbaru via staging; **clone operator HEAD/branch/status identik** (U-12 v2) | PASS |
-| T-14 | Tree kotor → upgrade tetap jalan, edit lokal dipertahankan (U-12 v2) | PASS |
-| T-05 | Upgrade `--source`: zero data loss + bukti RECORD/state/log (U-1/3/4/8) | PASS |
-| T-06 | Idempoten (re-run) (U-7) | PASS |
-| T-07 | Bukti smoke /healthz tercatat (U-4) | PASS |
-| T-08 | Release rusak → rollback OTOMATIS exit 2, app lama hidup lagi (U-5) | PASS |
-| T-09 | Rollback manual memulihkan data pra-upgrade (U-6) | PASS |
-| T-10 | Tanpa instalasi → exit 3 (U-2) | PASS |
-| T-11 | Rahasia tidak pernah bocor ke log/RECORD/state (U-9) | PASS |
-| T-12 | Retensi `--keep-backups 1` (U-7) | PASS |
-| T-16 | Downgrade diam-diam → exit 5 (U-12) | PASS |
-| T-15 | Standalone dry-run menemukan target via ls-remote (U-2/11) | PASS |
-| **T-17** | **REGRESI INSIDEN v0.3.1**: clone usang @v0.3.0 + aset terunduh untracked di dalamnya → upgrade **BERHASIL**, tree operator byte-for-byte utuh | PASS |
-| **T-18** | Tag tidak ada → pesan "tidak ditemukan di remote"; pesan menyesatkan lama tidak muncul | PASS |
-| **T-19** | Standalone tanpa repo lokal → upgrade PENUH dari remote | PASS |
+- **Auth & dashboard:** login/logout/session expiry/cookie/CSRF/rate-limit/
+  password rotation (e2e, real TLS); public-bind fail-closed guards;
+  legacy-mode whoami (new); sessions-endpoint race (new); dashboard API
+  auth on every route.
+- **Executor:** sync runner (timeouts, caps, cwd/env), PTY open/input/
+  output/resize/close/sessions, **non-blocking write into a SIGSTOPed
+  session (new B-1 regression)**, backlog cap, background jobs
+  (spawn/status/output/wait/cancel/**TERM-ignoring kill (new B-3)**,
+  reattach/**previous-boot interruption (new B-4)**, watcher survival (new
+  B-5)), containment (**>1000-row open-session visibility (new B-2)**),
+  rotation failure ordering (new B-12), exec_logs retention (new B-11).
+- **Security:** redaction matrix incl. short-flag passwords (new B-9);
+  constant-time compare; secret non-leakage.
+- **MCP e2e:** full protocol flow (initialize → tools/list → tools/call)
+  with real TLS + bearer keys, revocation immediacy, restart survival,
+  hardening scenarios (concurrent clients, high-volume output, CLI parity).
 
-## 2. Unit tests Python
+### Contract coverage
 
-Perintah: `python -m pytest tests/test_unit_core.py tests/test_unit_executor.py
-tests/test_unit_containment.py tests/test_unit_security_redaction.py
-tests/test_unit_server_hardening.py tests/test_dashboard_auth.py -q`
+See UPGRADE_COMPATIBILITY_TESTS.md for the full clause→test map (U-1..U-14).
 
-Hasil: **81 passed** (0 failed) — mencakup auth bearer/revokasi, containment
-advisory, redaksi secret di log, hardening server, dashauth.
+## 2. Real-browser verification (fixed dashboard, v0.3.3)
 
-## 3. E2E — MCP asli + TLS asli
+Lab mirroring production intent: `dashboard.bind=0.0.0.0`, TLS, password
+login; fresh browser profile (no cached credentials); Chromium 157.
 
-Perintah: `python -m pytest tests/test_e2e_smoke.py -q`
-Hasil: **9 passed** — siklus MCP Streamable HTTP penuh (initialize → session
-→ tools/call) di atas HTTPS self-signed nyata; semua 13 tool tercakup
-(server_info, shell_exec, shell_open, shell_input, shell_output,
-shell_resize, shell_close, shell_sessions, job_status, job_output, job_wait,
-job_cancel, job_list).
+**Result matrix** (`evidence/lab_browser_verification_v033.txt`):
 
-## 4. E2E — dashboard auth + hardening
+| Check | Result |
+|---|---|
+| Unauthenticated `/` | 302 → `/login` ✓ |
+| Login page renders (password form) | ✓ |
+| Wrong password | 401 API + visible error, stays on /login ✓ |
+| Correct login | redirect to `/` dashboard ✓ |
+| All 5 tabs render (keys/permissions/sessions/logs/server) | ✓ |
+| URL hash follows tab selection (F-7) | `#server` ✓ |
+| Key creation via UI → one-time secret modal → acknowledgment | ✓ (modal open; key row present) |
+| `/api/whoami` | 200 ✓ |
+| Logout (Sign out button) | POST /logout → `/login` ✓ |
+| **Console errors** | **0** (favicon now 200 — was 404 on v0.3.2) |
+| Page errors / failed requests | 0 / 0 |
 
-Perintah: `python -m pytest tests/test_e2e_dashboard_auth.py tests/test_e2e_hardening.py -q`
-Hasil: **23 passed** — halaman login sebelum dashboard, login benar/salah,
-logout, rotasi password mencabut sesi tanpa restart, bind wildcard ditolak
-tanpa password, HTTPS + login saat password diset, cookie/CSRF, rate limit.
+Screenshots: `evidence/uaeg_v033_dashboard_keys.png`,
+`evidence/uaeg_v033_dashboard_server.png`,
+`evidence/uaeg_v033_after_logout.png` (content-verified non-blank:
+21.8% / 68.3% / 8.0% non-background pixels).
 
-## 5. Live smoke produksi-style (server hidup, 13 tool, batas auth)
+## 3. Production probes (live evidence)
 
-Perintah: `bash scripts/live_smoke.sh` (isolated dirs, kunci disposabel)
-Log: `report/evidence/live_smoke_v0.3.2.txt`
+- `evidence/production_network_probe_v033.txt` — DNS, port matrix
+  (22/80/443 open; 3902 refused→open transition; 3903 refused), control
+  probes proving sandbox egress.
+- `evidence/production_mcp_probe_v033.txt` — live `/healthz` (UAEG v0.3.2,
+  uptime 7625 s), unauthenticated `/mcp` → 401 (auth enforced), Let's
+  Encrypt certificate details (valid to 2027-02-05, SAN match).
 
-```
-1) healthz            : {"status":"ok","service":"UAEG","version":"0.3.2",...}
-2) initialize         : serverInfo ok, session 99d39df24c...
-3) server_info        : version=0.3.2
-4) shell_exec         : LIVE-SMOKE-OK-42
-5) shell_open→input→output: PTY-OK-9 ; resize ok ; close=True
-   shell_sessions     : count=0 (benar — sesi baru saja ditutup)
-6) job: submit → status=running → list=1 → cancel → status=cancelled
-   → status after=cancelled (PROSES MATI TIDAK PERNAH DILAPORKAN RUNNING)
-   → job_output ok → job_wait ok
-7) unauth MCP         : HTTP 401
-8) bad key MCP        : HTTP 401
-9) no-session tools   : Missing session ID (session enforcement jalan)
-10) dash unauth API   : HTTP 200 pada bind loopback tanpa password
-                        (info-page by design; bind publik tanpa password
-                        ditolak config/serve — lihat SECURITY_REVIEW.md §3)
-11) version           : uaeg 0.3.2
-```
+## 4. Negative/failure-injection results (from the contract suite)
 
-## 6. Reproduksi insiden (bukti akar masalah)
+Tampered manifest → refused · tampered updater → refused · rogue-key
+signature → refused · interface-too-new → refused with instructions ·
+missing manifest → clear error · broken release → auto-rollback (exit 2) ·
+retry after failure with same bootstrap → success · offline rollback →
+success · silent downgrade → refused (exit 5) · dirty/untracked operator
+tree → upgrade succeeds, tree byte-identical · secrets never in logs/records.
 
-`scripts/repro_incident.sh` (aset v0.3.1 byte-identical, user-namespace
-root, remote lokal; skenario persis transkrip operator):
-hasil **exit 1** dengan urutan pesan identik transkrip (checkout collision
-+ "tag tidak ditemukan setelah fetch"). Detail: `ROOT_CAUSE_ANALYSIS.md`.
+## 5. Known test-environment deviations (honesty)
 
-`scripts/repro_fix.sh` (aset v0.3.2, skenario sama):
-hasil **exit 0**, `UPGRADE BERHASIL: v0.3.0 -> v0.3.2`, tree operator
-identik (HEAD/branch/status), kunci agent utuh, semua check
-zero-data-loss lolos, RECORD `contract_version=2`.
-
-## 7. Static
-
-- `bash -n` semua skrip shell (`upgrade.sh`, `install.sh`, `uninstall.sh`,
-  `tests/test_upgrade_contract.sh`): OK.
-- `python -m compileall src/uaeg`: OK.
-- Pemindaian referensi usang (`tidak ditemukan setelah fetch`,
-  `untracked-files=no`, `contract_version=1` di `upgrade.sh`): bersih.
-- Konsistensi versi: `pyproject.toml` == `__init__.__version__` ==
-  `install.sh` pin `UAEG_RELEASE_VERSION` == README == `0.3.2`
-  (dijaga tambahan oleh `release.yml` step "Verify the installer pins
-  this tag's version").
-
-## 8. Yang TIDAK diuji di lingkungan ini (dan di mana diuji)
-
-- systemd nyata / boot VPS / ufw — di luar sandbox; jalur ini diaudit via
-  kode (unit `uaeg.service`, `install.sh`) dan bukti penerimaan VPS
-  sebelumnya (`report/VPS_ACCEPTANCE_RESULTS.md`); deployment live
-  MicroTix ditandai **PENDING** (lihat `PRODUCTION_READINESS.md`).
-- Let's Encrypt (butuh domain + port 80 publik) — tidak berubah di patch
-  ini; risiko diwarisi dari v0.3.1.
+- The contract suite disables the root check and apt via sed (same as the
+  project's pre-existing CI pattern); all other machinery (backup, staging,
+  install, verification, rollback, signatures) runs exactly as production.
+- The release channel + signing key are simulated locally in tests (real
+  OpenSSL Ed25519); the production channel is GitHub Releases, verified
+  again by `release/verify_release.py` locally and by the release workflow
+  at publish time.
+- Browser tests ignore the LAB's self-signed TLS error (production uses a
+  valid Let's Encrypt certificate — verified live on the MCP listener).
