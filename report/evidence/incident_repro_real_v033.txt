@@ -1,7 +1,7 @@
 ==============================================================
  INCIDENT REPRODUCTION (real published release assets, EUID=0
  via root user namespace - no script patches at all)
- base: /tmp/uaeg-incident.82h3Lb
+ base: /tmp/uaeg-incident.3mxWIW
 ==============================================================
   [1;32mPASS[0m existing v0.3.0 installation created (real install.sh, rc=0)
   [1;32mPASS[0m installed version = 0.3.0
@@ -23,8 +23,9 @@
   [1;32mPASS[0m updater sha256 verified against the signed manifest
   [1;32mPASS[0m updater reported UPGRADE SUCCESSFUL
   [1;32mPASS[0m staging clone of the exact tag v0.3.3 (verified at the tag commit)
+  [1;32mPASS[0m dual-keyring bootstrap verified the key-1-signed historical manifest
   [1;32mPASS[0m operator's bootstrap file byte-identical after the upgrade
 
 
-HASIL: [1;32m18 PASS[0m / [1;31m0 FAIL[0m
-base (kept for inspection): /tmp/uaeg-incident.82h3Lb
+HASIL: [1;32m19 PASS[0m / [1;31m0 FAIL[0m
+base (kept for inspection): /tmp/uaeg-incident.3mxWIW

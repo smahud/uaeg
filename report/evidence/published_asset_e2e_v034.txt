@@ -1,0 +1,57 @@
+==============================================================
+ POST-PUBLICATION VERIFICATION — v0.3.4 (public URLs only)
+ base: /tmp/uaeg-pubverify.ZqDNSg
+==============================================================
+  [1;32mPASS[0m releases/latest -> v0.3.4
+  [1;32mPASS[0m all 8 documented assets present
+  [1;32mPASS[0m upgrade.sh.sha256 sidecar verifies
+Note: switching to '4bda64a7a9fd9943147ca62bf018dee1086235e9'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+  [1;32mPASS[0m manifest Ed25519 signature verifies (uaeg-release-2, from the tagged tree)
+  [1;32mPASS[0m manifest correctly NOT verifiable with the old uaeg-release-1 key
+  [1;32mPASS[0m manifest hashes match the downloaded install.sh/upgrade.sh/updater bytes
+  [1;32mPASS[0m published bootstrap is keyring v2
+  [1;32mPASS[0m bootstrap trusts both release keys
+  [1;32mPASS[0m fresh install via the published one-line installer (standalone fetch): rc=0
+  [1;32mPASS[0m fresh install serves version 0.3.4
+  [1;32mPASS[0m fresh install healthz OK over TLS
+  [1;32mPASS[0m healthz reports 0.3.4
+  [1;32mPASS[0m v0.3.3 installation created (upgrade substrate)
+  [1;32mPASS[0m 2 agent keys created in the v0.3.3 installation
+  [1;32mPASS[0m published bootstrap upgraded v0.3.3 -> v0.3.4 (rc=0)
+  [1;32mPASS[0m installed version = 0.3.4
+  [1;32mPASS[0m agent keys identical across the upgrade (zero data loss)
+  [1;32mPASS[0m operator config preserved (dashboard.port 3984)
+  [1;32mPASS[0m UPGRADE SUCCESSFUL reported
+  [1;32mPASS[0m staging clone of tag v0.3.4
+  [1;32mPASS[0m operator directory untouched (same file set)
+  [1;32mPASS[0m operator's bootstrap file byte-identical after upgrade + rollback + refusal
+  [1;32mPASS[0m broken release -> automatic rollback (exit 2)
+  [1;32mPASS[0m rollback verified (old app answers /healthz)
+  [1;32mPASS[0m agent keys intact after the failed upgrade + rollback
+  [1;32mPASS[0m application back at 0.3.4 after rollback
+  [1;32mPASS[0m fetched the historical v0.3.3 bootstrap
+  [1;32mPASS[0m v0.3.3-era bootstrap refuses v0.3.4 with rc=1 (fail closed)
+  [1;32mPASS[0m refusal message: SIGNATURE INVALID (documented recovery guidance)
+  [1;32mPASS[0m message mentions key rotation
+  [1;32mPASS[0m refusal states nothing was changed
+  [1;32mPASS[0m installation untouched by the refused attempt (still 0.3.4)
+
+
+HASIL: [1;32m32 PASS[0m / [1;31m0 FAIL[0m
+base (kept for inspection): /tmp/uaeg-pubverify.ZqDNSg

@@ -19,22 +19,50 @@ round-2 audit (this session), from public URLs.
 4. install.sh pins `UAEG_RELEASE_VERSION="0.3.4"` == tag version (release
    workflow gate). PASS.
 
-## Post-publication verification (from public URLs)
+## Post-publication verification (EXECUTED 2026-11-08 — 32/32 PASS)
 
-- [x] `releases/latest` resolves to v0.3.4.
-- [x] All 8 documented assets present with correct names/sizes.
-- [x] `upgrade.sh.sha256` sidecar verifies against the downloaded bytes.
-- [x] Downloaded `uaeg-manifest.json` signature verifies against the
-      committed `uaeg-release-2` public key (openssl pkeyutl).
-- [x] Manifest asset hashes match the independently downloaded
-      install.sh / upgrade.sh / uaeg-updater-0.3.4.sh bytes.
-- [x] Fresh-install smoke test from the published assets.
-- [x] Upgrade smoke test: populated v0.3.3 installation (2 keys) upgraded
-      to v0.3.4 via the published bootstrap — zero data loss verified.
-- [x] `--bootstrap-info` on the published bootstrap reports keyring v2
-      (uaeg-release-1 + uaeg-release-2).
+Harness: `scripts`-side verifier run with EUID=0 via a root user namespace
+(published script bytes unmodified; the installers' apt step skipped
+in-tree exactly as GitHub CI does; the bootstrap's ONE GitHub API call
+carried through its documented UAEG_RELEASE_API_BASE mirror because the
+sandbox IP had exhausted the unauthenticated API rate limit — artifact
+downloads and signatures all came from github.com). Raw log:
+`report/evidence/published_asset_e2e_v034.txt`.
 
-(Detailed commands and outputs are appended below after execution.)
+1. `releases/latest` resolves to **v0.3.4**; the Release workflow
+   (run 4bda64a7) completed **success**; CI on the same commit: **success**
+   (Python 3.11/3.12/3.13 + contract + installer jobs).
+2. All **8 documented assets** present with the expected names.
+3. `upgrade.sh.sha256` sidecar: **upgrade.sh: OK**.
+4. Downloaded manifest's Ed25519 signature **verifies against the committed
+   uaeg-release-2 public key** and correctly does NOT verify against the
+   old uaeg-release-1 key (rotation in effect).
+5. Manifest sha256+size match the independently downloaded install.sh /
+   upgrade.sh / uaeg-updater-0.3.4.sh bytes; updater interface 1.
+6. `--bootstrap-info`: bootstrap version **2**, trusted keys
+   **uaeg-release-1,uaeg-release-2** (fingerprints d6ced90e372b478e,
+   8d3fcff09c9aed7d).
+7. **Fresh install** through the published one-line installer in standalone
+   mode (it fetches the v0.3.4 source tarball from GitHub itself): rc=0,
+   `uaeg version` = 0.3.4, `/healthz` OK over TLS with version 0.3.4.
+8. **Upgrade smoke**: populated v0.3.3 installation (2 agent keys,
+   operator config port 3984) upgraded to v0.3.4 via the published
+   bootstrap from inside an operator directory carrying the downloaded
+   untracked bootstrap — rc=0, UPGRADE SUCCESSFUL, staging clone of tag
+   v0.3.4, agent keys byte-identical, operator config preserved,
+   operator directory file set and bootstrap file byte-identical.
+9. **Fault injection**: a deliberately broken v0.3.4 source tree upgrade
+   fails → **automatic rollback (exit 2)** — application back at 0.3.4,
+   keys intact, "rollback verified: the old application answers /healthz".
+10. **Key-rotation semantics**: the historical v0.3.3-era bootstrap (which
+    trusts only uaeg-release-1) targeting v0.3.4 **refuses fail-closed
+    (exit 1)** with "RELEASE MANIFEST SIGNATURE INVALID … key rotation …
+    NOTHING was executed or changed"; the installation remains at 0.3.4.
+
+Additional cross-release evidence: the v0.3.4 dual-key bootstrap upgrades a
+v0.3.0 installation to the key-1-signed historical v0.3.3 release
+(19/19 assertions — `report/evidence/incident_repro_real_v033.txt`),
+confirming rotation did not break historical-release targeting.
 
 
 **Date:** 2026-11-08 · **Tag:** `v0.3.3` · **Commit:** `fff55c3`
