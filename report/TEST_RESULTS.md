@@ -72,6 +72,13 @@ runnable (patched) installer backs each simulated release.
 Both regressions were introduced and eliminated inside this audit; the
 final suite state is fully green with the fixes in place.
 
+3. The new CI unified-command smoke step failed twice on GitHub Actions
+   before passing (test-design only, no product change): first it invoked
+   the real unpatched updater as non-root (the updater correctly insists
+   on root), then a log filename starting with `--` broke grep/cat. Fixed
+   by ci.yml-only commits (`56173bd`, `00cc063`); the contract suite and
+   all Python matrices were green on every commit including the tag.
+
 ## 4. Known environmental notes (not defects)
 
 - Unauthenticated GitHub API calls from a shared egress IP can be

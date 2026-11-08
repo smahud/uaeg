@@ -1,0 +1,43 @@
+== v0.4.0 PUBLISHED-ASSET VERIFICATION (from public URLs) 2026-11-08T16:08:21Z ==
+
+-- eight documented assets downloaded from https://github.com/smahud/uaeg/releases/download/v0.4.0 --
+  install.sh (50969 bytes)
+  install.sh.sha256 (77 bytes)
+  uaeg-manifest.json (548 bytes)
+  uaeg-manifest.json.sig (64 bytes)
+  uaeg-release-3.pub.pem (113 bytes)
+  uaeg-updater-0.4.0.sh (55527 bytes)
+  uaeg-updater-0.4.0.sh.sha256 (88 bytes)
+  upgrade.sh (18753 bytes)
+  upgrade.sh.sha256 (77 bytes)
+
+-- sha256sum -c (sidecars published with the release) --
+install.sh: OK
+upgrade.sh: OK
+uaeg-updater-0.4.0.sh: OK
+
+-- Ed25519 manifest signature vs uaeg-release-3.pub.pem (fetched from the v0.4.0 tag) --
+Signature Verified Successfully
+
+-- manifest vs published updater bytes --
+  updater sha256 : MATCH
+  manifest       : version 0.4.0 / updater interface 1
+
+-- releases/latest redirects to v0.4.0 --
+  location: https://github.com/smahud/uaeg/releases/download/v0.4.0/install.sh
+
+-- published install.sh works STANDALONE (operator one-line path) --
+  downloaded install.sh (sha256 33b02bac87f9f118...) executed standalone:
+  - bare --version  -> 'UAEG unified installer v0.4.0 (updater interface v1)'
+  - fresh install   -> fetched the v0.4.0 release tarball from GitHub, installed,
+                       'uaeg version' reports 0.4.0, dashboard + MCP endpoints configured
+
+-- Release workflow (tag v0.4.0): completed, conclusion SUCCESS --
+
+-- CI record (GitHub Actions) --
+  tag v0.4.0 (0b4390b): Release workflow SUCCESS (published the 8 assets);
+    contract suite + Python 3.11/3.12/3.13 matrices SUCCESS; the NEW unified
+    smoke step failed once (test-design only: it invoked the real unpatched
+    updater as non-root, and a log filename starting with '--'); fixed in
+    56173bd + 00cc063 (ci.yml only - no manifest-covered file changed).
+  main @ 00cc063: CI completed, conclusion SUCCESS (all five jobs green).

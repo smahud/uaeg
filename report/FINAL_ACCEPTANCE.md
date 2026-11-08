@@ -21,7 +21,7 @@ truthfully).
 | Multi-release bootstrap reuse passes | ✅ | Same operator file across releases E→F(changed updater)→G(pin)→v24 with SHA-256 unchanged (T-40..T-42, T-52) |
 | Release verification passes | ✅ | `release/verify_release.py`: signature (uaeg-release-3) + asset hashes + interface consistency all OK; rotation cross-checks in `evidence/key_rotation_v040.txt` |
 | README and docs are synchronized | ✅ | README, INSTALL, BOOTSTRAP, UPGRADE_CONTRACT (contract v4 / U-16) all describe the unified flow; obsolete `upgrade.sh`-download instructions replaced (old runbook marked superseded) |
-| Changes committed and pushed | ✅ | `main` + tag `v0.4.0` pushed; release published by `release.yml` (verified from public URLs — see §Release) |
+| Changes committed and pushed | ✅ | `main` @ `00cc063` + tag `v0.4.0` pushed; release published by `release.yml` and verified from public URLs. CI on `00cc063`: all five jobs SUCCESS (the tagged commit's only CI failure was in the new smoke step itself — test-design, fixed by ci.yml-only commits; contract suite + Python matrices were green on the tagged commit too) |
 | Production status is reported truthfully | ✅ | This file: production NOT modified, dashboard NOT claimed fixed; exact diagnostics listed |
 
 ## Test totals
@@ -45,6 +45,10 @@ truthfully).
   v0.3.4 rotation). Keyring now trusts keys 1+2+3 in both `install.sh` and
   `upgrade.sh`, so historical releases keep verifying for pins/downgrades
   (proven in `evidence/key_rotation_v040.txt`).
+- CI: contract suite + Python 3.11/3.12/3.13 green on the tagged commit;
+  the new unified smoke step needed two ci.yml-only fixes (non-root updater
+  invocation; a log filename starting with `--`) — final CI run on `00cc063`
+  fully green. No manifest-covered file changed after signing.
 - Assets published by `.github/workflows/release.yml` after re-verification:
   `install.sh`(+sha256), `upgrade.sh`(+sha256),
   `uaeg-updater-0.4.0.sh`(+sha256), `uaeg-manifest.json`(+sig) — eight
