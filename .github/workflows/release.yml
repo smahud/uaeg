@@ -2,13 +2,18 @@ name: Release
 
 # Publishes the documented release assets whenever a version tag is pushed.
 #
-# Why this exists: docs/INSTALL.md promises
-#   https://github.com/smahud/uaeg/releases/latest/download/install.sh
-#   https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh
-# (plus .sha256 sidecars). A tag without a GitHub Release carrying those
-# assets breaks the documented one-line install and standalone upgrade
-# paths with a 404 (observed for v0.2.0-v0.3.1). This workflow makes the
-# asset set a mandatory, automatic part of tagging.
+# Asset set (upgrade contract v3, docs/UPGRADE_CONTRACT.md + docs/BOOTSTRAP.md):
+#   install.sh                        verified one-line installer
+#   upgrade.sh                        the PERMANENT bootstrap (stable, downloaded once)
+#   uaeg-updater-<version>.sh         the versioned safe-upgrade updater
+#   uaeg-manifest.json (+ .sig)       signed release manifest (Ed25519, key uaeg-release-1)
+#   *.sha256                          sidecars for human verification
+#
+# The manifest and signature are pre-generated and committed by
+# `python3 release/make_release.py --key <private key>` (the private key
+# never enters this repository). This workflow re-verifies BOTH the
+# signature (against the committed public key) and every asset hash before
+# the release is created - a release cannot publish unverified content.
 
 on:
   push:
@@ -20,7 +25,7 @@ permissions:
 
 jobs:
   release:
-    name: Publish release assets (install.sh / upgrade.sh + checksums)
+    name: Verify + publish release assets
     runs-on: ubuntu-latest
     steps:
       - name: Checkout the tagged commit
@@ -29,13 +34,9 @@ jobs:
       - name: Verify the tagged tree ships the documented scripts
         run: |
           test -f install.sh  || { echo "::error::install.sh missing at tag $GITHUB_REF_NAME"; exit 1; }
-          test -f upgrade.sh || { echo "::error::upgrade.sh missing at tag $GITHUB_REF_NAME"; exit 1; }
-
-      - name: Generate SHA-256 sidecars (sha256sum -c compatible)
-        run: |
-          sha256sum install.sh  > install.sh.sha256
-          sha256sum upgrade.sh  > upgrade.sh.sha256
-          cat install.sh.sha256 upgrade.sh.sha256
+          test -f upgrade.sh  || { echo "::error::upgrade.sh missing at tag $GITHUB_REF_NAME"; exit 1; }
+          test -f updater.sh  || { echo "::error::updater.sh missing at tag $GITHUB_REF_NAME"; exit 1; }
+          test -f release/keys/uaeg-release-1.pub.pem || { echo "::error::release public key missing"; exit 1; }
 
       - name: Verify the installer pins this tag's version
         run: |
@@ -46,29 +47,65 @@ jobs:
             exit 1
           fi
 
+      - name: Verify the release manifest (signature + asset integrity + interfaces)
+        run: |
+          python3 release/verify_release.py
+
+      - name: Stage the release assets (versioned updater name, sha256 sidecars)
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          cp install.sh dist/install.sh
+          cp upgrade.sh dist/upgrade.sh
+          cp updater.sh "dist/uaeg-updater-${VERSION}.sh"
+          cp "release/manifests/v${VERSION}/uaeg-manifest.json" dist/uaeg-manifest.json
+          cp "release/manifests/v${VERSION}/uaeg-manifest.json.sig" dist/uaeg-manifest.json.sig
+          cp "release/manifests/v${VERSION}/install.sh.sha256" dist/install.sh.sha256
+          cp "release/manifests/v${VERSION}/upgrade.sh.sha256" dist/upgrade.sh.sha256
+          cp "release/manifests/v${VERSION}/uaeg-updater-${VERSION}.sh.sha256" "dist/uaeg-updater-${VERSION}.sh.sha256"
+          # Verify the sidecars actually pass against the staged bytes.
+          ( cd dist && sha256sum -c install.sh.sha256 && sha256sum -c upgrade.sh.sha256 \
+            && sha256sum -c "uaeg-updater-${VERSION}.sh.sha256" )
+          ls -la dist/
+
       - name: Create the GitHub Release with assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          VERSION="${GITHUB_REF_NAME#v}"
           gh release create "$GITHUB_REF_NAME" \
             --title "UAEG $GITHUB_REF_NAME" \
             --notes "Assets:
-          - \`install.sh\` + \`install.sh.sha256\` — verified one-line installer (docs/INSTALL.md, Option B). Pins $GITHUB_REF_NAME.
-          - \`upgrade.sh\` + \`upgrade.sh.sha256\` — standalone safe-upgrade entry point (docs/UPGRADE_CONTRACT.md, contract v1).
+          - \`install.sh\` + \`.sha256\` — verified one-line installer (docs/INSTALL.md, Option B). Pins $GITHUB_REF_NAME.
+          - \`upgrade.sh\` + \`.sha256\` — the PERMANENT upgrade bootstrap: download ONCE, reuse for every future release (\`sudo bash upgrade.sh\`; docs/UPGRADE_CONTRACT.md, contract v3).
+          - \`uaeg-updater-${VERSION}.sh\` + \`.sha256\` — the versioned safe-upgrade updater (fetched and verified automatically by the bootstrap).
+          - \`uaeg-manifest.json\` + \`.sig\` — Ed25519-signed release manifest (key uaeg-release-1; verified by every bootstrap before anything is executed).
 
-          Verify before running: \`curl -fsSLO ...\` both files, then \`sha256sum -c install.sh.sha256\` / \`sha256sum -c upgrade.sh.sha256\`.
+          One-time setup for existing installations:
+          \`\`\`bash
+          curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh
+          curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh.sha256
+          sha256sum -c upgrade.sh.sha256
+          \`\`\`
+          From now on: \`sudo bash upgrade.sh\` — the same local file for every future release.
 
           Audit trail (release decision, security findings, test evidence): see the \`report/\` directory on this tag." \
             --verify-tag \
-            install.sh install.sh.sha256 upgrade.sh upgrade.sh.sha256
+            dist/install.sh dist/install.sh.sha256 \
+            dist/upgrade.sh dist/upgrade.sh.sha256 \
+            "dist/uaeg-updater-${VERSION}.sh" "dist/uaeg-updater-${VERSION}.sh.sha256" \
+            dist/uaeg-manifest.json dist/uaeg-manifest.json.sig
 
       - name: Smoke-check the documented download URLs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          VERSION="${GITHUB_REF_NAME#v}"
           sleep 5  # allow the asset URLs to propagate
-          for f in install.sh install.sh.sha256 upgrade.sh upgrade.sh.sha256; do
+          for f in install.sh install.sh.sha256 upgrade.sh upgrade.sh.sha256 \
+                   "uaeg-updater-${VERSION}.sh" "uaeg-updater-${VERSION}.sh.sha256" \
+                   uaeg-manifest.json uaeg-manifest.json.sig; do
             gh release view "$GITHUB_REF_NAME" --json assets --jq ".assets[].name" | grep -qx "$f" \
               || { echo "::error::asset $f missing from release $GITHUB_REF_NAME"; exit 1; }
           done
-          echo "release $GITHUB_REF_NAME published with all four documented assets"
+          echo "release $GITHUB_REF_NAME published with all eight documented assets"

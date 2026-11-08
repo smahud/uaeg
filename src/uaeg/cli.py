@@ -220,7 +220,11 @@ def cmd_keys(args: argparse.Namespace) -> int:
             return 1
         name = getattr(args, "name", None) or existing["name"]
         material = security.new_key(name)
-        store.revoke_key(args.key_id)
+        # Create the replacement BEFORE revoking the old key (B-12): the old
+        # ordering (revoke -> create) left the operator with NO working key
+        # when the second commit failed. A crash in the new order instead
+        # leaves both keys briefly active - the safer failure direction for
+        # rotation, and revocation stays one command away.
         store.create_key(
             key_id=material.key_id,
             name=material.name,
@@ -228,6 +232,7 @@ def cmd_keys(args: argparse.Namespace) -> int:
             verifier_hex=material.verifier,
             permission_mode=existing.get("permission_mode", "all"),
         )
+        store.revoke_key(args.key_id)
         print(f"rotated {args.key_id} -> {material.key_id} ({material.name})")
         print(f"  new secret (shown ONCE): {material.secret}")
         return 0
@@ -589,10 +594,13 @@ def cmd_config(args: argparse.Namespace) -> int:
         print(json.dumps(cfg.to_dict(), indent=2))
         return 0
     if action == "get":
-        value = _dig(cfg.to_dict(), args.key)
-        if value is None and _dig(cfg.to_dict(), args.key, missing_ok=True) is None:
+        # Distinguish an existing-but-null key (tls.cert by default) from an
+        # unknown key (B-10): the old _dig(missing_ok=...) branch returned
+        # None for both and misreported valid null keys as unknown.
+        if not _key_exists(cfg.to_dict(), args.key):
             print(f"error: unknown config key: {args.key}")
             return 1
+        value = _dig(cfg.to_dict(), args.key)
         print(json.dumps(value) if isinstance(value, (dict, list)) else value)
         return 0
     if action == "set":
@@ -615,16 +623,29 @@ def cmd_config(args: argparse.Namespace) -> int:
     return 2
 
 
-def _dig(data: dict, dotted: str, missing_ok: bool = False):
+def _dig(data: dict, dotted: str):
     node: Any = data
     for part in dotted.split("."):
         if isinstance(node, dict) and part in node:
             node = node[part]
         else:
-            if missing_ok:
-                return None
             return None
     return node
+
+
+def _key_exists(data: dict, dotted: str) -> bool:
+    """True when every component of the dotted path is present (B-10).
+
+    A present key whose value is None (e.g. tls.cert in a default config)
+    must not be reported as 'unknown config key'.
+    """
+    node: Any = data
+    for part in dotted.split("."):
+        if isinstance(node, dict) and part in node:
+            node = node[part]
+        else:
+            return False
+    return True
 
 
 def _set_dotted(data: dict, dotted: str, value: Any) -> bool:

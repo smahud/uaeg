@@ -67,9 +67,12 @@ def _pid_alive(pid: int | None) -> bool:
 
 def key_resources(store: Store, key_id: str) -> dict[str, list[dict[str, Any]]]:
     """Live resources belonging to a key: open sessions + running jobs."""
+    # B-2: query OPEN sessions directly. The previous list_sessions(limit=1000)
+    # only saw the newest 1000 session rows - once a busy deployment crossed
+    # that boundary, a revoked key's older-but-still-open PTY session silently
+    # survived CLI revocation (FR-012 regression).
     sessions = [
-        s for s in store.list_sessions(limit=1000)
-        if s.get("key_id") == key_id and s.get("status") == "open"
+        s for s in store.open_sessions() if s.get("key_id") == key_id
     ]
     jobs = [j for j in store.running_jobs() if j.get("key_id") == key_id]
     return {"sessions": sessions, "jobs": jobs}

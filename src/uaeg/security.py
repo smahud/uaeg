@@ -96,6 +96,20 @@ def _redact_assignment(m: "re.Match[str]") -> str:
     return f"{m.group(1)}{m.group(2)}{_REDACT_MARK}"
 
 
+def _redact_short_flag_pw(m: "re.Match[str]") -> str:
+    """mysql -ppassword123 / psql -whunter2 style short password flags (B-9).
+
+    Ambiguity with ordinary flags (-print, -append, -all) is resolved by
+    requiring a digit or symbol inside the value, or a value of at least 10
+    characters; shorter purely alphabetic values are preserved verbatim
+    (best-effort redaction contract, docs/SECURITY.md).
+    """
+    value = m.group(2)
+    if any(not c.isalpha() for c in value) or len(value) >= 10:
+        return f"{m.group(1)}{_REDACT_MARK}"
+    return m.group(0)
+
+
 _REDACTION_RULES: list[tuple[re.Pattern[str], str | "re.Match[str]"]] = [
     # PEM private key blocks (multiline) - mask the whole block
     (
@@ -136,6 +150,10 @@ _REDACTION_RULES: list[tuple[re.Pattern[str], str | "re.Match[str]"]] = [
         ),
         _redact_assignment,
     ),
+    # Short-form CLI password flags: `mysql -ppassword123`, `psql -whunter2`
+    # (classic shapes for agent-issued database commands). Requires a
+    # whitespace before the dash so path-like or glued tokens stay intact.
+    (re.compile(r"(\s-(?:p|w|a))(\S{6,})"), _redact_short_flag_pw),
 ]
 
 

@@ -104,10 +104,6 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
-def _row_to_dict(cursor: sqlite3.Cursor, row: sqlite3.Row) -> dict[str, Any]:
-    return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
-
-
 class Store:
     """Thin, synchronous SQLite access layer (safe to call from the event
     loop; operations are fast and local)."""
@@ -451,6 +447,30 @@ class Store:
     def count_logs(self) -> int:
         row = self._db.execute("SELECT COUNT(*) AS c FROM exec_logs").fetchone()
         return int(row["c"])
+
+    @_locked
+    def trim_exec_logs(self, keep: int = 20_000) -> int:
+        """Retention pass over the audit log (B-11): delete the OLDEST rows
+        beyond ``keep``. Called once at server startup so a long-lived VPS
+        does not accumulate unbounded exec_logs growth (each row carries a
+        redacted command + up-to-4 KiB output preview). Returns the number
+        of rows removed.
+        """
+        if keep < 1:
+            return 0
+        cur = self._db.execute(
+            "DELETE FROM exec_logs WHERE id < "
+            "(SELECT COALESCE(MIN(id), 0) FROM "
+            "  (SELECT id FROM exec_logs ORDER BY id DESC LIMIT ?))",
+            (keep,),
+        )
+        removed = cur.rowcount or 0
+        # ALWAYS commit: in Python's sqlite3 a DML statement opens a write
+        # transaction that stays open until commit(); skipping the commit on
+        # a zero-row delete left the server holding the database write lock
+        # indefinitely ("database is locked" for every other writer).
+        self._db.commit()
+        return removed
 
     @_locked
     def quick_check(self) -> str:

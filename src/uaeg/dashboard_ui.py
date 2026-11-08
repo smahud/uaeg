@@ -7,6 +7,7 @@ LOGIN_TEMPLATE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>UAEG · Login</title>
+<link rel="icon" href="/favicon.ico" type="image/svg+xml">
 <style>
 :root{--bg:#0e141b;--panel:#141c26;--border:rgba(255,255,255,.08);--border-strong:rgba(255,255,255,.16);--text:#d5dde8;--text-dim:#8d99ab;--text-faint:#647080;--accent:#4f9cf9;--accent-strong:#8abaff;--accent-dim:rgba(79,156,249,.15);--red:#f0635f;--red-dim:rgba(240,99,95,.13);--orange:#e0a83e;--orange-dim:rgba(224,168,62,.12);--mono:ui-monospace,'SFMono-Regular',Menlo,Consolas,'Liberation Mono',monospace;--sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif}
 *{box-sizing:border-box}
@@ -81,7 +82,7 @@ if(AUTH_BROKEN){document.getElementById('note-broken').classList.add('show');}
    .then(function(r){return r.json().then(function(d){return{status:r.status,ok:r.ok,d:d};},function(){return{status:r.status,ok:r.ok,d:null};});})
    .then(function(r){
     if(r.ok&&r.d&&r.d.ok){window.location.href='/';return;}
-    if(r.status===429){fail('Too many failed attempts. Wait a moment and try again.');return;}
+    if(r.status===429){var ra='0';try{ra=r.headers.get('Retry-After')||'0';}catch(e2){}var mins=(parseInt(ra,10)>=60)?Math.ceil(parseInt(ra,10)/60)+' minute(s)':'a moment';fail('Too many failed attempts. Wait '+mins+' and try again.');return;}
     if(r.status===503){fail('Dashboard password storage error. Run sudo uaeg pass on the server.');return;}
     fail((r.d&&r.d.error)||'Login failed.');
    })
@@ -101,6 +102,7 @@ TEMPLATE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>UAEG · Dashboard</title>
+<link rel="icon" href="/favicon.ico" type="image/svg+xml">
 <style>
 :root{--bg:#0e141b;--bg-raised:#121923;--panel:#141c26;--panel-2:#1b2534;--border:rgba(255,255,255,.08);--border-strong:rgba(255,255,255,.16);--text:#d5dde8;--text-dim:#8d99ab;--text-faint:#647080;--accent:#4f9cf9;--accent-strong:#8abaff;--accent-dim:rgba(79,156,249,.15);--green:#3fb970;--green-dim:rgba(63,185,112,.13);--red:#f0635f;--red-dim:rgba(240,99,95,.13);--orange:#e0a83e;--orange-dim:rgba(224,168,62,.12);--gray:#93a0b0;--gray-dim:rgba(147,160,176,.14);--blue-dim:rgba(79,156,249,.14);--mono:ui-monospace,'SFMono-Regular',Menlo,Consolas,'Liberation Mono',monospace;--sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif}
 *{box-sizing:border-box}
@@ -481,7 +483,7 @@ function cmdCell(v,n){return tdT('mono cell-cmd',v||'','<span class="trunc">'+es
 
 // API client — every failure surfaces via toast and/or banner
 var CSRF='';
-async function api(method,path,body){
+async function api(method,path,body,retried){
  var opts={method:method,headers:{}};
  if(body!==undefined){opts.headers['Content-Type']='application/json';opts.body=JSON.stringify(body);}
  if(method!=='GET'&&CSRF){opts.headers['X-CSRF-Token']=CSRF;}
@@ -489,6 +491,15 @@ async function api(method,path,body){
  try{res=await fetch(path,opts);}
  catch(e){throw new Error('network error ('+((e&&e.message)?e.message:'fetch failed')+')');}
  if(res.status===401){window.location.href='/login';throw new Error('session expired');}
+ // F-2: a 403 on a state-changing call usually means the boot-time CSRF
+ // fetch failed (transient hiccup). Re-fetch the token once and retry;
+ // without this the dashboard silently degraded to read-only until reload.
+ if(res.status===403&&method!=='GET'&&!retried){
+  try{
+   var r2=await fetch('/api/whoami');
+   if(r2.ok){var me=await r2.json();if(me&&me.csrf_token){CSRF=me.csrf_token;return api(method,path,body,true);}}
+  }catch(e3){}
+ }
  var data=null;
  try{data=await res.json();}catch(e2){}
  if(!res.ok)throw new Error((data&&data.error)?data.error:('HTTP '+res.status+(res.statusText?' '+res.statusText:'')));
@@ -546,6 +557,11 @@ function setConn(good,err){
  el('conn-banner').classList.toggle('hidden',good);
  if(!good)el('conn-banner-msg').textContent=err||'The UAEG dashboard API is unreachable.';
 }
+// F-1: the connection indicator may only go green when EVERY endpoint of
+// the last refresh cycle succeeded. A passing /api/overview must not mask a
+// failing /api/sessions (stale "live" tables behind a green light).
+var lastTabError=null;
+function markHealthy(){lastTabError=null;setConn(true);}
 function showEmpty(e,msg,isErr){
  if(!e)return;
  e.classList.remove('hidden');e.classList.toggle('error',!!isErr);
@@ -558,6 +574,7 @@ function setTableState(tid,eid,empty,msg,isErr){
 }
 function loadFail(err,silent,tid,eid,what){
  var msg='Failed to load '+what+': '+err.message;
+ lastTabError=what;
  setConn(false,msg+' — retrying every 5 s.');
  if(!silent)toast(msg,'error');
  if(eid){if(tid)el(tid).classList.add('hidden');showEmpty(el(eid),msg,true);}
@@ -570,6 +587,8 @@ var activeTab=null;
 function setTab(name){
  if(TABS.indexOf(name)===-1)name='keys';
  activeTab=name;
+ lastTabError=null; // the newly selected tab loads fresh; judge it on its own
+ if((window.location.hash||'').slice(1)!==name){try{history.replaceState(null,'','#'+name);}catch(e){}}
  $all('.tab-btn').forEach(function(b){b.classList.toggle('active',b.dataset.tab===name);});
  TABS.forEach(function(t){el('tab-'+t).classList.toggle('active',t===name);});
  loadTab(name,false);
@@ -591,7 +610,7 @@ async function loadOverview(){
   var d=await api('GET','/api/overview');
   el('hd-version').textContent='v'+(d.version||'?');
   el('hd-uptime').textContent='up '+fmtUptime(d.uptime_seconds);
-  setConn(true);
+  if(!lastTabError)setConn(true); // F-1: never mask a failed tab refresh
  }catch(e){setConn(false,'Lost connection to the UAEG API: '+e.message+' — retrying every 5 s.');}
 }
 
@@ -616,7 +635,7 @@ async function loadKeys(silent){
   var d=await api('GET','/api/keys');
   var keys=(d&&d.keys)||[];var sig=JSON.stringify(keys);
   if(sig!==keysSig){keysSig=sig;renderKeys(keys);}
-  setConn(true);
+  markHealthy();
  }catch(e){loadFail(e,silent,keysSig?null:'keys-table',keysSig?null:'keys-empty','keys');}
 }
 function onKeysClick(ev){
@@ -642,17 +661,22 @@ function onKeysClick(ev){
   withBusy(btn,async function(){
    try{
     await api('POST','/api/keys/'+encodeURIComponent(id)+'/permissions',{permission_mode:next});
-    btn.dataset.mode=next;btn.textContent=next;
     toast('Permission mode set to "'+next+'".','ok');
+    keysSig='';loadTab('keys',true); // F-9: reload instead of mutating a node a periodic re-render may have detached
    }catch(e){toast('Could not change permission mode: '+e.message,'error');}
   });
  }
 }
+// F-3: the Enter key path bypassed withBusy's button-disable; a double
+// Enter created two keys and the first one-time secret was lost forever.
+var keyGenBusy=false;
 function onKeyGenSubmit(){
+ if(keyGenBusy)return;
  var name=el('key-name').value.trim();
  var mode=el('key-mode').value==='restricted'?'restricted':'all';
  if(!name){el('key-gen-err').textContent='Enter a display name for the key (e.g. "Claude").';el('key-name').focus();return;}
  el('key-gen-err').textContent='';
+ keyGenBusy=true;
  withBusy(el('key-gen-submit'),async function(){
   try{
    var d=await api('POST','/api/keys',{name:name,permission_mode:mode});
@@ -661,7 +685,7 @@ function onKeyGenSubmit(){
    showSecret(d.secret,'Secret for new key "'+((d.key&&d.key.name)||name)+'" — permission mode: '+mode);
    keysSig='';loadTab('keys',true);
   }catch(e){el('key-gen-err').textContent=e.message;toast('Key generation failed: '+e.message,'error');}
- });
+ }).then(function(){},function(){})['finally'](function(){keyGenBusy=false;});
 }
 
 var pathsDirty=false;
@@ -677,7 +701,7 @@ async function loadPermissions(silent){
  try{
   var d=await api('GET','/api/permissions');
   el('perm-empty').classList.add('hidden');
-  renderPermissions(d);setConn(true);
+  renderPermissions(d);markHealthy();
  }catch(e){loadFail(e,silent,null,'perm-empty','permissions');}
 }
 function onSavePaths(){
@@ -738,7 +762,7 @@ async function loadSessions(silent){
   var both=await Promise.all([api('GET','/api/sessions'),api('GET','/api/jobs?limit=50')]);
   var sig=JSON.stringify(both);
   if(sig!==sessSig){sessSig=sig;renderSessions(both[0],both[1]);}
-  el('sess-empty').classList.add('hidden');setConn(true);
+  el('sess-empty').classList.add('hidden');markHealthy();
  }catch(e){loadFail(e,silent,null,sessSig?null:'sess-empty','sessions');}
 }
 function onLiveClick(ev){
@@ -770,7 +794,7 @@ var logsCache=[],logsFilter='',expandedLogs={};
 async function loadLogs(silent){
  try{
   var d=await api('GET','/api/logs?limit=100&offset=0');
-  logsCache=(d&&d.logs)||[];renderLogs();setConn(true);
+  logsCache=(d&&d.logs)||[];renderLogs();markHealthy();
  }catch(e){loadFail(e,silent,logsCache.length?null:'logs-table',logsCache.length?null:'logs-empty','audit log');}
 }
 function renderLogs(){
@@ -837,13 +861,14 @@ async function loadServer(silent){
  try{
   var d=await api('GET','/api/server');
   el('srv-empty').classList.add('hidden');
-  renderServer(d);setConn(true);
+  renderServer(d);markHealthy();
  }catch(e){loadFail(e,silent,null,'srv-empty','server info');}
 }
 
-var jobOut=null;
+var jobOut=null,jobOutGen=0;
 function openJobOutput(job){
- jobOut={id:job.job_id,stream:'stdout',offset:0,available:0,status:job.status||'',exit:job.exit_code};
+ jobOutGen++;
+ jobOut={id:job.job_id,stream:'stdout',offset:0,available:0,status:job.status||'',exit:job.exit_code,gen:jobOutGen};
  el('jobout-title').textContent='Job '+shortId(job.job_id,16);
  el('jobout-stream').value='stdout';
  el('jobout-pre').textContent='';
@@ -855,10 +880,13 @@ function openJobOutput(job){
 async function fetchJobOutput(reset){
  if(!jobOut)return;
  if(reset){jobOut.offset=0;el('jobout-pre').textContent='';}
+ var myGen=jobOut.gen;
  el('jobout-more').disabled=true;
  try{
   var d=await api('GET','/api/jobs/'+encodeURIComponent(jobOut.id)+'/output?stream='+encodeURIComponent(jobOut.stream)+'&offset='+jobOut.offset+'&limit=65536');
-  if(jobOut&&d&&d.job_id===jobOut.id&&d.stream===jobOut.stream){
+  // F-4: ignore responses from an older viewer session (closed + reopened
+  // modal) whose stale reply used to double-append the same output.
+  if(jobOut&&jobOut.gen===myGen&&d&&d.job_id===jobOut.id&&d.stream===jobOut.stream){
    var pre=el('jobout-pre');
    pre.textContent+=(d.data||'');
    jobOut.offset=(d.offset!=null)?d.offset:jobOut.offset+(d.data||'').length;

@@ -35,6 +35,66 @@ log = logging.getLogger("uaeg.jobs")
 
 FINAL_STATES = {"completed", "failed", "cancelled", "interrupted"}
 
+_BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id"
+
+
+def _boot_id() -> str:
+    """Current kernel boot id (empty when /proc is unavailable)."""
+    try:
+        with open(_BOOT_ID_PATH, encoding="ascii") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def _group_alive(pgid: int) -> bool:
+    """True while the process group has at least one LIVE (non-zombie) member.
+
+    Used for cancellation escalation (B-3): the DB status was already set to
+    'cancelled' before the signals are sent, so only actual process-group
+    liveness can decide whether SIGKILL is still needed. Zombies keep their
+    pgid after death, so a killpg(pid, 0) probe would over-count them and
+    trigger pointless extra SIGKILL rounds; scanning /proc distinguishes
+    live members from reaped-pending zombies.
+    """
+    try:
+        entries = list(os.scandir("/proc"))
+    except OSError:
+        # /proc unavailable: fall back to the signal probe (may over-count
+        # zombies - a harmless extra SIGKILL to a dead group at worst).
+        try:
+            os.killpg(pgid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry.name}/stat", encoding="ascii") as fh:
+                stat = fh.read()
+        except OSError:
+            continue
+        tail = stat.rsplit(")", 1)
+        if len(tail) != 2:
+            continue
+        fields = tail[1].split()
+        if not fields:
+            continue
+        state = fields[0]
+        if state in ("Z", "X", "x"):
+            continue  # dead, awaiting reaping - not a live member
+        try:
+            if int(fields[2]) == pgid:  # fields: state, ppid, pgrp, ...
+                return True
+        except (IndexError, ValueError):
+            continue
+    return False
+
 
 class JobError(Exception):
     pass
@@ -83,6 +143,15 @@ class JobManager:
 
         out_f = open(job_dir / "stdout", "ab", buffering=0)
         err_f = open(job_dir / "stderr", "ab", buffering=0)
+        # Stamp the kernel boot id (B-4): after a reboot, pids are recycled and
+        # pid-liveness alone could keep a dead job 'running' (or even aim
+        # containment signals at an unrelated process). reattach() compares
+        # the stamp against the CURRENT boot id and marks such jobs
+        # 'interrupted' unconditionally.
+        try:
+            (job_dir / "boot_id").write_text(_boot_id() + "\n", encoding="ascii")
+        except OSError:
+            pass
         try:
             proc = subprocess.Popen(
                 [
@@ -210,7 +279,11 @@ class JobManager:
 
         pid = job.get("pid")
         if pid:
-            # Kill the whole process group (shim + command tree).
+            # Kill the whole process group (shim + command tree). Escalation
+            # to SIGKILL is decided by ACTUAL process-group liveness (B-3):
+            # the status row was already set to 'cancelled' above, so checking
+            # the DB here (as v0.3.2 did) always broke early and left
+            # TERM-ignoring commands (nohup, `trap '' TERM`, daemons) running.
             for sig in (signal.SIGTERM, signal.SIGKILL):
                 try:
                     os.killpg(pid, sig)
@@ -220,8 +293,7 @@ class JobManager:
                     except (ProcessLookupError, PermissionError, OSError):
                         pass
                 await asyncio.sleep(0.4)
-                job = self.store.get_job(job_id)
-                if job and job["status"] in FINAL_STATES:
+                if not _group_alive(pid):
                     break
 
         # If the process actually finished concurrently, prefer its exit code.
@@ -258,8 +330,16 @@ class JobManager:
         try:
             while True:
                 await asyncio.sleep(self.poll_interval)
-                if self._check_once(runtime.job_id, runtime.shim_pid):
-                    return
+                try:
+                    if self._check_once(runtime.job_id, runtime.shim_pid):
+                        return
+                except Exception:  # noqa: BLE001 - a transient DB error must
+                    # not kill the watcher and leave the job 'running' forever
+                    # with no reconciliation (B-5).
+                    log.exception(
+                        "job %s watcher check failed; will retry next poll",
+                        runtime.job_id,
+                    )
         except asyncio.CancelledError:
             pass
 
@@ -295,9 +375,30 @@ class JobManager:
     def reattach(self) -> dict[str, int]:
         """Reconcile persisted job metadata with actual process state."""
         counts = {"running": 0, "finalized": 0, "interrupted": 0}
+        current_boot = _boot_id()
         for job in self.store.running_jobs():
             job_id = job["job_id"]
             pid = job.get("pid")
+            job_dir = paths.jobs_dir() / job_id
+            # Boot-id guard (B-4): a job spawned under a PREVIOUS boot cannot
+            # still have a live pid in this boot - a pid that exists now is a
+            # recycled, unrelated process. Mark it interrupted instead of
+            # trusting pid liveness (and never signal that pid later).
+            stamped_boot = ""
+            try:
+                stamped_boot = (job_dir / "boot_id").read_text(encoding="ascii").strip()
+            except OSError:
+                pass  # legacy job rows (pre-0.3.3): fall back to pid liveness
+            if stamped_boot and current_boot and stamped_boot != current_boot:
+                self.store.update_job(job_id, "interrupted", finished=True)
+                counts["interrupted"] += 1
+                log.warning(
+                    "job %s marked interrupted (created in a previous boot; "
+                    "pid %s may have been recycled)",
+                    job_id,
+                    pid,
+                )
+                continue
             if self._read_exit_file(job_id) is not None:
                 self._check_once(job_id, pid)  # finalize from exit file
                 counts["finalized"] += 1

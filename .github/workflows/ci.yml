@@ -33,7 +33,7 @@ jobs:
           uaeg --help
 
       - name: Run unit tests
-        run: python -m pytest tests/test_unit_core.py tests/test_unit_executor.py tests/test_unit_containment.py tests/test_unit_security_redaction.py tests/test_unit_server_hardening.py tests/test_dashboard_auth.py -v
+        run: python -m pytest tests/test_unit_core.py tests/test_unit_executor.py tests/test_unit_containment.py tests/test_unit_security_redaction.py tests/test_unit_server_hardening.py tests/test_dashboard_auth.py tests/test_unit_regression_v033.py -v
 
       - name: Run end-to-end smoke tests (real TLS + MCP protocol)
         run: python -m pytest tests/test_e2e_smoke.py -v
@@ -42,7 +42,7 @@ jobs:
         run: python -m pytest tests/test_e2e_dashboard_auth.py tests/test_e2e_hardening.py -v
 
   upgrade-contract:
-    name: Safe-upgrade contract tests (upgrade.sh)
+    name: Safe-upgrade contract tests (bootstrap + updater)
     runs-on: ubuntu-latest
     steps:
       # Full history + tags: the suite builds local git remotes from this
@@ -76,12 +76,13 @@ jobs:
         env:
           BASE: ${{ runner.temp }}/uaeg-install
         run: |
-          mkdir -p "$BASE/bin"
+          mkdir -p "$BASE/bin" "$BASE/sbin"
           sed -e 's|^if \[\[ \$EUID -ne 0 \]\]; then|if false; then|' \
               -e 's|^  die "this installer must run as root.*|  :|' \
               -e 's|^apt-get update -qq$|:|' \
               -e 's|^apt-get install -y -qq python3 python3-venv openssl curl >/dev/null$|:|' \
               -e 's|^ln -sf "\$VENV_DIR/bin/uaeg" /usr/local/bin/uaeg$|ln -sf "$VENV_DIR/bin/uaeg" "$BASE/bin/uaeg"|' \
+              -e 's|/usr/local/sbin/uaeg-upgrade|$BASE/sbin/uaeg-upgrade|g' \
               install.sh > install-test.sh
           bash install-test.sh \
             --port 3952 --dashboard-port 3953 --dashboard-bind loopback \

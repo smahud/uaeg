@@ -21,8 +21,6 @@ from .db import Store
 
 log = logging.getLogger("uaeg.auth")
 
-UNPROTECTED_PATHS = {"/healthz", "/", "/info"}
-
 
 def extract_bearer_token(headers: Any) -> str | None:
     """Extract the bearer token from mapping-like headers (case-insensitive)."""

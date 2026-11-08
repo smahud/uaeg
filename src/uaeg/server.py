@@ -189,6 +189,16 @@ async def _amain(config: Config) -> int:
         ) from exc
     runtime = Runtime(config, store)
 
+    # Audit-log retention (B-11): one bounded pass at startup keeps exec_logs
+    # from growing without limit on a long-lived VPS. 20k rows of redacted
+    # audit history is far beyond single-operator needs.
+    try:
+        removed = store.trim_exec_logs(keep=20_000)
+        if removed:
+            log.info("audit log retention: removed %d old exec_logs row(s)", removed)
+    except sqlite3.DatabaseError:
+        log.exception("audit log retention failed (non-fatal)")
+
     # Reconcile persisted state with a possibly-restarted server.
     job_counts = runtime.jobs.reattach()
     session_count = runtime.sessions.startup_reconcile()

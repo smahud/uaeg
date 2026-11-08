@@ -266,6 +266,9 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
             limit_bytes: Maximum bytes to return per call.
         """
         try:
+            # Clamp at the tool boundary (B-8): negative limits previously
+            # produced a backwards cursor and re-delivered old output.
+            limit_bytes = max(0, min(int(limit_bytes), 8 * 1024 * 1024))
             return runtime.sessions.output(session_id, since_seq, limit_bytes)
         except SessionError as exc:
             return {"ok": False, "error": str(exc), "session_id": session_id}
@@ -353,9 +356,17 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
 
         Args:
             job_id: Job identifier from shell_exec(background=true).
-            timeout_seconds: Max seconds to wait before returning current status.
+            timeout_seconds: Max seconds to wait before returning current
+                status (server-side cap: 600; poll instead of holding one
+                very long request open).
         """
         try:
+            # Server-side bound (B-8): an unbounded/negative value must never
+            # pin an HTTP worker indefinitely; agents poll instead.
+            try:
+                timeout_seconds = max(0.0, min(float(timeout_seconds), 600.0))
+            except (TypeError, ValueError):
+                timeout_seconds = 30.0
             job = await runtime.jobs.wait(job_id, timeout_seconds)
         except JobError as exc:
             return {"ok": False, "error": str(exc)}

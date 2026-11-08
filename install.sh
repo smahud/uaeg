@@ -42,7 +42,7 @@ APP_BACKUP=""
 CONFIG_BACKUP=""
 # Release this installer belongs to (used for standalone bootstrap, FR-002).
 # Override the source version at runtime with: --version X.Y.Z or UAEG_VERSION=X.Y.Z
-UAEG_RELEASE_VERSION="0.3.2"
+UAEG_RELEASE_VERSION="0.3.3"
 FETCH_VERSION=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -233,6 +233,22 @@ say "installing python dependencies (pinned: mcp/starlette/uvicorn)"
 "$VENV_DIR/bin/pip" install -q --no-build-isolation -e "$INSTALL_DIR"
 
 ln -sf "$VENV_DIR/bin/uaeg" /usr/local/bin/uaeg
+
+# System bootstrap convenience copy (upgrade contract v3): operators can run
+# `sudo uaeg-upgrade` in addition to their own downloaded upgrade.sh. The
+# operator's own bootstrap file is NEVER touched by any upgrade.
+if [[ -f "$SCRIPT_DIR/upgrade.sh" ]]; then
+  if ! cmp -s "$SCRIPT_DIR/upgrade.sh" /usr/local/sbin/uaeg-upgrade 2>/dev/null; then
+    say "installing the system upgrade bootstrap: /usr/local/sbin/uaeg-upgrade"
+    if cp "$SCRIPT_DIR/upgrade.sh" /usr/local/sbin/uaeg-upgrade.tmp \
+       && chmod 0755 /usr/local/sbin/uaeg-upgrade.tmp \
+       && mv -f /usr/local/sbin/uaeg-upgrade.tmp /usr/local/sbin/uaeg-upgrade; then
+      :
+    else
+      warn "could not install /usr/local/sbin/uaeg-upgrade (non-fatal; bash upgrade.sh keeps working)"
+    fi
+  fi
+fi
 
 # ----------------------------------------------------------------------
 # Directories + dashboard bind address

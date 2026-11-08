@@ -25,6 +25,7 @@ import pty
 import signal
 import struct
 import termios
+import threading
 import time
 import uuid
 import warnings
@@ -36,6 +37,13 @@ from ..db import Store
 log = logging.getLogger("uaeg.pty")
 
 _READ_CHUNK = 65536
+
+# Hard cap on queued (undelivered) input bytes per session. When a session's
+# foreground process is suspended (Ctrl-Z) or simply never reads its tty, the
+# kernel tty buffer fills; writes to the master then return EAGAIN. Queued
+# input beyond this cap is rejected so a stalled session cannot grow without
+# bound (mirrors the sync-exec output cap of 1 MiB).
+_MAX_PENDING_INPUT = 1 << 20
 
 
 class SessionError(Exception):
@@ -70,6 +78,15 @@ class TerminalSession:
         self._total_bytes = 0  # monotonic sequence of output bytes
         self._reaper: asyncio.Task | None = None
 
+        # B-1: the master fd is kept O_NONBLOCK; input that cannot be delivered
+        # immediately (suspended foreground process, full tty buffer) is queued
+        # here and drained by the event loop when the tty becomes writable.
+        self._pending = bytearray()
+        self._drain_armed = False
+        # Serializes the closed check-then-set + fd swap across the event-loop
+        # thread and to_thread termination workers (B-7).
+        self._close_lock = threading.Lock()
+
     # ------------------------------------------------------------------
     @property
     def base_seq(self) -> int:
@@ -92,20 +109,53 @@ class TerminalSession:
         start = max(since_seq, self.base_seq)
         if start > self._total_bytes:
             start = self._total_bytes
+        # A non-positive limit reads nothing but keeps the cursor consistent
+        # (B-8): previously a negative limit produced a backwards cursor and
+        # re-delivered old bytes on the next poll.
+        if limit is None or limit <= 0:
+            return "", start, since_seq < self.base_seq
         end = min(start + limit, self._total_bytes)
         chunk = bytes(self._buffer[start - self.base_seq : end - self.base_seq])
         truncated = since_seq < self.base_seq
         return chunk.decode("utf-8", errors="replace"), end, truncated
 
     def write(self, data: bytes) -> int:
-        if self.closed:
+        """Queue input for delivery to the session's tty.
+
+        The master fd is non-blocking (B-1): a suspended foreground process
+        or a full tty buffer makes os.write return EAGAIN or a short count.
+        The remainder is queued and flushed by the SessionManager's write
+        drain when the tty becomes writable, so the event loop is never
+        blocked. Returns the number of bytes accepted for delivery.
+        """
+        if self.closed or self.master_fd < 0:
             raise SessionError("session is closed")
-        written = os.write(self.master_fd, data)
+        if not data:
+            return 0
+        if self._pending:
+            # Previous input has not been consumed by the tty yet; keep order.
+            self._pending += data
+            accepted = len(data)
+        else:
+            try:
+                accepted = os.write(self.master_fd, data)
+            except BlockingIOError:
+                accepted = 0
+            if accepted < len(data):
+                self._pending += data[accepted:]
+                accepted = len(data)
+        if len(self._pending) > _MAX_PENDING_INPUT:
+            raise SessionError(
+                "session input backlog exceeds "
+                f"{_MAX_PENDING_INPUT} bytes: the session's foreground process "
+                "is not reading its terminal (suspended with Ctrl-Z, or stalled). "
+                "Resume the process, or close the session."
+            )
         self.last_activity = time.time()
-        return written
+        return accepted
 
     def resize(self, cols: int, rows: int) -> None:
-        if self.closed:
+        if self.closed or self.master_fd < 0:
             raise SessionError("session is closed")
         winsize = struct.pack("HHHH", rows, cols, 0, 0)
         fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, winsize)
@@ -191,6 +241,15 @@ class SessionManager:
         winsize = struct.pack("HHHH", rows, cols, 0, 0)
         fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
         os.set_inheritable(master_fd, False)
+        # B-1: never let a write to the master block the event loop. A session
+        # whose foreground process is suspended (agent sends Ctrl-Z) stops
+        # draining its tty; with a blocking master, os.write would freeze the
+        # whole service. Non-blocking + a write drain keeps the loop live.
+        fcntl.fcntl(
+            master_fd,
+            fcntl.F_SETFL,
+            fcntl.fcntl(master_fd, fcntl.F_GETFL) | os.O_NONBLOCK,
+        )
 
         # fork+immediate-exec is the standard PTY pattern (same as pexpect /
         # subprocess with preexec_fn). The child only calls raw syscalls before
@@ -285,8 +344,15 @@ class SessionManager:
         session = self.get(session_id)
         payload = data + ("\n" if add_newline else "")
         written = session.write(payload.encode("utf-8"))
+        if session._pending:
+            self._arm_input_drain(session)
         self.store.update_session(session_id, touch=True)
-        return {"session_id": session_id, "bytes_written": written, "ok": True}
+        return {
+            "session_id": session_id,
+            "bytes_written": written,
+            "bytes_queued": len(session._pending),
+            "ok": True,
+        }
 
     def resize(self, session_id: str, cols: int, rows: int) -> dict[str, Any]:
         session = self.get(session_id)
@@ -294,7 +360,56 @@ class SessionManager:
         return {"session_id": session_id, "cols": cols, "rows": rows, "ok": True}
 
     def list(self) -> list[dict[str, Any]]:
-        return [s.info() for s in self.sessions.values()]
+        # Snapshot: termination workers mutate self.sessions from other
+        # threads; iterating the live dict can raise RuntimeError (B-6).
+        return [s.info() for s in list(self.sessions.values())]
+
+    # ------------------------------------------------------------------
+    # Input drain (B-1): flush queued input when the tty becomes writable.
+    # ------------------------------------------------------------------
+    def _arm_input_drain(self, session: TerminalSession) -> None:
+        if session._drain_armed or session.closed:
+            return
+        loop = self._loop
+        fd = session.master_fd
+        if loop is None or fd < 0:
+            return
+        session._drain_armed = True
+        try:
+            loop.add_writer(fd, self._drain_input, session)
+        except (RuntimeError, ValueError, NotImplementedError, OSError) as exc:
+            session._drain_armed = False
+            log.warning("could not arm input drain for %s: %s", session.session_id[:12], exc)
+
+    def _drain_input(self, session: TerminalSession) -> None:
+        fd = session.master_fd
+        if session.closed or fd < 0:
+            self._disarm_input_drain(session)
+            return
+        try:
+            n = os.write(fd, bytes(session._pending))
+        except BlockingIOError:
+            return  # still stalled; the writer stays armed
+        except OSError:
+            self._disarm_input_drain(session)
+            return
+        if n > 0:
+            del session._pending[:n]
+        if not session._pending:
+            self._disarm_input_drain(session)
+
+    def _disarm_input_drain(self, session: TerminalSession) -> None:
+        session._pending.clear()
+        if not session._drain_armed:
+            return
+        session._drain_armed = False
+        loop = self._loop
+        fd = session.master_fd
+        if loop is not None and fd >= 0:
+            try:
+                loop.remove_writer(fd)
+            except (RuntimeError, ValueError, NotImplementedError, OSError):
+                pass
 
     async def close(self, session_id: str) -> dict[str, Any]:
         session = self.get(session_id)
@@ -327,6 +442,10 @@ class SessionManager:
     def _on_readable(self, session: TerminalSession) -> None:
         try:
             data = os.read(session.master_fd, _READ_CHUNK)
+        except BlockingIOError:
+            # Master is O_NONBLOCK (B-1): a spurious readability event with
+            # no data left is a no-op, not an exit.
+            return
         except OSError:
             self._mark_exited(session)
             return
@@ -377,12 +496,20 @@ class SessionManager:
         self._mark_exited(session)
 
     def _mark_exited(self, session: TerminalSession) -> None:
-        if session.closed:
-            return
-        session.closed = True
-        session.closed_at = time.monotonic()
+        # Atomic closed check-then-set + fd swap (B-7): the event-loop reader
+        # callback and the to_thread termination worker can both observe
+        # closed=False; without the lock both would close the same fd, and a
+        # recycled fd number would kill an unrelated descriptor.
+        with session._close_lock:
+            if session.closed:
+                return
+            session.closed = True
+            session.closed_at = time.monotonic()
+            fd = session.master_fd
+            session.master_fd = -1
+            session._drain_armed = False
+
         loop = self._loop
-        fd = session.master_fd
 
         def _close_fd() -> None:
             if loop is not None and fd >= 0:
@@ -390,10 +517,15 @@ class SessionManager:
                     loop.remove_reader(fd)
                 except (RuntimeError, ValueError, NotImplementedError, OSError):
                     pass
+                try:
+                    loop.remove_writer(fd)
+                except (RuntimeError, ValueError, NotImplementedError, OSError):
+                    pass
             try:
                 os.close(fd)
             except OSError:
                 pass
+            session._pending.clear()
 
         # remove_reader/os.close must happen on the loop thread (or when the
         # loop is already gone, e.g. during test teardown).

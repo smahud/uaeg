@@ -34,6 +34,7 @@ from starlette.routing import Route
 from . import __version__, dashauth, paths, security
 from .config import PERMISSION_MODES, ConfigError
 from .dashboard_ui import LOGIN_TEMPLATE, TEMPLATE
+from .executor.pty import SessionError
 from .runtime import Runtime
 
 log = logging.getLogger("uaeg.dashboard")
@@ -256,7 +257,26 @@ def build_dashboard_asgi_app(runtime: Runtime) -> Starlette:
     # HTML
     # ------------------------------------------------------------------
     async def index(request: Request) -> Response:
-        return HTMLResponse(TEMPLATE)
+        # no-store: the SPA must never be resurrected from the browser cache
+        # after logout (F-10; the login page already sets it).
+        return HTMLResponse(TEMPLATE, headers={"Cache-Control": "no-store"})
+
+    async def favicon(request: Request) -> Response:
+        # Inline SVG favicon (no external assets): browsers request
+        # /favicon.ico on every page load; without this route the console
+        # shows a 404 on each dashboard visit.
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
+            '<rect x="2" y="2" width="12" height="12" rx="3" fill="#4f9cf9"/>'
+            '<rect x="5" y="7" width="6" height="5" rx="1" fill="#0e141b"/>'
+            '<rect x="5.5" y="8" width="5" height="1" fill="#d5dde8"/>'
+            "</svg>"
+        )
+        return Response(
+            svg,
+            media_type="image/svg+xml",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
 
     # ------------------------------------------------------------------
     # login / logout / session info
@@ -367,7 +387,19 @@ def build_dashboard_asgi_app(runtime: Runtime) -> Starlette:
         return resp
 
     async def whoami(request: Request) -> Response:
-        session = request.scope["state"]["uaeg_dash_session"]
+        session = request.scope.get("state", {}).get("uaeg_dash_session")
+        if session is None:
+            # Legacy (no-password) mode: the auth middleware is a pass-through
+            # and never injects a session (F-5) - this route used to 500 with
+            # KeyError on every page load in that mode.
+            return _json_ok(
+                {
+                    "authenticated": False,
+                    "auth_mode": "none (no dashboard password configured)",
+                    "csrf_token": "",
+                    "note": "run 'sudo uaeg pass' to enable login",
+                }
+            )
         expires_at = datetime.fromtimestamp(
             session.created_at + auth.sessions.absolute_timeout_s, tz=timezone.utc
         )
@@ -464,7 +496,8 @@ def build_dashboard_asgi_app(runtime: Runtime) -> Starlette:
             body = {}
         name = str(body.get("name") or existing["name"])
         material = security.new_key(name)
-        store.revoke_key(key_id)
+        # Create the replacement BEFORE revoking (B-12): a crash between the
+        # two commits must not leave the operator with zero working keys.
         new_key = store.create_key(
             key_id=material.key_id,
             name=name,
@@ -472,6 +505,7 @@ def build_dashboard_asgi_app(runtime: Runtime) -> Starlette:
             verifier_hex=material.verifier,
             permission_mode=existing.get("permission_mode", "all"),
         )
+        store.revoke_key(key_id)
         log.info("dashboard rotated key %s -> %s", key_id, material.key_id)
         return _json_ok({"key": _key_public(new_key), "secret": material.secret})
 
@@ -536,9 +570,15 @@ def build_dashboard_asgi_app(runtime: Runtime) -> Starlette:
         live = []
         for s in runtime.sessions.list():
             entry = dict(s)
-            entry["preview_tail"] = security.redact_secrets(
-                runtime.sessions.get(s["session_id"]).preview_tail(160)
-            )
+            try:
+                session = runtime.sessions.get(s["session_id"])
+                entry["preview_tail"] = security.redact_secrets(
+                    session.preview_tail(160)
+                )
+            except SessionError:
+                # The session closed between list() and get() (F-6): skip it
+                # instead of 500-ing the whole endpoint.
+                continue
             live.append(entry)
         history = store.list_sessions(limit=100)
         return _json_ok({"live": live, "history": history})
@@ -624,6 +664,7 @@ def build_dashboard_asgi_app(runtime: Runtime) -> Starlette:
         Route("/login", login_page, methods=["GET"]),
         Route("/login", login_post, methods=["POST"]),
         Route("/logout", logout, methods=["POST"]),
+        Route("/favicon.ico", favicon, methods=["GET"]),
         Route("/api/whoami", whoami, methods=["GET"]),
         Route("/api/overview", overview, methods=["GET"]),
         Route("/api/keys", list_keys, methods=["GET"]),
