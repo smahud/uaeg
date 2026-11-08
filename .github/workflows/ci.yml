@@ -105,10 +105,10 @@ jobs:
           #  suite, which runs these as root-free patched scripts; here the
           #  REAL updater would rightly insist on root, so it is not invoked.)
           for sc in --start --stop --restart --status; do
-            if bash install-test.sh "$sc" > "$sc.log" 2>&1; then
+            if bash install-test.sh "$sc" > "refusal.log" 2>&1; then
               echo "::error::$sc unexpectedly succeeded on a --no-service install"; exit 1
             fi
-            grep -q "systemd" "$sc.log" || { echo "::error::$sc refusal must explain the systemd requirement"; cat "$sc.log"; exit 1; }
+            grep -q "systemd" refusal.log || { echo "::error::$sc refusal must explain the systemd requirement"; cat refusal.log; exit 1; }
           done
           echo "unified command smoke passed"
 
