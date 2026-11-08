@@ -1,5 +1,66 @@
 # Test Evidence — v0.3.3
 
+---
+
+# Test Evidence — v0.3.4 (round 2)
+
+**Date:** 2026-11-08 · **Environment:** isolated sandbox (Debian, Python
+3.12.16, bash 5.2, OpenSSL 3.5.7), real venv/pip installs, real TLS, real
+Ed25519 signatures, real GitHub release channel. Raw logs under
+`report/evidence/`.
+
+## R2.1 Automated matrix — final state before tagging
+
+| Suite | Result | Evidence |
+|---|---|---|
+| Unit + regression (`test_unit_*`, `test_dashboard_auth`, `test_unit_regression_v033/034`) | **118 passed / 0 failed** (101 pre-existing + 17 new) | `evidence/pytest_v034.txt` |
+| E2E (`test_e2e_smoke`, `test_e2e_dashboard_auth`, `test_e2e_hardening`) | **32 passed / 0 failed** (real TLS + MCP protocol + browser-auth flows) | `evidence/e2e_v034.txt` |
+| Upgrade contract suite (`tests/test_upgrade_contract.sh`, T-01..T-31) | **155 PASS / 0 FAIL** on the rotated keyring | `evidence/upgrade_contract_suite_v034.txt` |
+| Operator-incident reproduction, REAL published v0.3.3 assets | **18/18 PASS** | `evidence/incident_repro_real_v033.txt` |
+| Release manifest verification (`release/verify_release.py`) | **PASS** (uaeg-release-2 signature + 3 asset hashes + interface) | run log below |
+| Shell syntax gates | `bash -n` clean on install.sh / upgrade.sh / updater.sh | session log |
+
+### Incident reproduction (the P0 report from MicroTix), against the REAL release
+
+Setup: an existing **v0.3.0 installation** (real install.sh from the tag,
+isolated dirs, 2 agent keys), the operator's **dirty git clone** checked out
+at v0.3.0 with stale tags, the release's `upgrade.sh` + `upgrade.sh.sha256`
+downloaded INTO the clone as untracked files (the exact collision of the
+incident), checksum verified, then `bash upgrade.sh` run from inside the
+clone under EUID=0 (root user namespace; the only adaptation is skipping
+the installer's apt step, identical to GitHub CI's installer job).
+
+Result (all asserted): checksum OK → resolves latest **v0.3.3** from the
+real GitHub API → downloads the real manifest + signature → **verifies the
+Ed25519 signature (uaeg-release-1)** → downloads the real updater →
+verifies sha256+size against the signed manifest → executes it → detects
+the installation → staging clone of tag v0.3.3 from github.com (operator
+tree never read/mutated) → backup → install → zero-data-loss verification →
+**UPGRADE SUCCESSFUL, exit 0**, version 0.3.0 → 0.3.3, agent keys identical,
+DB quick_check ok, operator clone HEAD/status/branch byte-identical,
+downloaded files untouched, operator's bootstrap file byte-identical.
+
+### Notable new regression cover
+
+- `test_pty_final_output_and_exit_code_survive_process_exit` (V-1),
+  `test_pty_close_reports_exit_code` (V-4), grace-expiry, resize-range,
+  write-after-close.
+- `test_job_shim_is_reaped_no_zombie` (V-2) — asserts `/proc/<pid>` leaves
+  state `Z`.
+- `test_job_spawn_kills_shim_when_db_insert_fails` (V-3) — asserts NO
+  orphan process via `pgrep` and no phantom job row.
+- `test_dashboard_auth_fails_closed_on_password_file_deletion` +
+  recovery test (D-1) — raw-ASGI reproduction of the exact attack.
+- `test_dashboard_chunked_body_rejected_when_oversized` (D-2) — chunked
+  (no Content-Length) oversized POST → 413.
+- `test_sessions_and_jobs_are_key_scoped` + `test_jobs_list_owner_filter`
+  (MCP-D1); e2e revocation tests now assert cross-key REJECTION with
+  dashboard-level oversight retained.
+- `test_config_scalar_section_rejected_fail_closed` (D-7),
+  `test_config_null_section_means_defaults`,
+  `test_mcp_url_scheme_follows_dev_flag` (D-6).
+
+
 **Date:** 2026-11-08 · **Environment:** isolated sandbox (Debian, Python
 3.12.16, bash 5.2, OpenSSL 3.5.7), real venv/pip installs, real TLS, real
 browser (Chromium 157 via Playwright), real Ed25519 signatures. Raw logs

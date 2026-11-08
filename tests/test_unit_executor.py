@@ -225,11 +225,17 @@ def test_pty_interactive_shell(session_env):
         assert "PTY_OK_7f3" in data
 
         manager.input(sid, "exit", add_newline=True)
+        # v0.3.4 contract: the session STAYS readable for a grace window
+        # after the shell exits - the agent can collect the exit status.
+        # (v0.3.3 dropped the session the instant the process died, losing
+        # the final output chunk and the exit code.)
         for _ in range(120):
             await asyncio.sleep(0.1)
-            if sid not in manager.sessions:
+            out = manager.output(sid, since_seq=0)
+            if out["alive"] is False and out["exit_code"] is not None:
                 break
-        assert sid not in manager.sessions, "session should close after shell exits"
+        assert out["alive"] is False, "session should be closed after the shell exits"
+        assert out["exit_code"] == 0, "exit code of a clean 'exit' must be reported"
         assert store.get_session(sid)["status"] == "closed"
 
     asyncio.run(scenario())

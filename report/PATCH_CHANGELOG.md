@@ -1,5 +1,134 @@
 # Patch Changelog — v0.3.2 → v0.3.3
 
+---
+
+# Patch Changelog — v0.3.3 → v0.3.4
+
+**Date:** 2026-11-08 · Every change is covered by a regression test
+(`tests/test_unit_regression_v034.py`, updated e2e/contract assertions) or
+the full contract suite, unless marked otherwise. IDs refer to the round-2
+audit findings (FULL_AUDIT.md §R2.1).
+
+## A. Execution subsystem (src/uaeg/executor/)
+
+### pty.py
+- **V-1 (P1): final output + exit code survive process exit.** `_mark_exited`
+  now (a) captures the child's exit status from its `waitpid` (previously
+  discarded — `exit_code` was always `None`), and (b) keeps the closed
+  session readable for a grace window (`_EXITED_GRACE_S = 60 s`) instead of
+  popping it from the registry in the same event-loop batch as the final
+  `feed()`; a `loop.call_later` timer (with lazy expiry in `get()` as the
+  safety net) drops it afterwards. `shell_output` therefore returns the last
+  output chunk with `alive: false` and the real `exit_code`; `shell_sessions`
+  shows recently-exited sessions with their exit codes.
+- **V-4: `shell_close` reports the child's real exit code** — both
+  `waitpid` sites in `_terminate` now record the status
+  (`TerminalSession._set_exit_code`).
+- **MCP-D2: `resize()` validates cols/rows (2..1000)** like `shell_open`,
+  raising a clean `SessionError` instead of pushing nonsense into
+  `TIOCSWINSZ` or leaking `struct.error`.
+- **C-3: `write()`/`resize()` wrap `OSError`** (EIO/EBADF race on a
+  just-closed master) into `SessionError("session is closed")`.
+- **C-4: reaper cancellation happens on the loop thread** (moved into the
+  `_close_fd` closure dispatched via `call_soon_threadsafe`).
+- `open()` counts only LIVE sessions against `exec.max_sessions` (a burst of
+  grace-window corpses must not block new terminals); `close_by_key` skips
+  already-closed sessions.
+
+### jobs.py
+- **V-2: deterministic shim reaping.** `JobRuntime` keeps the `Popen`
+  handle; the watcher awaits `_reap_shim()` (bounded 10 s `proc.wait()` off
+  the loop) when a job reaches a final state, and `cancel()` reaps the
+  killed shim. Finished jobs no longer linger as zombies until an unrelated
+  `subprocess` call.
+- **V-3: no orphan on DB-insert failure.** `spawn()` wraps `insert_job`; on
+  failure it SIGKILLs + reaps the just-spawned shim and raises a clean
+  `JobError` (previously: live unmanageable process + raw
+  `sqlite3.OperationalError` leaked to the MCP client).
+- **MCP-D1 (key scoping):** `status/output/wait/cancel/list` accept
+  `owner_key_id` and `_gate()` rejects cross-key access ("belongs to a
+  different agent key"); `list()` filters by owner. Dashboard/CLI/containment
+  pass `None` (operator level).
+
+### runner.py
+- Post-SIGKILL `proc.wait()` is bounded (5 s): a D-state child can no longer
+  pin the request forever (exit code reported as absent instead).
+
+## B. Dashboard & auth
+
+### dashauth.py
+- **D-1 (P1): fail-closed password-file deletion.** `PasswordManager` tracks
+  `_ever_configured`; a file that vanishes at runtime is treated as BROKEN
+  (login fails closed, sessions invalidated via generation `None`,
+  `is_configured()` stays true) instead of silently reverting the dashboard
+  to the legacy unauthenticated mode — including public `0.0.0.0` binds.
+  Restoring the file or `sudo uaeg pass` recovers immediately.
+- Removed the dead (and misleading) `Session.expires_at` property.
+
+### dashboard.py
+- **D-2: chunked bodies honour the 1 MiB cap.** `create_key`, `revoke_key`,
+  `rotate_key`, `set_permissions` now read bodies through the capped
+  streaming reader `_read_json_capped` (413 on oversize) instead of
+  uncapped `request.json()`.
+- **C-2: `tls_info()` (blocking openssl) runs via `asyncio.to_thread`** in
+  `/api/server` — a slow openssl call can no longer freeze both listeners.
+
+## C. MCP tools (mcp_tools.py)
+
+- **MCP-D1:** every session/job tool passes the caller's key as
+  `owner_key_id`; `shell_sessions`/`job_list` filter to the caller's
+  resources. Docstrings updated.
+- **MCP-D4:** `shell_exec` timeout clamped to 1..3600 s server-side.
+- **MCP-D3:** `job_list` limit clamped to 0..500.
+- **D-5:** module docstring's audit-coverage claim corrected to the
+  truthful tool set.
+
+## D. Config / paths / db
+
+- **D-7 (config.py):** a non-object section value (`"tls": "certbot"`)
+  raises `ConfigError` at load (previously silently reverted the whole
+  section to defaults). `null` still means "defaults".
+- **D-6 (config.py):** `mcp_url()` uses `http://` when
+  `UAEG_DEV_INSECURE_HTTP=1` (advertised URL matches the served scheme).
+- Dead code removed: `paths.ensure_data_dirs()`, `Store.find_key_by_verifier()`.
+
+## E. Release engineering (bootstrap keyring v2)
+
+- **Signing-key rotation to `uaeg-release-2`** (the uaeg-release-1 private
+  key is unavailable to the publisher; rotation is the documented
+  exceptional procedure in docs/BOOTSTRAP.md):
+  - `upgrade.sh`: `BOOTSTRAP_VERSION=2`; trusted keyring embeds BOTH public
+    keys; `verify_manifest_signature()` accepts a signature by ANY trusted
+    key; `--bootstrap-info` prints both key ids + fingerprints.
+  - `release/verify_release.py` + `release/make_release.py`: verify against
+    any committed public key.
+  - `release/keys/uaeg-release-2.pub.pem` committed; the private key is
+    delivered to the operator out-of-band and never enters the repository.
+  - docs updated (BOOTSTRAP.md rotation record, SECURITY.md, README upgrade
+    note, LIMITATIONS.md #3 rewritten + #9 key scoping, USAGE.md tool
+    contracts).
+
+## F. Documentation truth fixes
+
+- LIMITATIONS.md #3 described the pre-v0.3.0 no-login dashboard — rewritten
+  to the shipped contract (legacy mode only when never configured + private
+  bind; public bind requires password+TLS; runtime deletion fails closed).
+- USAGE.md: exit-code/grace-window behavior, key scoping, clamps, and the
+  truthful `ok`-field claim.
+
+## Test accounting
+
+- New: `tests/test_unit_regression_v034.py` (17 tests: V-1, V-4, grace
+  expiry, resize validation, write-after-close, V-2 zombie, V-3 orphan,
+  key scoping ×2, D-1 ×3, D-2, D-6/D-7 ×3, clamps).
+- Updated for the corrected contracts: `test_unit_executor.py`,
+  `test_unit_containment.py`, `test_e2e_smoke.py`, `test_e2e_hardening.py`
+  (revocation tests now verify cross-key REJECTION + dashboard-level
+  oversight), `test_upgrade_contract.sh` (T-26 message match).
+- Final state: 118 unit/regression passed · 32 e2e passed · 155 contract
+  assertions passed · 18/18 real-asset incident reproduction.
+
+
 **Date:** 2026-11-08 · **Commit range:** v0.3.2 (9da477e) → v0.3.3 ·
 Every change below is covered by a regression test or the extended contract
 suite unless marked otherwise.

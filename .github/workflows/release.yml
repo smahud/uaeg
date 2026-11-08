@@ -6,7 +6,8 @@ name: Release
 #   install.sh                        verified one-line installer
 #   upgrade.sh                        the PERMANENT bootstrap (stable, downloaded once)
 #   uaeg-updater-<version>.sh         the versioned safe-upgrade updater
-#   uaeg-manifest.json (+ .sig)       signed release manifest (Ed25519, key uaeg-release-1)
+#   uaeg-manifest.json (+ .sig)       signed release manifest (Ed25519; uaeg-release-2
+#                                      since v0.3.4, uaeg-release-1 historically)
 #   *.sha256                          sidecars for human verification
 #
 # The manifest and signature are pre-generated and committed by
@@ -36,7 +37,8 @@ jobs:
           test -f install.sh  || { echo "::error::install.sh missing at tag $GITHUB_REF_NAME"; exit 1; }
           test -f upgrade.sh  || { echo "::error::upgrade.sh missing at tag $GITHUB_REF_NAME"; exit 1; }
           test -f updater.sh  || { echo "::error::updater.sh missing at tag $GITHUB_REF_NAME"; exit 1; }
-          test -f release/keys/uaeg-release-1.pub.pem || { echo "::error::release public key missing"; exit 1; }
+          test -f release/keys/uaeg-release-1.pub.pem || { echo "::error::release public key 1 missing"; exit 1; }
+          test -f release/keys/uaeg-release-2.pub.pem || { echo "::error::release public key 2 missing"; exit 1; }
 
       - name: Verify the installer pins this tag's version
         run: |
@@ -79,7 +81,7 @@ jobs:
           - \`install.sh\` + \`.sha256\` — verified one-line installer (docs/INSTALL.md, Option B). Pins $GITHUB_REF_NAME.
           - \`upgrade.sh\` + \`.sha256\` — the PERMANENT upgrade bootstrap: download ONCE, reuse for every future release (\`sudo bash upgrade.sh\`; docs/UPGRADE_CONTRACT.md, contract v3).
           - \`uaeg-updater-${VERSION}.sh\` + \`.sha256\` — the versioned safe-upgrade updater (fetched and verified automatically by the bootstrap).
-          - \`uaeg-manifest.json\` + \`.sig\` — Ed25519-signed release manifest (key uaeg-release-1; verified by every bootstrap before anything is executed).
+          - \`uaeg-manifest.json\` + \`.sig\` — Ed25519-signed release manifest (key uaeg-release-2 since v0.3.4, uaeg-release-1 for releases <= v0.3.3; verified by every bootstrap before anything is executed).
 
           One-time setup for existing installations:
           \`\`\`bash

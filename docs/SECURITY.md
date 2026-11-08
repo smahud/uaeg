@@ -141,17 +141,51 @@ What is **not** redacted:
   directly.
 - Environment variable values passed to `shell_exec` were never logged (unchanged).
 
-## Release authenticity (v0.3.3)
+## Release authenticity (v0.3.3; key rotated at v0.3.4)
 
 Every release ships `uaeg-manifest.json` + `uaeg-manifest.json.sig` — an
 Ed25519 signature over the manifest that lists each asset's SHA-256. The
-upgrade bootstrap embeds the trusted public key and refuses to execute any
-updater whose manifest is not signed by that key or whose bytes do not match
-the signed manifest (a checksum fetched next to a script is never treated as
-publisher identity). CI re-verifies the signature and every asset hash before
-a release is published; anyone can audit a checkout with
+upgrade bootstrap embeds the trusted public keys and refuses to execute any
+updater whose manifest is not signed by one of them or whose bytes do not
+match the signed manifest (a checksum fetched next to a script is never
+treated as publisher identity). CI re-verifies the signature and every asset
+hash before a release is published; anyone can audit a checkout with
 `python3 release/verify_release.py`. Key rotation is exceptional and
 operator-visible — policy in [BOOTSTRAP.md](./BOOTSTRAP.md).
+
+**Key rotation at v0.3.4:** releases up to and including v0.3.3 were signed
+with `uaeg-release-1`; from v0.3.4 on, manifests are signed with
+`uaeg-release-2`. The v0.3.4 bootstrap's keyring trusts BOTH keys, so
+historical releases still verify for version pins; holders of a v0.3.3-era
+bootstrap must re-download `upgrade.sh` ONCE (the documented exceptional
+recovery in [BOOTSTRAP.md](./BOOTSTRAP.md)) before they can upgrade to
+v0.3.4+. Fail-closed either way: an unverifiable manifest is never executed.
+
+## v0.3.4 hardening notes
+
+- **Dashboard authentication fails closed on runtime deletion.** Deleting
+  `/var/lib/uaeg/dashboard-pass.json` while the service runs no longer
+  silently disables login (including on public binds); authentication stays
+  enforced and logins fail until the file is restored or `sudo uaeg pass` is
+  run. Previously the dashboard reverted to the legacy unauthenticated mode
+  mid-run — reachable by any agent, since agents run as root by design.
+- **Agent-side key scoping.** Sessions and background jobs are owned by the
+  key that created them: cross-key read/input/close/cancel attempts are
+  rejected, and `shell_sessions`/`job_list` return only the caller's entries.
+  This bounds blast radius between agent keys; it is not a sandbox (every key
+  is still root-equivalent). The dashboard and CLI remain operator-level.
+- **Request-body caps apply to chunked bodies too.** The 1 MiB JSON body cap
+  is enforced by a streaming reader, not only via the `Content-Length` header.
+- **PTY lifecycle.** A session's final output chunk and exit code are
+  preserved for ~60 s after the process exits; shim processes of finished
+  background jobs are reaped deterministically (no zombie accumulation); a
+  failed DB insert during job spawn kills the just-spawned process instead of
+  orphaning it.
+- **Parameter clamps.** `shell_exec` timeouts are clamped server-side
+  (1..3600 s), `job_list` limits (0..500), `shell_resize` geometry (2..1000).
+- **Config fails closed.** A scalar value where a config section object
+  belongs (e.g. `"tls": "certbot"`) is now a load error instead of silently
+  reverting that whole section to defaults.
 
 ## Reporting
 

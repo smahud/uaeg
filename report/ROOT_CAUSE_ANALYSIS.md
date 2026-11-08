@@ -1,5 +1,101 @@
 # Root Cause Analysis — Insiden Upgrade v0.3.1 (VPS MicroTix)
 
+---
+
+# Root Cause Analysis — v0.3.4 round-2 findings
+
+## R2.1 V-1/V-4 — PTY final output & exit status lost (P1)
+
+**Symptom:** after a session's process exited, `shell_output` returned
+"unknown or expired session_id" and `exit_code` was always `null`
+(`shell_close` likewise).
+
+**Root cause (two independent defects):**
+1. `_on_readable` treats master-fd EIO/EOF as session exit and calls
+   `_mark_exited`, which popped the session from `self.sessions` — in the
+   SAME event-loop batch as the final `feed()`. The ring buffer still held
+   the tail bytes, but the registry no longer resolved the id, so the data
+   was unreachable by design.
+2. Every `waitpid` site discarded the child's status variable (`pid, _ =`),
+   so nothing ever set `session.exit_code`.
+
+**Fix:** capture the status at every reap site (`_set_exit_code`); keep the
+closed session in the registry for a bounded grace window (60 s) with lazy
+expiry; `call_later` drops it afterwards. Reproduced before the fix (5 ms
+and 200 ms polling both failed to ever see the tail); regression tests
+`test_pty_final_output_and_exit_code_survive_process_exit`,
+`test_pty_close_reports_exit_code`, `test_pty_closed_session_expires_after_grace`.
+
+## R2.2 D-1 — dashboard auth silently disabled by file deletion (P1)
+
+**Symptom:** `rm /var/lib/uaeg/dashboard-pass.json` at runtime turned the
+password-protected dashboard (any bind, including public) into the
+unauthenticated legacy mode — no restart needed.
+
+**Root cause:** the auth middleware re-evaluates
+`PasswordManager.is_configured()` on every request (that is what makes
+`uaeg pass` take effect without restart). `_refresh()` mapped "file gone"
+to `record=None, broken=False`, i.e. "never configured" — the fail-open
+direction. A corrupt file correctly mapped to `broken=True` (fail closed),
+so only the DELETATION path was wrong. The startup guard
+(`_check_dashboard_public_guard`) runs once, so runtime deletions bypassed
+it entirely.
+
+**Threat model relevance:** UAEG agents run as root BY DESIGN; any
+authenticated (possibly compromised) agent could execute the `rm` and gain
+an unauthenticated key-issuance endpoint — equivalent to persistent access.
+
+**Fix:** sticky `_ever_configured` state — once a password has been observed,
+a missing file is treated as broken: authentication stays enforced,
+verification fails closed, `generation()` returns `None` which invalidates
+all live sessions, and login returns 503 with repair instructions until the
+operator restores the file or runs `sudo uaeg pass`. Recovery tested.
+
+## R2.3 V-2 — job shim zombies
+
+**Root cause:** `spawn()` created the shim with `subprocess.Popen` and
+dropped the reference; Python reaps `_active` Popen objects only when the
+NEXT Popen runs, so on an idle server the dead shim stays in `Z` state
+indefinitely (one zombie per finished job).
+
+**Fix:** keep the Popen handle on `JobRuntime`; reap deterministically
+(bounded off-loop wait) from the watcher's final-state branch and from
+`cancel()`.
+
+## R2.4 V-3 — orphaned process on DB-insert failure
+
+**Root cause:** ordering `Popen` → `insert_job` → watcher. A failed insert
+(disk full / db locked) left a running, unrecorded, unkillable-via-UAEG
+process, and the raw `sqlite3.OperationalError` escaped the tool layer
+(which maps only `JobError`).
+
+**Fix:** kill + reap the shim on insert failure and raise `JobError` with
+the underlying reason.
+
+## R2.5 MCP-D1 — cross-key resource access
+
+**Root cause (design gap, not a bug):** the trusted-operator MVP stored
+`key_id` on every session/job row but never compared it on access; tools
+resolving only by id allowed any key to drive another key's terminal
+(including raw PTY input injection) and to enumerate/cancel its jobs.
+
+**Fix:** ownership enforced at the manager layer (`owner_key_id` parameter
++ `_gate()`); listing tools filter by caller. The operator surface
+(dashboard, CLI, containment) is unaffected. LIMITATIONS.md #9 updated —
+this was a documented limitation that round 2 promoted to an enforced
+invariant (the documented single-key deployment is unaffected).
+
+## R2.6 Key rotation (release engineering)
+
+The v0.3.3 release manifest's Ed25519 signature was verified against the
+committed `uaeg-release-1` public key — the pair is real — but the private
+half exists nowhere this audit can reach (repository, full git blob scan,
+sandbox, GitHub). Signing v0.3.4 therefore required rotating to
+`uaeg-release-2` via the documented exceptional procedure. Consequences are
+fail-closed and operator-visible (see PATCH_CHANGELOG §E); the bootstrap
+keyring trusts both keys so historical manifests still verify.
+
+
 **Tanggal:** 2026-11-07/08 · **Severity: P0** · **Ditemukan pada:** `upgrade.sh` v0.3.1 (tag `v0.3.1`, commit `225110b`) · **Diperbaiki pada:** v0.3.2 (commit `5dfcb0a`)
 
 ---

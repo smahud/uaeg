@@ -10,8 +10,9 @@ a checkout/extracted release:
 Checks:
   1. release/manifests/v<version>/uaeg-manifest.json matches the version in
      pyproject.toml (or install.sh's pin).
-  2. The manifest's Ed25519 signature verifies against the committed public
-     key release/keys/uaeg-release-1.pub.pem.
+  2. The manifest's Ed25519 signature verifies against ANY committed public
+     key in release/keys/ (key rotation: releases <= v0.3.3 are signed by
+     uaeg-release-1, later releases by uaeg-release-2).
   3. Every asset listed in the manifest (install.sh, upgrade.sh, updater.sh)
      exists in the tree and matches the recorded sha256 + size.
   4. The manifest's updater interface is within the bootstrap's supported
@@ -60,8 +61,10 @@ def main() -> int:
 
     manifest_path = root / "release" / "manifests" / f"v{version}" / "uaeg-manifest.json"
     sig_path = manifest_path.with_suffix(".json.sig")
-    pub_key = root / "release" / "keys" / "uaeg-release-1.pub.pem"
-    for p in (manifest_path, sig_path, pub_key):
+    pub_keys = sorted((root / "release" / "keys").glob("*.pub.pem"))
+    if not pub_keys:
+        fail(f"no public keys in {root / 'release' / 'keys'}")
+    for p in (manifest_path, sig_path):
         if not p.is_file():
             fail(f"missing {p.relative_to(root)}")
 
@@ -75,17 +78,25 @@ def main() -> int:
     if manifest.get("version") != version:
         fail(f"manifest version {manifest.get('version')!r} != pyproject version {version!r}")
 
-    # --- signature (authenticity) ---
-    proc = subprocess.run(
-        [
-            "openssl", "pkeyutl", "-verify", "-pubin", "-inkey", str(pub_key),
-            "-rawin", "-in", str(manifest_path), "-sigfile", str(sig_path),
-        ],
-        capture_output=True, text=True,
-    )
-    if proc.returncode != 0:
-        fail(f"manifest signature does NOT verify against {pub_key}: {proc.stderr.strip()}")
-    print("ok    manifest signature verified (uaeg-release-1)")
+    # --- signature (authenticity; any trusted release key) ---
+    verified_with = None
+    for pub_key in pub_keys:
+        proc = subprocess.run(
+            [
+                "openssl", "pkeyutl", "-verify", "-pubin", "-inkey", str(pub_key),
+                "-rawin", "-in", str(manifest_path), "-sigfile", str(sig_path),
+            ],
+            capture_output=True, text=True,
+        )
+        if proc.returncode == 0:
+            verified_with = pub_key.name
+            break
+    if verified_with is None:
+        fail(
+            "manifest signature does NOT verify against any committed public "
+            f"key in release/keys/ ({[k.name for k in pub_keys]})"
+        )
+    print(f"ok    manifest signature verified ({verified_with})")
 
     # --- assets (integrity) ---
     updater_rel = (manifest.get("updater") or {}).get("path", "")

@@ -8,7 +8,7 @@ native capabilities of the server, up to and including root.
 
 [![CI](https://github.com/smahud/uaeg/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/smahud/uaeg/actions/workflows/ci.yml)
 
-**Current release: v0.3.3** (tag `v0.3.3`). The repository carries its own audit trail
+**Current release: v0.3.4** (tag `v0.3.4`). The repository carries its own audit trail
 — release decisions, security findings, and test evidence — under [report/](report/).
 
 > **SECURITY WARNING — READ THIS BEFORE INSTALLING**
@@ -121,6 +121,12 @@ sudo bash upgrade.sh          # and every future upgrade: the same command, same
 # other modes: --check / --dry-run / --rollback / --version X.Y.Z
 ```
 
+> **v0.3.4 note (release-signing key rotation):** releases are now signed with
+> `uaeg-release-2`. A bootstrap downloaded during v0.3.3 will refuse v0.3.4+ with an
+> explicit "signature invalid / key rotation" error — that is the documented fail-closed
+> behavior; re-download `upgrade.sh` once ([docs/BOOTSTRAP.md](docs/BOOTSTRAP.md)).
+> A bootstrap downloaded fresh (or after v0.3.4) trusts both keys and needs no refresh.
+
 The first tool an agent should call is `server_info`, which reports the execution context and
 the advisory usage rules. Full walkthrough: [docs/USAGE.md](docs/USAGE.md).
 
@@ -209,4 +215,4 @@ deploying, read [docs/SECURITY.md](docs/SECURITY.md) (threat model and hardening
 
 ## License
 
-MIT — see [LICENSE](LICENSE). UAEG is experimental software (v0.3.3); treat it accordingly.
+MIT — see [LICENSE](LICENSE). UAEG is experimental software (v0.3.4); treat it accordingly.

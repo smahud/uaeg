@@ -1,5 +1,49 @@
 # Upgrade & Rollback Evidence — UAEG v0.3.2
 
+---
+
+# Upgrade / Rollback Evidence — v0.3.4 round 2
+
+## R2.1 Contract suite on the final state
+
+`tests/test_upgrade_contract.sh` — **155 PASS / 0 FAIL** (T-01..T-31),
+including on the rotated two-key bootstrap keyring:
+- T-13/T-14/T-17 (the v0.3.1 incident regressions: remote upgrade via
+  isolated staging; dirty tree; downloaded-untracked-upgrade.sh collision)
+  — operator trees byte-identical, agent keys identical.
+- T-21..T-31 (permanent bootstrap): signature-verified upgrades across
+  releases with CHANGED updater implementations; bootstrap file
+  byte-stable; tampered manifest / tampered updater / rogue publisher /
+  too-new interface / missing manifest all rejected fail-closed; broken
+  release → automatic rollback (exit 2) → same-bootstrap retry succeeds;
+  offline rollback from the cached updater.
+- T-24/T-26 updated for the rotated-keyring message wording.
+
+Evidence: `report/evidence/upgrade_contract_suite_v034.txt`.
+
+## R2.2 REAL published-release incident reproduction (18/18 PASS)
+
+The exact MicroTix scenario executed against the LIVE GitHub release
+channel (see TEST_EVIDENCE.md §R2.1 for the full protocol and
+`report/evidence/incident_repro_real_v033.txt`): a downloaded `upgrade.sh`
+sitting untracked inside the operator's dirty, stale-tagged v0.3.0 clone
+does NOT block the upgrade — the published bootstrap verifies the real
+signed manifest, fetches the real updater, and upgrades a populated v0.3.0
+installation to v0.3.3 with zero data loss, leaving the clone and the
+operator's bootstrap file byte-identical.
+
+## R2.3 Key rotation upgrade semantics (v0.3.4)
+
+- Operators who download the bootstrap fresh (the documented path, and the
+  MicroTix situation whose v0.3.1-era upgrade never completed): seamless —
+  the v0.3.4 bootstrap trusts both `uaeg-release-1` and `uaeg-release-2`.
+- Operators holding a bootstrap downloaded during v0.3.3: targeting v0.3.4+
+  fails CLOSED with the documented "signature invalid / key rotation"
+  message and the one-time refresh instructions; nothing is executed or
+  changed on refusal (verified by the contract suite's tamper tests: rc=1,
+  no backup created, version unchanged).
+
+
 **Tanggal:** 2026-11-07/08 · **Kontrak:** v2 (docs/UPGRADE_CONTRACT.md) · **Suite:** `tests/test_upgrade_contract.sh` — 95 PASS / 0 FAIL
 
 ---

@@ -13,9 +13,15 @@ Read it before trusting the gateway with anything important.
    `restricted` permission mode are usage rules communicated to the agent via
    `server_info`. A root shell bypasses application-level path checks trivially; UAEG does
    not claim these directories are protected (FR-014).
-3. **The dashboard has no login.** Anyone who can reach port 3903 can see keys metadata,
-   sessions, logs, and server details, and can generate/revoke keys. Network placement
-   (loopback/LAN bind, optional CIDR allowlist) is the only boundary (FR-015).
+3. **The dashboard defaults to legacy no-login mode only on private binds.** Since v0.3.0
+   the dashboard has a native password login (`sudo uaeg pass`): when a password exists,
+   every page and API route requires a session. When NO password was ever configured,
+   the dashboard keeps the v0.2.0 behavior - anyone who can reach port 3903 sees keys
+   metadata, sessions, logs, and can generate/revoke keys; network placement
+   (loopback/LAN bind, optional CIDR allowlist) is then the only boundary (FR-015).
+   A public (`0.0.0.0`) bind REQUIRES a password + TLS and is refused at startup
+   otherwise; since v0.3.4, deleting the password file at runtime also fails CLOSED
+   (authentication stays enforced) instead of silently reverting to legacy mode.
 
 ## Runtime behavior
 
@@ -29,6 +35,8 @@ Read it before trusting the gateway with anything important.
 6. **The PTY buffer is capped.** Each session keeps only the most recent
    `exec.pty_buffer_bytes` (default 256 KiB) of output. An agent that stops polling loses
    older bytes (`truncated: true`). Redirect chatty programs to files and read those.
+   For ~60 seconds after a session's process exits, its final output and exit code stay
+   readable (`alive: false`); after that the session id is expired (v0.3.4).
 7. **Revocation containment is best-effort process-group signaling.** Since 0.2.0, revoking
    a key also terminates its live sessions (SIGHUP then SIGKILL) and cancels its running
    background jobs (SIGTERM then SIGKILL), with a `--keep-processes` opt-out. The signals
@@ -42,8 +50,13 @@ Read it before trusting the gateway with anything important.
 ## Product scope
 
 9. **Single operator, not multi-tenant.** One trusted person manages keys and the server.
-   There is no user identity, no per-tenant isolation, and no billing ([PRD](./PRD.md)
-   section 3).
+   There is no user identity and no billing ([PRD](./PRD.md)
+   section 3, section 16). Since v0.3.4 sessions and background jobs ARE key-scoped on
+   the agent side: an MCP key can only read, drive, close or cancel the sessions/jobs it
+   created itself, and `shell_sessions`/`job_list` return only the caller's entries. The
+   dashboard and CLI remain operator-level and see everything. Every key still executes
+   with full root privileges - scoping bounds blast radius and audit attribution between
+   agents, it is not a security sandbox.
 10. **No RBAC and no approval workflows.** Keys are either `all` or advisory `restricted`;
     there are no roles, no per-tool permissions, and no human confirmation steps. This is
     excluded from the MVP by design (PRD section 13), not a gap to be filled soon.

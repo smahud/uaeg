@@ -3,7 +3,7 @@
 
 Run from the repository root BEFORE tagging a release:
 
-    python3 release/make_release.py --key /path/to/uaeg-release-1.key
+    python3 release/make_release.py --key /path/to/uaeg-release-<N>.key
 
 Produces under release/manifests/v<version>/:
   - uaeg-manifest.json      release manifest (asset inventory + updater coords)
@@ -128,22 +128,31 @@ def main() -> int:
     if proc.returncode != 0:
         sys.exit(f"openssl signing failed: {proc.stderr.strip()}")
 
-    # Immediate self-verification with the committed public key.
-    pub = REPO / "release" / "keys" / "uaeg-release-1.pub.pem"
-    proc = subprocess.run(
-        [
-            "openssl", "pkeyutl", "-verify", "-pubin",
-            "-inkey", str(pub),
-            "-rawin", "-in", str(manifest_path),
-            "-sigfile", str(sig_path),
-        ],
-        capture_output=True, text=True,
-    )
-    if proc.returncode != 0:
-        sys.exit(f"self-verification against the committed public key FAILED: {proc.stderr.strip()}")
+    # Immediate self-verification against ANY committed public key (the
+    # signing key decides which one matches; rotation policy in
+    # docs/BOOTSTRAP.md).
+    verified_with = None
+    for pub in sorted((REPO / "release" / "keys").glob("*.pub.pem")):
+        proc = subprocess.run(
+            [
+                "openssl", "pkeyutl", "-verify", "-pubin",
+                "-inkey", str(pub),
+                "-rawin", "-in", str(manifest_path),
+                "-sigfile", str(sig_path),
+            ],
+            capture_output=True, text=True,
+        )
+        if proc.returncode == 0:
+            verified_with = pub.name
+            break
+    if verified_with is None:
+        sys.exit(
+            "self-verification against the committed public keys FAILED - is "
+            "the manifest signed with a UAEG release key?"
+        )
 
     print(f"manifest written : {manifest_path}")
-    print(f"signature written: {sig_path} (verified against {pub})")
+    print(f"signature written: {sig_path} (verified against {verified_with})")
     print(f"updater asset    : {updater_name}")
     print("commit these files, then tag v" + version)
     return 0

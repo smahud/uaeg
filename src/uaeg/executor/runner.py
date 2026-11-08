@@ -136,7 +136,12 @@ async def run_command(
             await asyncio.wait_for(proc.wait(), timeout=10)
         except asyncio.TimeoutError:
             proc.kill()
-            await proc.wait()
+            try:
+                # Bounded even after SIGKILL: a child stuck in D-state must
+                # not pin the request forever (report no exit code instead).
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                pass
     finally:
         await _drain()
 

@@ -48,9 +48,3 @@ def sessions_dir() -> Path:
 
 def tls_dir() -> Path:
     return data_dir() / "tls"
-
-
-def ensure_data_dirs() -> None:
-    """Create the data directory tree if missing (idempotent)."""
-    for d in (data_dir(), jobs_dir(), sessions_dir(), tls_dir()):
-        d.mkdir(parents=True, exist_ok=True)

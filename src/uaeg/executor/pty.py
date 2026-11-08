@@ -10,6 +10,10 @@ Design points:
   ``shell_output(session_id, since_seq=N)`` and receive everything after N;
   the response carries the next cursor. This makes reconnection trivial and
   keeps memory bounded (PRD section 14).
+- When the session's process exits, the session stays readable for a short
+  grace window (default 60 s): the final output chunk and the child's exit
+  code remain available to ``shell_output`` (``alive=false``), instead of
+  the buffer being orphaned the moment the process dies (v0.3.4 fix).
 - Sessions live in the server process. If the server restarts, the PTY master
   closes, the shell receives SIGHUP, and sessions are marked interrupted.
 - Session IDs are UUID4 hex (collision-safe).
@@ -37,6 +41,13 @@ from ..db import Store
 log = logging.getLogger("uaeg.pty")
 
 _READ_CHUNK = 65536
+
+# Grace window during which a session whose process has EXITED stays readable
+# (final output chunk + exit code) before it is dropped for good. Without it
+# the session is removed from the manager the instant the child dies and the
+# agent can never collect the tail of its output nor the exit status (v0.3.4
+# fix for the v0.3.3 PTY lifecycle defect).
+_EXITED_GRACE_S = 60.0
 
 # Hard cap on queued (undelivered) input bytes per session. When a session's
 # foreground process is suspended (Ctrl-Z) or simply never reads its tty, the
@@ -119,6 +130,13 @@ class TerminalSession:
         truncated = since_seq < self.base_seq
         return chunk.decode("utf-8", errors="replace"), end, truncated
 
+    def _set_exit_code(self, status: int) -> None:
+        """Record the child's exit status from a waitpid() result."""
+        try:
+            self.exit_code = os.waitstatus_to_exitcode(status)
+        except ValueError:
+            self.exit_code = None
+
     def write(self, data: bytes) -> int:
         """Queue input for delivery to the session's tty.
 
@@ -141,6 +159,11 @@ class TerminalSession:
                 accepted = os.write(self.master_fd, data)
             except BlockingIOError:
                 accepted = 0
+            except OSError as exc:
+                # EIO/EBADF when the child just exited and the master fd was
+                # closed concurrently: report a closed session to the caller
+                # instead of leaking a raw OSError as an internal tool error.
+                raise SessionError("session is closed") from exc
             if accepted < len(data):
                 self._pending += data[accepted:]
                 accepted = len(data)
@@ -157,8 +180,15 @@ class TerminalSession:
     def resize(self, cols: int, rows: int) -> None:
         if self.closed or self.master_fd < 0:
             raise SessionError("session is closed")
+        # Same range contract as shell_open: a 0/1/negative/huge winsize is
+        # nonsense input, not something to push into TIOCSWINSZ.
+        if not (2 <= cols <= 1000 and 2 <= rows <= 1000):
+            raise SessionError("cols and rows must be between 2 and 1000")
         winsize = struct.pack("HHHH", rows, cols, 0, 0)
-        fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, winsize)
+        try:
+            fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, winsize)
+        except OSError as exc:
+            raise SessionError("session is closed") from exc
         try:
             os.killpg(self.pid, signal.SIGWINCH)
         except (ProcessLookupError, PermissionError, OSError):
@@ -210,7 +240,11 @@ class SessionManager:
         key_id: str | None = None,
         key_name: str | None = None,
     ) -> dict[str, Any]:
-        if len(self.sessions) >= self.max_sessions:
+        # Count only LIVE sessions against the limit: a burst of recently
+        # exited sessions (still readable during their grace window) must not
+        # block the agent from opening a new terminal.
+        live = sum(1 for s in self.sessions.values() if not s.closed)
+        if live >= self.max_sessions:
             raise SessionError(
                 f"session limit reached ({self.max_sessions}); close unused "
                 "sessions with shell_close first"
@@ -318,17 +352,51 @@ class SessionManager:
         }
 
     # ------------------------------------------------------------------
-    def get(self, session_id: str) -> TerminalSession:
+    def get(
+        self, session_id: str, owner_key_id: str | None = None
+    ) -> TerminalSession:
+        """Fetch a session by id.
+
+        - ``owner_key_id`` (when given) enforces key-scoped ownership: a
+          session created by agent key A is not readable, drivable or
+          closable through key B (the dashboard and CLI pass None and see
+          everything - operator level).
+        - A session whose process EXITED stays readable for
+          ``_EXITED_GRACE_S`` seconds (final output + exit code); after that
+          it is expired and unknown.
+        """
         session = self.sessions.get(session_id)
         if not session:
             raise SessionError(
                 f"unknown or expired session_id: {session_id}; list live "
                 "sessions with shell_sessions()"
             )
+        if (
+            owner_key_id is not None
+            and session.key_id is not None
+            and session.key_id != owner_key_id
+        ):
+            raise SessionError(
+                f"session {session_id} belongs to a different agent key"
+            )
+        if session.closed:
+            age = time.monotonic() - (session.closed_at or time.monotonic())
+            if age > _EXITED_GRACE_S:
+                self.sessions.pop(session_id, None)
+                raise SessionError(
+                    f"session {session_id} has exited and expired (final output "
+                    f"is readable for {_EXITED_GRACE_S:.0f}s after exit)"
+                )
         return session
 
-    def output(self, session_id: str, since_seq: int = 0, limit: int = 262_144) -> dict[str, Any]:
-        session = self.get(session_id)
+    def output(
+        self,
+        session_id: str,
+        since_seq: int = 0,
+        limit: int = 262_144,
+        owner_key_id: str | None = None,
+    ) -> dict[str, Any]:
+        session = self.get(session_id, owner_key_id)
         data, next_seq, truncated = session.read_since(since_seq, limit)
         return {
             "session_id": session_id,
@@ -340,8 +408,14 @@ class SessionManager:
             "exit_code": session.exit_code,
         }
 
-    def input(self, session_id: str, data: str, add_newline: bool = False) -> dict[str, Any]:
-        session = self.get(session_id)
+    def input(
+        self,
+        session_id: str,
+        data: str,
+        add_newline: bool = False,
+        owner_key_id: str | None = None,
+    ) -> dict[str, Any]:
+        session = self.get(session_id, owner_key_id)
         payload = data + ("\n" if add_newline else "")
         written = session.write(payload.encode("utf-8"))
         if session._pending:
@@ -354,14 +428,22 @@ class SessionManager:
             "ok": True,
         }
 
-    def resize(self, session_id: str, cols: int, rows: int) -> dict[str, Any]:
-        session = self.get(session_id)
+    def resize(
+        self,
+        session_id: str,
+        cols: int,
+        rows: int,
+        owner_key_id: str | None = None,
+    ) -> dict[str, Any]:
+        session = self.get(session_id, owner_key_id)
         session.resize(cols, rows)
         return {"session_id": session_id, "cols": cols, "rows": rows, "ok": True}
 
     def list(self) -> list[dict[str, Any]]:
         # Snapshot: termination workers mutate self.sessions from other
         # threads; iterating the live dict can raise RuntimeError (B-6).
+        # Includes sessions that exited within the grace window (alive=false,
+        # exit_code set) so agents can observe how their terminals ended.
         return [s.info() for s in list(self.sessions.values())]
 
     # ------------------------------------------------------------------
@@ -411,8 +493,10 @@ class SessionManager:
             except (RuntimeError, ValueError, NotImplementedError, OSError):
                 pass
 
-    async def close(self, session_id: str) -> dict[str, Any]:
-        session = self.get(session_id)
+    async def close(
+        self, session_id: str, owner_key_id: str | None = None
+    ) -> dict[str, Any]:
+        session = self.get(session_id, owner_key_id)
         await asyncio.to_thread(self._terminate, session)
         return {
             "session_id": session_id,
@@ -426,7 +510,7 @@ class SessionManager:
         key. Returns the number of sessions terminated."""
         count = 0
         for session in list(self.sessions.values()):
-            if session.key_id != key_id:
+            if session.key_id != key_id or session.closed:
                 continue
             try:
                 await self.close(session.session_id)
@@ -509,6 +593,17 @@ class SessionManager:
             session.master_fd = -1
             session._drain_armed = False
 
+        # Capture the child's exit status NOW (v0.3.4): this waitpid used to
+        # discard the status, so exit_code stayed None forever.
+        reaped = False
+        try:
+            pid, status = os.waitpid(session.pid, os.WNOHANG)
+            reaped = pid == session.pid
+            if reaped:
+                session._set_exit_code(status)
+        except (ChildProcessError, OSError):
+            reaped = True  # already collected elsewhere
+
         loop = self._loop
 
         def _close_fd() -> None:
@@ -526,6 +621,13 @@ class SessionManager:
             except OSError:
                 pass
             session._pending.clear()
+            # Task.cancel() is not thread-safe: run it on the loop thread
+            # (this closure is dispatched there when called from a worker).
+            if session._reaper and not session._reaper.done() and reaped:
+                try:
+                    session._reaper.cancel()
+                except RuntimeError:  # event loop already closed
+                    pass
 
         # remove_reader/os.close must happen on the loop thread (or when the
         # loop is already gone, e.g. during test teardown).
@@ -542,22 +644,23 @@ class SessionManager:
         else:
             _close_fd()
 
-        # Reap immediately when possible; if the child has not exited yet
-        # the reaper task stays alive to collect it (its loop keeps running
-        # after closed) - that prevents zombie children.
-        reaped = False
-        try:
-            pid, _ = os.waitpid(session.pid, os.WNOHANG)
-            reaped = pid == session.pid
-        except (ChildProcessError, OSError):
-            reaped = True  # already collected elsewhere
-        if session._reaper and not session._reaper.done() and reaped:
-            try:
-                session._reaper.cancel()
-            except RuntimeError:  # event loop already closed
-                pass
         self.store.update_session(session.session_id, status="closed", closed=True)
-        self.sessions.pop(session.session_id, None)
+        # v0.3.4: the closed session STAYS in self.sessions for a grace
+        # window so the agent can read the final output chunk and the exit
+        # code. Drop it after the window (on-loop timer when possible; get()
+        # also lazily drops expired entries as a safety net).
+        if loop is not None:
+            try:
+                if loop.is_running():
+                    loop.call_later(
+                        _EXITED_GRACE_S, self.sessions.pop, session.session_id, None
+                    )
+                else:
+                    self.sessions.pop(session.session_id, None)
+            except RuntimeError:
+                self.sessions.pop(session.session_id, None)
+        else:
+            self.sessions.pop(session.session_id, None)
         log.info(
             "session %s closed (exit %s)", session.session_id[:12], session.exit_code
         )
@@ -573,8 +676,9 @@ class SessionManager:
         deadline = time.monotonic() + 1.5
         while time.monotonic() < deadline and not session.closed:
             try:
-                pid, _ = os.waitpid(session.pid, os.WNOHANG)
+                pid, status = os.waitpid(session.pid, os.WNOHANG)
                 if pid == session.pid:
+                    session._set_exit_code(status)
                     break
             except ChildProcessError:
                 break
@@ -584,7 +688,9 @@ class SessionManager:
         except (ProcessLookupError, PermissionError, OSError):
             pass
         try:
-            os.waitpid(session.pid, 0)
+            pid, status = os.waitpid(session.pid, 0)
+            if pid == session.pid:
+                session._set_exit_code(status)
         except (ChildProcessError, OSError):
             pass
         self._drain_and_close(session)

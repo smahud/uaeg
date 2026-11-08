@@ -1,5 +1,84 @@
 # Full End-to-End Audit — UAEG v0.3.3
 
+
+---
+
+# AUDIT ROUND 2 — v0.3.4 (2026-11-08)
+
+(Supersedes nothing: this round extends the v0.3.3 audit below with a second full-system pass.)
+
+**Baseline:** v0.3.3 (fff55c3, published release verified independently)
+→ working tree at v0.3.4. **Method:** four parallel deep sub-audits
+(executor/jobs/PTY; dashboard/dashauth/UI; MCP server/auth/tools;
+CLI/db/config/docs — three completed, the fourth covered by the principal)
+integrated and re-verified; every confirmed defect fixed at root cause with
+a pinning regression test; full matrix re-run on the final state.
+
+## R2.1 Verified defects found and FIXED in v0.3.4
+
+| ID | Severity | Subsystem | Defect (all reproduced before fixing) |
+|----|----------|-----------|----------------------------------------|
+| V-1 | **P1** | executor/pty.py | When a session's process exited, the session was dropped from the registry in the same event-loop batch as the final `feed()`: the ring-buffer tail was orphaned and `shell_output` returned "unknown or expired session_id" — the agent could NEVER read the final output chunk. Simultaneously the `waitpid` in `_mark_exited` discarded the child's status, so `exit_code` stayed `None` forever. Reproduced at 200 ms and 5 ms polling cadences with `bash -c 'echo FINAL_OUTPUT_123; exit 7'`. |
+| D-1 | **P1** | dashauth.py + dashboard.py | Deleting `<data_dir>/dashboard-pass.json` at runtime silently DISABLED all dashboard authentication (the auth middleware re-checks `is_configured()` per request and the file's absence read as "never configured"), including on public `0.0.0.0` binds. Since authenticated agents run as root by design, any agent could convert the operator's password-protected dashboard into an unauthenticated key-issuance endpoint with one `rm`. Reproduced in-process at ASGI level: pre-deletion `/api/keys` → 401; post-deletion → 200 + full SPA + key creation. |
+| V-2 | P2 | executor/jobs.py | The detached job shim (`Popen`) was never reaped: every finished/killed job left a zombie until an unrelated later `subprocess` call happened to reap it. Reproduced: `/proc/<pid>/stat` state `Z` persisting after job completion. |
+| V-3 | P2 | executor/jobs.py | The jobs row was inserted AFTER spawning the process: a failed `insert_job` (disk full, db locked) orphaned a live, unmanageable process and leaked a raw `sqlite3.OperationalError` to the MCP client (only `JobError` is mapped to a clean tool error). Reproduced by monkeypatching `insert_job` to raise; `pgrep` showed the orphan running `sleep 45`. |
+| V-4 | P2 | executor/pty.py | `shell_close` always reported `exit_code: null` — both `waitpid` call sites in `_terminate` discarded the status. |
+| MCP-D1 | P2 | mcp_tools/pty/jobs | No key-scoped ownership: any valid key could read, inject input into, resize, close or cancel another key's sessions/jobs, and `shell_sessions`/`job_list` exposed every key's resources (cross-key PTY input injection). Documented as a single-operator MVP limitation — now enforced (see LIMITATIONS.md #9) at the manager layer with the dashboard/CLI remaining operator-level. |
+| D-2 | P3 | dashboard.py | The 1 MiB request-body cap only inspected the `Content-Length` header; chunked request bodies bypassed it into uncapped `request.json()` reads and unbounded persisted fields. Reproduced: 2 MiB chunked POST accepted (201); same body with Content-Length correctly 413. |
+| MCP-D2 | P3 | pty.py | `shell_resize` accepted unvalidated cols/rows (0/1/1001+ pushed to `TIOCSWINSZ`; negatives/>65535 raised a raw `struct.error`). |
+| MCP-D3 | P3 | mcp_tools.py | `job_list(limit=-1)` dumped the entire jobs table (SQLite treats negative LIMIT as unlimited). |
+| MCP-D4 | P3 | mcp_tools.py | `shell_exec(timeout_seconds=-5)` killed the process group in ~1 ms and reported `timed_out` — no lower/upper bound (inconsistent with the `job_wait` clamp whose rationale is documented in the same file). |
+| D-5 | P3 | mcp_tools.py | Module docstring claimed "Every tool call is recorded in the execution audit log" — 8 of 13 tools wrote no audit rows. Docstring corrected to the truthful set. |
+| D-6 | P3 | config.py | `mcp_url()` advertised `https://` while `UAEG_DEV_INSECURE_HTTP=1` serves plain HTTP (dev-only cosmetic inconsistency). |
+| D-7 | P3 | config.py | `Config.from_dict` silently swallowed a non-object section (`"tls": "certbot"`) and reverted the WHOLE section to defaults (fail-open configuration). Now a load-time `ConfigError`. |
+| C-2 | P3 | dashboard.py | `runtime.tls_info()` (blocking `openssl` subprocess, 10 s timeout) ran on the event loop inside the `/api/server` handler — could freeze both listeners. Moved to `asyncio.to_thread`. |
+| C-3 | P3 | pty.py | `write()`/`resize()` leaked raw `OSError` (EIO/EBADF race on a just-closed master) as internal tool errors instead of `SessionError("session is closed")`. |
+| C-4 | P3 | pty.py | `Task.cancel()` called from a `to_thread` worker (not thread-safe) — reaper cancellation moved onto the loop thread. |
+| Docs | P3 | docs/LIMITATIONS.md | Item #3 still described the pre-v0.3.0 "dashboard has no login" state — contradicted the shipped password login. Rewritten to the actual contract. Dead code removed (`paths.ensure_data_dirs`, `Store.find_key_by_verifier`, `Session.expires_at`). |
+
+## R2.2 Release engineering change (v0.3.4)
+
+**Signing-key rotation `uaeg-release-1` → `uaeg-release-2`.** The v0.3.3
+manifest's signature was independently verified against the committed public
+key (proving the key pair existed), but the private half is not available to
+this audit round (not in the repository, git history, sandbox, or GitHub —
+verified by blob-scan). Per docs/BOOTSTRAP.md's documented exceptional
+procedure, v0.3.4 is signed by a newly generated `uaeg-release-2`; the
+bootstrap keyring (BOOTSTRAP_VERSION=2) trusts BOTH keys so historical
+releases (≤ v0.3.3) still verify for `--version` pins. Holders of a
+v0.3.3-era bootstrap get the documented fail-closed "signature invalid /
+key rotation" refusal and re-download the bootstrap ONCE. The private key
+`uaeg-release-2` is delivered to the operator out-of-band (never committed).
+
+## R2.3 Test evidence (v0.3.4 — final state, before tagging)
+
+- Python tests: **118 passed / 0 failed** unit+regression (101 pre-existing,
+  17 new in `tests/test_unit_regression_v034.py`) and **32 passed** e2e
+  (smoke + dashboard auth + hardening) — `report/evidence/pytest_v034.txt`,
+  `report/evidence/e2e_v034.txt`.
+- Upgrade contract suite: **155 PASS / 0 FAIL** (T-01..T-31 incl. the
+  v0.3.1 incident regression T-17 and the permanent-bootstrap series on the
+  rotated keyring) — `report/evidence/upgrade_contract_suite_v034.txt`.
+- Operator-incident reproduction against the REAL published v0.3.3 release
+  (real GitHub API, real Ed25519 signature, real updater bytes, EUID=0 via
+  root user namespace; only the installer's apt step is skipped as in CI):
+  **18/18 PASS** — the downloaded bootstrap upgrades a v0.3.0 installation
+  to v0.3.3 with zero data loss while the operator's dirty clone (untracked,
+  colliding `upgrade.sh` inside it) stays byte-for-byte untouched —
+  `report/evidence/incident_repro_real_v033.txt`.
+
+## R2.4 Verified-clean areas this round (no defects)
+
+db.py (WAL/RLock/redaction/schema guard), cli.py (incl. the full `uaeg pass`
+contract), auth.py bearer chain, server.py listener supervision and TLS
+fail-closed paths, dashboard routing table (every route requires auth;
+no traversal), dashboard_ui.py XSS escaping (all `innerHTML` paths pass
+`esc()`), runner.py core path, MCP Streamable HTTP lifecycle on the pinned
+mcp==1.27.0, revocation containment, installer/updater/bootstrap shell
+logic (unchanged this round, contract suite green).
+
+
+
 **Date:** 2026-11-08 · **Scope:** complete repository audit at v0.3.2
 (9da477e) → patched and re-verified as v0.3.3 · **Method:** layered
 reconnaissance (repo, live lab reproduction, real-browser testing, network

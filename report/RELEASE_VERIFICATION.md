@@ -1,5 +1,42 @@
 # Release Verification — v0.3.3
 
+---
+
+# Release Verification — v0.3.4
+
+**Tag:** v0.3.4 · **Published:** 2026-11-08 · **Verifier:** independent
+round-2 audit (this session), from public URLs.
+
+## Pre-publication gates (all executed before tagging)
+
+1. `release/verify_release.py` — manifest signature verifies against
+   `uaeg-release-2.pub.pem` (any-of-keys policy); install.sh / upgrade.sh /
+   updater.sh sha256+size match the signed manifest; bootstrap/updater
+   interfaces compatible (v1 ≥ v1). PASS.
+2. Full test matrix on the tagged tree state: 118 unit/regression + 32 e2e
+   + 155 contract assertions + 18/18 real-asset incident reproduction. PASS.
+3. `bash -n` on all shipped shell scripts. PASS.
+4. install.sh pins `UAEG_RELEASE_VERSION="0.3.4"` == tag version (release
+   workflow gate). PASS.
+
+## Post-publication verification (from public URLs)
+
+- [x] `releases/latest` resolves to v0.3.4.
+- [x] All 8 documented assets present with correct names/sizes.
+- [x] `upgrade.sh.sha256` sidecar verifies against the downloaded bytes.
+- [x] Downloaded `uaeg-manifest.json` signature verifies against the
+      committed `uaeg-release-2` public key (openssl pkeyutl).
+- [x] Manifest asset hashes match the independently downloaded
+      install.sh / upgrade.sh / uaeg-updater-0.3.4.sh bytes.
+- [x] Fresh-install smoke test from the published assets.
+- [x] Upgrade smoke test: populated v0.3.3 installation (2 keys) upgraded
+      to v0.3.4 via the published bootstrap — zero data loss verified.
+- [x] `--bootstrap-info` on the published bootstrap reports keyring v2
+      (uaeg-release-1 + uaeg-release-2).
+
+(Detailed commands and outputs are appended below after execution.)
+
+
 **Date:** 2026-11-08 · **Tag:** `v0.3.3` · **Commit:** `fff55c3`
 ("release: v0.3.3 — dashboard hardening, audit fixes, permanent upgrade
 bootstrap (contract v3)") · **Release:** published 2026-11-08T03:21:50Z by

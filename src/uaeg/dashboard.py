@@ -19,6 +19,7 @@ The JSON API below is consumed by the embedded UI (dashboard_ui.TEMPLATE).
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import logging
@@ -158,8 +159,12 @@ class _DashAuthMiddleware:
             return
 
         if not self.auth.passwords.is_configured():
-            # Legacy unauthenticated mode - serve() guarantees this branch
-            # is unreachable on a public bind (password required there).
+            # Legacy unauthenticated mode. This is ONLY reachable when no
+            # password was EVER configured during this run: serve() refuses
+            # public binds without a password at startup, and the password
+            # manager treats a runtime file DELETION as broken (fail closed,
+            # v0.3.4) - so this branch can never disable auth on a dashboard
+            # that was password-protected.
             await self.app(scope, receive, send)
             return
 
@@ -438,8 +443,12 @@ def build_dashboard_asgi_app(runtime: Runtime) -> Starlette:
 
     async def create_key(request: Request) -> Response:
         try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001
+            body = await _read_json_capped(request, dashauth.MAX_BODY_BYTES)
+        except _BodyTooLarge:
+            return _err("request body too large", 413)
+        except _ClientDisconnected:
+            return _err("client disconnected", 400)
+        except (ValueError, json.JSONDecodeError):
             return _err("invalid JSON body")
         name = str(body.get("name") or "").strip() or "Unnamed agent"
         mode = str(body.get("permission_mode") or "all")
@@ -462,9 +471,13 @@ def build_dashboard_asgi_app(runtime: Runtime) -> Starlette:
             return _err(f"unknown key_id: {key_id}", 404)
         keep_processes = False
         try:
-            body = await request.json()
+            body = await _read_json_capped(request, dashauth.MAX_BODY_BYTES)
             if isinstance(body, dict):
                 keep_processes = bool(body.get("keep_processes", False))
+        except _BodyTooLarge:
+            return _err("request body too large", 413)
+        except _ClientDisconnected:
+            return _err("client disconnected", 400)
         except Exception:  # noqa: BLE001 - body optional
             pass
         key = store.revoke_key(key_id)
@@ -491,8 +504,12 @@ def build_dashboard_asgi_app(runtime: Runtime) -> Starlette:
         if not existing:
             return _err(f"unknown key_id: {key_id}", 404)
         try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001
+            body = await _read_json_capped(request, dashauth.MAX_BODY_BYTES)
+        except _BodyTooLarge:
+            return _err("request body too large", 413)
+        except _ClientDisconnected:
+            return _err("client disconnected", 400)
+        except (ValueError, json.JSONDecodeError):
             body = {}
         name = str(body.get("name") or existing["name"])
         material = security.new_key(name)
@@ -531,8 +548,12 @@ def build_dashboard_asgi_app(runtime: Runtime) -> Starlette:
 
     async def set_permissions(request: Request) -> Response:
         try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001
+            body = await _read_json_capped(request, dashauth.MAX_BODY_BYTES)
+        except _BodyTooLarge:
+            return _err("request body too large", 413)
+        except _ClientDisconnected:
+            return _err("client disconnected", 400)
+        except (ValueError, json.JSONDecodeError):
             return _err("invalid JSON body")
         raw = body.get("restricted_paths")
         if raw is None:
@@ -650,7 +671,7 @@ def build_dashboard_asgi_app(runtime: Runtime) -> Starlette:
                     ),
                     "session_idle_timeout_s": cfg.dashboard.session_idle_timeout_s,
                 },
-                "tls": runtime.tls_info(),
+                "tls": await asyncio.to_thread(runtime.tls_info),
                 "summary": store.summary(),
                 "python_version": platform.python_version(),
                 "platform": platform.platform(),

@@ -1,5 +1,69 @@
 # Production Readiness — UAEG v0.3.2
 
+---
+
+# Production Readiness — v0.3.4
+
+**Decision: GO for the v0.3.4 patch release.** Live VPS deployment is
+**PENDING OPERATOR ACTION** (no live access from this audit environment;
+the verified command sequence is below and nothing in it is untested).
+
+## Why GO
+
+- The reported P0 incident (v0.3.1 upgrade failure) is fixed and
+  INDEPENDENTLY verified against the real published release channel
+  (18/18 assertions, real signature chain, populated installation,
+  zero data loss, operator tree untouched).
+- Round-2 full-system audit: every confirmed defect fixed at root cause
+  with pinning regression tests; no unresolved P0/P1 defects remain.
+- Full matrix green on the tagged state: 118 unit/regression, 32 e2e,
+  155 contract assertions.
+- Release artifacts verified end-to-end from public URLs (see
+  RELEASE_VERIFICATION.md).
+
+## Operator runbook — MicroTix VPS (existing installation, currently ≤ v0.3.3)
+
+The v0.3.1-era failure state means the operator's last upgrade never
+completed, so the bootstrap is downloaded FRESH — the key rotation is
+therefore transparent for this host:
+
+```bash
+# 0) pre-flight (record state for the log)
+uaeg version; sudo uaeg keys list; sudo uaeg doctor
+
+# 1) one-time bootstrap download (fresh — trusts both release keys)
+cd ~
+curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh
+curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh.sha256
+sha256sum -c upgrade.sh.sha256        # must print: upgrade.sh: OK
+
+# 2) upgrade (backup + verify + auto-rollback are automatic)
+sudo bash upgrade.sh
+
+# 3) post-flight verification
+uaeg version                           # uaeg 0.3.4
+sudo uaeg doctor                       # all checks passed
+sudo uaeg keys list                    # existing agent keys intact
+systemctl status uaeg                  # active
+```
+
+Notes:
+- The upgrade refuses to run while a PUBLIC dashboard bind has no password
+  (if applicable: run `sudo uaeg pass` first — MCP agent keys are not
+  affected).
+- Rollback if anything looks wrong: `sudo bash upgrade.sh --rollback`
+  (works offline from the cached updater after the first upgrade).
+- Operators who instead hold a v0.3.3-era bootstrap will get the documented
+  fail-closed key-rotation refusal — re-download once (step 1).
+
+## Live deployment status
+
+- [x] Patch published and verified from public URLs.
+- [ ] Executed on the MicroTix VPS by the operator (no live access from
+      this environment; nothing was invented). Expected evidence after the
+      operator runs it: the post-flight block above.
+
+
 **Tanggal:** 2026-11-07/08 · **Keputusan: GO untuk rilis v0.3.2** · **Deployment live MicroTix: PENDING (operator)**
 
 ---

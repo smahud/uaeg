@@ -298,7 +298,11 @@ can confirm where it is executing before it acts.
 
 ## MCP tool reference
 
-All tools return JSON objects. `ok` is `true` when the call itself succeeded.
+All tools return JSON objects. Executing and mutating tools (`shell_exec`,
+`shell_open`, `shell_input`, `shell_close`, `job_cancel`) carry an `ok`
+boolean; read/inspect tools (`shell_output`, `shell_sessions`, `job_status`,
+`job_output`, `job_wait`, `job_list`, `server_info`) signal failure with an
+`error` field instead.
 
 ### `server_info()`
 
@@ -318,7 +322,7 @@ Parameters:
 | `command` | required | The bash command line |
 | `cwd` | `exec.default_cwd` (`~`) | Working directory |
 | `env` | inherited | Object of extra environment variables merged into the child environment |
-| `timeout_seconds` | `exec.default_timeout_s` (120) | Sync-mode timeout; on expiry the process is killed |
+| `timeout_seconds` | `exec.default_timeout_s` (120) | Sync-mode timeout; on expiry the process is killed (server-side clamp: 1..3600) |
 | `background` | `false` | If `true`, launch as a background job and return immediately |
 
 Synchronous result:
@@ -367,20 +371,29 @@ Returns new output since the sequence cursor:
 the reader fell more than `exec.pty_buffer_bytes` (default 256 KiB) behind. See
 [PTY output and seq cursors](#pty-output-and-seq-cursors) below.
 
+For ~60 seconds after the session's process exits, the session stays readable with its
+final output and real `exit_code` (v0.3.4): keep polling until `alive: false` and a
+non-null `exit_code` instead of guessing whether your command finished. After the grace
+window the session id is expired and returns an error.
+
 ### `shell_resize(session_id, cols, rows)`
 
 Updates the PTY window size and signals the process group (SIGWINCH) so full-screen
-programs redraw correctly.
+programs redraw correctly. `cols`/`rows` must each be in 2..1000.
 
 ### `shell_close(session_id)`
 
-Terminates the session and its processes. The shell exiting on its own also ends the
-session.
+Terminates the session and its processes; the response carries the child's real
+`exit_code` (v0.3.4). The shell exiting on its own also ends the session (readable for
+~60 s afterwards, see `shell_output`).
 
 ### `shell_sessions()`
 
-Lists live sessions with their IDs and commands. Use it after a client reconnect to find a
-still-running terminal — sessions are not tied to the MCP connection.
+Lists the CALLING KEY's sessions with their IDs, commands, liveness and exit codes
+(including any that exited within the last minute). Use it after a client reconnect to
+find a still-running terminal — sessions are not tied to the MCP connection. Sessions
+created by other agent keys are not visible here (v0.3.4 key scoping); the operator
+dashboard shows all of them.
 
 ### `job_status(job_id)`
 
@@ -404,8 +417,9 @@ Terminates a running job; its status becomes `cancelled`.
 
 ### `job_list(limit=50)`
 
-Lists jobs (newest first) with status, exit code, and command — useful to find a `job_id`
-after losing it.
+Lists the CALLING KEY's jobs (newest first, server-side cap 500) with status, exit code,
+and command — useful to find a `job_id` after losing it. Jobs started by other agent keys
+are not visible here (v0.3.4 key scoping); the operator dashboard shows all of them.
 
 ## Worked examples
 

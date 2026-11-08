@@ -230,6 +230,14 @@ class PasswordManager:
     safety net), so ``uaeg pass`` takes effect immediately, without a
     service restart. A corrupt file keeps the LAST GOOD record AND marks
     the state broken - login then always fails closed.
+
+    Fail-closed deletion (v0.3.4): once a password has been observed, a
+    file that DISAPPEARS at runtime is treated as broken - never as "not
+    configured". Otherwise deleting ``dashboard-pass.json`` (which any
+    authenticated agent can do, since agents run as root by design) would
+    silently strip authentication from the dashboard, including public
+    0.0.0.0 binds. Authentication stays enforced and logins fail closed
+    until the operator restores the file or runs ``sudo uaeg pass``.
     """
 
     _RECHECK_S = 2.0
@@ -240,6 +248,7 @@ class PasswordManager:
         self._mtime_ns: int | None = None
         self._broken = False
         self._last_check = 0.0
+        self._ever_configured = False
 
     def _refresh(self) -> None:
         path = password_file_path()
@@ -267,16 +276,35 @@ class PasswordManager:
                 record = None
                 log.error("dashboard password file is unreadable: %s", exc)
         with self._lock:
+            ever = self._ever_configured
+            if record is not None or broken:
+                ever = True
+            elif mtime_ns is None and ever:
+                # The file existed earlier in this run and has now VANISHED:
+                # fail closed (keep requiring a login) instead of falling
+                # back to the legacy unauthenticated mode (v0.3.4).
+                broken = True
+                log.error(
+                    "dashboard password file vanished at runtime - keeping "
+                    "authentication ENFORCED (fail closed); restore the file "
+                    "from backup or run 'sudo uaeg pass' to rewrite it"
+                )
+            self._ever_configured = ever
             self._mtime_ns = mtime_ns
             self._record = record
             self._broken = broken
             self._last_check = now
 
     def is_configured(self) -> bool:
-        """True when a password is REQUIRED (file present, even if broken)."""
+        """True when a password is REQUIRED.
+
+        True when the file is present (even if broken), and also when it
+        was present earlier in this run and has since been deleted (fail
+        closed - see the class docstring).
+        """
         self._refresh()
         with self._lock:
-            return self._record is not None or self._broken
+            return self._record is not None or self._broken or self._ever_configured
 
     def is_broken(self) -> bool:
         self._refresh()
@@ -308,10 +336,6 @@ class Session:
     generation: str
     created_at: float
     last_seen: float
-
-    @property
-    def expires_at(self) -> float:
-        return self.last_seen  # enforced against idle timeout by the store
 
 
 class SessionStore:

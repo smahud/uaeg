@@ -743,7 +743,7 @@ N_BEFORE="$(backup_count)"
 run "$LOG" bash "$OPERATOR_DIR/upgrade.sh" --repo "$REMOTE_A" \
   --installer "$WORK_A/install-test.sh" "${UPGRADE_ARGS[@]}"
 assert_rc 1 "T-26 rc=1 (publisher asing -> ditolak)"
-assert_in "$LOG" "not signed by a trusted" "T-26 pesan publisher tidak dipercaya"
+assert_in "$LOG" "not signed by" "T-26 pesan publisher tidak dipercaya (ditolak)"
 assert_eq "$(installed_version)" "12.0.0" "T-26 versi tidak berubah"
 # restore the trusted signature for later tests
 sign_manifest "$RELROOT/download/v11.0.0/uaeg-manifest.json" \

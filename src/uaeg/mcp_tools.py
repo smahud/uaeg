@@ -16,8 +16,16 @@ Tool surface exposed to hosted agents over MCP:
     job_list          list recent background jobs
     server_info       identity, usage rules and operational defaults
 
-Every tool call is recorded in the execution audit log with the calling
-key's identity (PRD FR-016 Logs, section 13).
+Every executing or state-changing tool call (shell_exec, shell_open,
+shell_close, job_cancel and failed shell_input attempts) is recorded in
+the execution audit log with the calling key's identity (PRD FR-016,
+section 13).
+
+Key-scoped ownership (v0.3.4): sessions and background jobs are tagged
+with the agent key that created them. A key can only read, drive, close
+or cancel ITS OWN sessions/jobs; shell_sessions and job_list return only
+the caller's entries. The dashboard and the CLI remain operator-level and
+see everything.
 """
 
 from __future__ import annotations
@@ -68,6 +76,10 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
         if not key:
             return None, None
         return key.get("key_id"), key.get("name")
+
+    def _owner(key: dict[str, Any] | None) -> str | None:
+        """The calling agent's key_id, for key-scoped ownership checks."""
+        return key.get("key_id") if key else None
 
     def _audit(
         ctx, tool: str, status: str, meta: dict | None = None,
@@ -157,6 +169,10 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
             if timeout_seconds is not None
             else runtime.config.exec.default_timeout_s
         )
+        # Server-side bound (v0.3.4): a non-positive or huge timeout must
+        # neither kill the command instantly nor pin an HTTP worker open
+        # indefinitely (mirrors the job_wait clamp).
+        timeout_s = min(max(timeout_s, 1.0), 3600.0)
         result = await run_command(
             command,
             cwd=cwd,
@@ -232,17 +248,21 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
 
         Control characters work: send "\\x03" for Ctrl-C, "\\x04" for EOF,
         "\\r" for Enter. Set add_newline=true to append a newline for you.
+        Only the agent key that opened the session may send input to it.
 
         Args:
             session_id: Session identifier from shell_open.
             data: Raw input text to write to the terminal.
             add_newline: Append a trailing newline to the input.
         """
+        key = _key(ctx)
         try:
-            result = runtime.sessions.input(session_id, data, add_newline)
+            result = runtime.sessions.input(
+                session_id, data, add_newline, owner_key_id=_owner(key)
+            )
         except SessionError as exc:
-            _audit(ctx, "shell_input", "error", {"session_id": session_id}, key=_key(ctx))
-            return {"ok": False, "error": str(exc)}
+            _audit(ctx, "shell_input", "error", {"session_id": session_id}, key=key)
+            return {"ok": False, "error": str(exc), "session_id": session_id}
         return result
 
     @mcp.tool()
@@ -257,7 +277,9 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
         Returns output produced after byte-cursor `since_seq` plus the next
         cursor value (`seq`). Poll repeatedly with the returned seq until
         you have everything. `truncated=true` means older output than
-        since_seq was already discarded from the bounded buffer.
+        since_seq was already discarded from the bounded buffer. For a
+        short window after the session's process exits, the final output
+        and its `exit_code` remain readable (`alive=false` in the response).
 
         Args:
             session_id: Session identifier from shell_open.
@@ -269,7 +291,9 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
             # Clamp at the tool boundary (B-8): negative limits previously
             # produced a backwards cursor and re-delivered old output.
             limit_bytes = max(0, min(int(limit_bytes), 8 * 1024 * 1024))
-            return runtime.sessions.output(session_id, since_seq, limit_bytes)
+            return runtime.sessions.output(
+                session_id, since_seq, limit_bytes, owner_key_id=_owner(_key(ctx))
+            )
         except SessionError as exc:
             return {"ok": False, "error": str(exc), "session_id": session_id}
 
@@ -279,11 +303,13 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
 
         Args:
             session_id: Session identifier from shell_open.
-            cols: New terminal width in columns.
-            rows: New terminal height in rows.
+            cols: New terminal width in columns (2..1000).
+            rows: New terminal height in rows (2..1000).
         """
         try:
-            return runtime.sessions.resize(session_id, cols, rows)
+            return runtime.sessions.resize(
+                session_id, cols, rows, owner_key_id=_owner(_key(ctx))
+            )
         except SessionError as exc:
             return {"ok": False, "error": str(exc), "session_id": session_id}
 
@@ -296,7 +322,9 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
         """
         key = _key(ctx)
         try:
-            result = await runtime.sessions.close(session_id)
+            result = await runtime.sessions.close(
+                session_id, owner_key_id=_owner(key)
+            )
             _audit(ctx, "shell_close", "ok", {"session_id": session_id}, key=key)
             return result
         except SessionError as exc:
@@ -305,9 +333,19 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
 
     @mcp.tool()
     async def shell_sessions(ctx: Context | None = None) -> dict:
-        """List live interactive terminal sessions (for reconnection)."""
+        """List live interactive terminal sessions (for reconnection).
+
+        Returns the CALLING KEY's sessions (including any that exited within
+        the last minute, with their exit codes)."""
+        owner = _owner(_key(ctx))
+        sessions = runtime.sessions.list()
+        if owner is not None:
+            sessions = [
+                s for s in sessions
+                if s.get("key_id") is None or s.get("key_id") == owner
+            ]
         return {
-            "sessions": runtime.sessions.list(),
+            "sessions": sessions,
             "note": "reconnect by calling shell_output with a stored session_id",
         }
 
@@ -322,7 +360,7 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
             job_id: Job identifier from shell_exec(background=true).
         """
         try:
-            job = runtime.jobs.status(job_id)
+            job = runtime.jobs.status(job_id, owner_key_id=_owner(_key(ctx)))
         except JobError as exc:
             return {"ok": False, "error": str(exc)}
         if not job:
@@ -346,7 +384,9 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
             limit: Maximum bytes to return per call.
         """
         try:
-            return runtime.jobs.output(job_id, stream, offset, limit)
+            return runtime.jobs.output(
+                job_id, stream, offset, limit, owner_key_id=_owner(_key(ctx))
+            )
         except JobError as exc:
             return {"ok": False, "error": str(exc), "job_id": job_id}
 
@@ -367,7 +407,9 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
                 timeout_seconds = max(0.0, min(float(timeout_seconds), 600.0))
             except (TypeError, ValueError):
                 timeout_seconds = 30.0
-            job = await runtime.jobs.wait(job_id, timeout_seconds)
+            job = await runtime.jobs.wait(
+                job_id, timeout_seconds, owner_key_id=_owner(_key(ctx))
+            )
         except JobError as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, **job}
@@ -381,7 +423,7 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
         """
         key = _key(ctx)
         try:
-            job = await runtime.jobs.cancel(job_id)
+            job = await runtime.jobs.cancel(job_id, owner_key_id=_owner(key))
             _audit(ctx, "job_cancel", "ok", {"job_id": job_id}, key=key)
             return {"ok": True, **job}
         except JobError as exc:
@@ -390,12 +432,20 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
 
     @mcp.tool()
     async def job_list(limit: int = 50, ctx: Context | None = None) -> dict:
-        """List recent background jobs (newest first).
+        """List recent background jobs (newest first; the calling key's own
+        jobs only).
 
         Args:
-            limit: Maximum number of jobs to return.
+            limit: Maximum number of jobs to return (server-side cap: 500;
+                non-positive or huge values are clamped).
         """
-        return {"jobs": runtime.jobs.list(limit=limit)}
+        try:
+            # Clamp at the tool boundary (v0.3.4): a negative limit dumped the
+            # whole jobs table; a huge one begged for memory exhaustion.
+            limit = max(0, min(int(limit), 500))
+        except (TypeError, ValueError):
+            limit = 50
+        return {"jobs": runtime.jobs.list(limit=limit, owner_key_id=_owner(_key(ctx)))}
 
     # ==================================================================
     # server info

@@ -1,0 +1,35 @@
+# UAEG v0.3.4 unit + regression test evidence
+# date: 2026-11-08T11:51:49Z  python: Python 3.12.16  repo: e092279 (dirty, pre-commit)
+
+/home/z/my-project/uaeg/.venv/lib/python3.12/site-packages/pytest_asyncio/plugin.py:300: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the "fixture" caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to "function" scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+============================= test session starts ==============================
+platform linux -- Python 3.12.16, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/z/my-project/uaeg
+configfile: pyproject.toml
+plugins: anyio-4.16.0, asyncio-1.4.1.post1
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 118 items
+
+tests/test_unit_core.py ........                                         [  6%]
+tests/test_unit_executor.py ................                             [ 20%]
+tests/test_unit_containment.py ....                                      [ 23%]
+tests/test_unit_security_redaction.py ..........                         [ 32%]
+tests/test_unit_server_hardening.py ...............                      [ 44%]
+tests/test_dashboard_auth.py ............................                [ 68%]
+tests/test_unit_regression_v033.py ....................                  [ 85%]
+tests/test_unit_regression_v034.py .................                     [100%]
+
+=============================== warnings summary ===============================
+tests/test_unit_server_hardening.py::test_amain_returns_nonzero_when_listener_crashes
+  /home/z/my-project/uaeg/.venv/lib/python3.12/site-packages/pydantic_settings/sources/utils.py:51: IncompleteFieldDefinitionWarning: Field 'lifespan' has an incomplete definition: its annotation contains an unresolved forward reference, so settings sources may fail to correctly resolve its value. Call `model_rebuild()` on the model where the field is defined, once all the referenced types are defined.
+    warnings.warn(  # noqa: B028  (called from many sources at differing depths, so no stacklevel is correct)
+
+tests/test_unit_regression_v033.py::test_whoami_legacy_mode_returns_payload
+  /home/z/my-project/uaeg/.venv/lib/python3.12/site-packages/starlette/testclient.py:45: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 118 passed, 2 warnings in 28.46s =======================

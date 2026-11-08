@@ -261,7 +261,12 @@ class Config:
         return warnings
 
     def mcp_url(self) -> str:
-        return f"https://{self.public_host}:{self.mcp.port}/mcp"
+        # Plain HTTP ONLY behind the explicit development escape hatch; the
+        # advertised URL must match what the listener actually serves.
+        scheme = (
+            "http" if os.environ.get("UAEG_DEV_INSECURE_HTTP") == "1" else "https"
+        )
+        return f"{scheme}://{self.public_host}:{self.mcp.port}/mcp"
 
     def with_updates(self, **changes: Any) -> "Config":
         return replace(self, **changes)
@@ -269,7 +274,20 @@ class Config:
 
 def _sub(data: dict[str, Any], key: str) -> dict[str, Any]:
     value = data.get(key, {})
-    return value if isinstance(value, dict) else {}
+    if value is None:
+        # An explicit null section means "use the defaults" (same as absent).
+        return {}
+    if not isinstance(value, dict):
+        # Fail closed (v0.3.4): a scalar where a section object belongs
+        # (e.g. "tls": "certbot") used to silently revert the WHOLE section
+        # to its defaults - self-signed TLS, default timeouts - with no
+        # error. Reject it loudly instead.
+        raise ConfigError(
+            f"configuration section '{key}' must be a JSON object "
+            f"(got {type(value).__name__}); a scalar here would silently "
+            "revert the whole section to defaults"
+        )
+    return value
 
 
 def _merge_section(section_cls: type, data: dict[str, Any], key: str):

@@ -49,10 +49,14 @@ set -uo pipefail
 # ----------------------------------------------------------------------
 # Bootstrap identity (bumped ONLY for trust-key rotation or an interface
 # break - never for routine releases; see docs/BOOTSTRAP.md).
+# v2: rotated to the uaeg-release-2 signing key at v0.3.4 (the uaeg-release-1
+# private key is no longer available to the publisher). The keyring below
+# still trusts BOTH keys so manifests of historical releases (<= v0.3.3,
+# signed by uaeg-release-1) keep verifying for --version pins/downgrades.
 # ----------------------------------------------------------------------
-BOOTSTRAP_VERSION="1"
+BOOTSTRAP_VERSION="2"
 BOOTSTRAP_INTERFACE="1"        # max updater interface this bootstrap speaks
-BOOTSTRAP_KEY_ID="uaeg-release-1"
+BOOTSTRAP_KEY_IDS="uaeg-release-1,uaeg-release-2"
 
 # ----------------------------------------------------------------------
 # Release channel (env overrides exist for mirrors and the contract test
@@ -68,6 +72,9 @@ RELEASE_DOWNLOAD_BASE="${UAEG_RELEASE_DOWNLOAD_BASE:-https://github.com/smahud/u
 # --- TRUSTED KEYRING BEGIN (tests substitute the key between these markers) ---
 _TRUSTED_KEY_1="-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAGnV8BEK2kZMk8JER3qe+Azc2Qidn2+c1tn4LSsCB5r4=
+-----END PUBLIC KEY-----"
+_TRUSTED_KEY_2="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAS6XMyzmiARYxhkDoBsMZdNE1SXNtyGCNJV6R+Uvznq4=
 -----END PUBLIC KEY-----"
 # ---- TRUSTED KEYRING END ----
 
@@ -164,12 +171,12 @@ BOOTSTRAP_SHA_BEFORE="$(sha256sum "$BOOTSTRAP_FILE" 2>/dev/null | awk '{print $1
 # Bootstrap info mode
 # ----------------------------------------------------------------------
 if [[ "$BOOT_MODE" == "info" ]]; then
-  key_fp="$(printf '%s' "$_TRUSTED_KEY_1" | sha256sum | awk '{print substr($1,1,16)}')"
+  _fp() { printf '%s' "$1" | sha256sum | awk '{print substr($1,1,16)}'; }
   cat <<INFO
 UAEG upgrade bootstrap
   bootstrap version : $BOOTSTRAP_VERSION
   updater interface : v$BOOTSTRAP_INTERFACE (max supported)
-  trusted key       : $BOOTSTRAP_KEY_ID (fingerprint $key_fp)
+  trusted keys      : $BOOTSTRAP_KEY_IDS (fingerprints $(_fp "$_TRUSTED_KEY_1"), $(_fp "$_TRUSTED_KEY_2"))
   release channel   : $RELEASE_API_BASE
   this file         : $BOOTSTRAP_FILE (sha256 ${BOOTSTRAP_SHA_BEFORE:0:16}…)
   contract          : docs/UPGRADE_CONTRACT.md (v3), docs/BOOTSTRAP.md
@@ -187,13 +194,22 @@ trap cleanup EXIT INT TERM
 
 # ----------------------------------------------------------------------
 # Trust: write the trusted public key(s) and verify a manifest signature
+# against ANY of them (a release signed by any trusted key is accepted).
 # ----------------------------------------------------------------------
-KEY_FILE="$WORK/trusted.pub"
-printf '%s\n' "$_TRUSTED_KEY_1" > "$KEY_FILE"
+KEY_DIR="$WORK/trusted"
+mkdir -p "$KEY_DIR"
+printf '%s\n' "$_TRUSTED_KEY_1" > "$KEY_DIR/1.pub"
+printf '%s\n' "$_TRUSTED_KEY_2" > "$KEY_DIR/2.pub"
 
 verify_manifest_signature() {  # $1=manifest $2=signature ; 0 = trusted
-  openssl pkeyutl -verify -pubin -inkey "$KEY_FILE" \
-    -rawin -in "$1" -sigfile "$2" >/dev/null 2>&1
+  local k
+  for k in "$KEY_DIR"/*.pub; do
+    if openssl pkeyutl -verify -pubin -inkey "$k" \
+      -rawin -in "$1" -sigfile "$2" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 # ----------------------------------------------------------------------
@@ -232,12 +248,12 @@ fetch_verified_updater() {  # sets UPDATER_PATH + MANIFEST_PATH; dies on any fai
   download "$sig_url" "$WORK/manifest.json.sig" \
     || die "could not download the manifest signature for $tag (incomplete release; nothing was changed)"
 
-  say "verifying manifest signature (publisher: $BOOTSTRAP_KEY_ID)"
+  say "verifying manifest signature (trusted publishers: $BOOTSTRAP_KEY_IDS)"
   if ! verify_manifest_signature "$WORK/manifest.json" "$WORK/manifest.json.sig"; then
     die "RELEASE MANIFEST SIGNATURE INVALID for $tag.
-The manifest is not signed by a trusted UAEG release key. Possible causes:
-release not published by the project, artifact tampering, or key rotation
-(see docs/BOOTSTRAP.md - Recovery). NOTHING was executed or changed."
+The manifest is not signed by ANY trusted UAEG release key ($BOOTSTRAP_KEY_IDS).
+Possible causes: release not published by the project, artifact tampering, or a
+key rotation (see docs/BOOTSTRAP.md - Recovery). NOTHING was executed or changed."
   fi
 
   # Structural validation + updater coordinates from the signed manifest.

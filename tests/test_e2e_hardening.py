@@ -99,13 +99,28 @@ async def test_revocation_terminates_key_processes(server, env):
 
     await asyncio.sleep(0.5)
 
-    # key A's session is closed; its job is cancelled - verified through key
-    # B's client (key A can no longer authenticate at all; job and session
-    # inspection is not key-scoped in the trusted-operator MVP model).
+    # v0.3.4 key scoping: key B can no longer inspect key A's resources -
+    # cross-key access is rejected with a clear error (it used to be
+    # allowed in the trusted-operator MVP model and enabled cross-key PTY
+    # input injection).
     out = await cb.call_tool("shell_output", {"session_id": sid_a, "since_seq": 0})
-    assert out.get("ok") is False  # unknown session after close
+    assert out.get("ok") is False
+    assert "different agent key" in out.get("error", "")
     st = await cb.call_tool("job_status", {"job_id": job_id_a})
-    assert st["status"] == "cancelled"
+    assert st.get("ok") is False
+    assert "different agent key" in st.get("error", "")
+
+    # the OPERATOR (dashboard, passwordless legacy mode on the private test
+    # bind) still sees everything: A's session closed and its job cancelled
+    base = f"http://127.0.0.1:{server.dashboard_port}"
+    async with httpx.AsyncClient(timeout=30) as dash:
+        r = await dash.get(f"{base}/api/jobs")
+        jobs = {j["job_id"]: j for j in r.json()["jobs"]}
+        assert jobs[job_id_a]["status"] == "cancelled"
+        assert jobs[job_b["job_id"]]["status"] == "running"
+        r = await dash.get(f"{base}/api/sessions")
+        hist = {s["session_id"]: s for s in r.json()["history"]}
+        assert hist[sid_a]["status"] == "closed"
 
     # key A can no longer authenticate at all
     async with httpx.AsyncClient(
@@ -118,9 +133,10 @@ async def test_revocation_terminates_key_processes(server, env):
         )
         assert r.status_code == 401
 
-    # key B is unaffected: session alive, job running
+    # key B is unaffected: session alive, job running (its own resources)
     sessions = await cb.call_tool("shell_sessions", {})
     assert any(s["session_id"] == sid_b for s in sessions["sessions"])
+    assert all(s["session_id"] != sid_a for s in sessions["sessions"])
     st_b = await cb.call_tool("job_status", {"job_id": job_b["job_id"]})
     assert st_b["status"] == "running"
 
@@ -159,9 +175,18 @@ async def test_revocation_keep_processes_opt_out(server, env):
             "terminated_sessions": 0, "terminated_jobs": 0,
         }
 
+    # v0.3.4 key scoping: key B cannot see key A's job anymore; verify via
+    # the operator dashboard instead, then clean up through it as well.
     st = await cb.call_tool("job_status", {"job_id": job["job_id"]})
-    assert st["status"] == "running"  # still running by explicit choice
-    await cb.call_tool("job_cancel", {"job_id": job["job_id"]})
+    assert st.get("ok") is False
+    assert "different agent key" in st.get("error", "")
+    base = f"http://127.0.0.1:{server.dashboard_port}"
+    async with httpx.AsyncClient(timeout=30) as dash:
+        r = await dash.get(f"{base}/api/jobs")
+        jobs = {j["job_id"]: j for j in r.json()["jobs"]}
+        assert jobs[job["job_id"]]["status"] == "running"  # still running by choice
+        r = await dash.post(f"{base}/api/jobs/{job['job_id']}/cancel")
+        assert r.status_code == 200
     await c.aclose()
     await cb.aclose()
 
@@ -395,10 +420,14 @@ async def test_cli_jobs_cancel_and_sessions_kill(server, env):
     res = _cli("sessions", "kill", sid)
     assert res.returncode == 0, res.stdout + res.stderr
     await asyncio.sleep(0.6)
+    # v0.3.4: the killed session stays listed (alive=false) and readable
+    # during the grace window - with its exit code - instead of vanishing.
     sessions = await c.call_tool("shell_sessions", {})
-    assert not any(s["session_id"] == sid for s in sessions["sessions"])
+    entry = next((s for s in sessions["sessions"] if s["session_id"] == sid), None)
+    assert entry is not None and entry["alive"] is False
     out = await c.call_tool("shell_output", {"session_id": sid, "since_seq": 0})
-    assert out.get("ok") is False
+    assert out["alive"] is False
+    assert isinstance(out["exit_code"], int)
     await c.aclose()
 
 

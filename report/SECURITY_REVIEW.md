@@ -1,5 +1,67 @@
 # Security Review — v0.3.3
 
+---
+
+# Security Review — v0.3.4 round 2
+
+**Scope:** full re-audit of the authentication/authorization surface,
+execution subsystem and release chain at v0.3.3 → fixes at v0.3.4.
+
+## R2.1 Finding: dashboard authentication could be disabled at runtime (P1, FIXED)
+
+`rm /var/lib/uaeg/dashboard-pass.json` while the service ran silently
+reverted the dashboard to the legacy unauthenticated mode — including
+public `0.0.0.0` binds — because the per-request `is_configured()` check
+mapped a missing file to "never configured" (fail-open) while a corrupt file
+correctly mapped to "broken" (fail-closed). Reachable by ANY authenticated
+agent (agents are root by design), converting the operator's
+password-protected dashboard into an unauthenticated key-issuance endpoint.
+**Fix:** sticky once-configured state; deletion is now fail-closed (auth
+stays enforced, logins fail with repair guidance, sessions revoked).
+Regression-tested including the recovery path.
+
+## R2.2 Finding: cross-key resource access / PTY input injection (P2, FIXED)
+
+Any valid key could read/resize/close/kill or INJECT RAW INPUT into another
+key's interactive sessions, and enumerate/cancel its jobs. Promoted from a
+documented MVP limitation to an enforced invariant: ownership checks on
+every session/job tool, owner-filtered listings; dashboard/CLI remain
+operator-level. Single-key deployments are behaviorally unaffected.
+
+## R2.3 Finding: chunked-body cap bypass (P3, FIXED)
+
+The 1 MiB body cap was enforced only via the Content-Length header; chunked
+bodies were read uncapped into memory and persisted fields. All JSON
+handlers now use the capped streaming reader (413 beyond the cap).
+
+## R2.4 Verified-clean this round
+
+- MCP bearer chain (401/WWW-Authenticate, revoked keys, malformed headers),
+  constant-time compares where they matter.
+- Dashboard routing: every route (including 404s) behind the auth
+  middleware; no path traversal; CSRF + Origin checks on unsafe methods;
+  per-IP lockout; session flags; XSS escaping on every dynamic
+  `innerHTML` path; one-time secrets returned exactly once; no verifier
+  material in any API response.
+- Redaction choke points (audit log, job/session rows) unchanged and
+  re-tested.
+- TLS fail-closed paths (missing/unloadable cert → clean exit 2); listener
+  supervision kills the service on either listener's death.
+- Release chain: manifest Ed25519 signature + sha256/size enforcement
+  before ANY downloaded script executes; rotation is fail-closed and
+  operator-visible.
+
+## R2.5 Residual risks (accepted, documented — none release-blocking)
+
+| Risk | Level | Notes |
+|---|---|---|
+| Agents are root by design | Accepted (PRD FR-010/FR-013) | Keys/revocation/audit are the mitigations; no sandbox is claimed |
+| Job stdout/stderr files uncapped on disk | Accepted (LIMITATIONS.md #13) | Sync exec capped; jobs visible to the operator |
+| MCP sessions never idle-reaped (mcp==1.27.0 SDK default) | Accepted (SDK-level) | Mitigate with periodic service restarts; noted in LIMITATIONS |
+| Login throttle is per-IP; behind a reverse proxy all clients share one IP | Accepted (documented) | Direct-bind deployment is the supported shape |
+| Redaction is best-effort (short purely-alpha secrets can pass through) | Accepted (documented trade-off) | SECURITY.md describes the policy |
+
+
 **Date:** 2026-11-08 · **Scope:** full v0.3.2 audit + v0.3.3 patch review ·
 **Verdict:** no unresolved release-blocking security defects; two
 security-contract degradations (B-2, B-3) and one P1 reliability defect with

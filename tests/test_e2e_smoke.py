@@ -307,8 +307,12 @@ async def test_pty_session_flow(server, env):
         closed = await client.call_tool("shell_close", {"session_id": sid})
         assert closed["ok"] is True
 
+        # v0.3.4: the closed session stays readable for a grace window -
+        # final output + exit code remain available (alive=false) instead of
+        # the session vanishing the instant it is closed.
         out = await client.call_tool("shell_output", {"session_id": sid, "since_seq": 0})
-        assert out.get("ok") is False  # unknown session after close
+        assert out["alive"] is False
+        assert isinstance(out["exit_code"], int)
     finally:
         await client.aclose()
 

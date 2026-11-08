@@ -81,13 +81,17 @@ def test_terminate_key_processes_kills_sessions_and_jobs(managers):
         assert result["terminated_jobs"] == 1
         await asyncio.sleep(0.5)
 
-        # key A's session is closed and gone from the live registry
-        assert info_a["session_id"] not in sessions.sessions
+        # key A's session is terminated: closed in the registry (its tail
+        # stays readable during the grace window - v0.3.4) and closed in the
+        # database; the shell process itself is dead.
+        sess_a = sessions.get(info_a["session_id"])
+        assert sess_a.closed is True
         assert store.get_session(info_a["session_id"])["status"] == "closed"
         # key A's job is cancelled
         assert store.get_job(job_a["job_id"])["status"] == "cancelled"
-        # key B is untouched
-        assert info_b["session_id"] in sessions.sessions
+        # key B is untouched and still LIVE (not merely readable)
+        sess_b = sessions.get(info_b["session_id"])
+        assert sess_b.closed is False
         assert store.get_job(job_b["job_id"])["status"] == "running"
 
         # repeat invocation is a no-op (idempotent containment)
@@ -130,7 +134,11 @@ def test_kill_session_standalone(managers):
         final = await asyncio.to_thread(kill_session_standalone, store, sid)
         assert final["status"] == "closed"
         await asyncio.sleep(0.6)
-        assert sid not in sessions.sessions  # server-side reaper noticed
+        # v0.3.4: the terminated session stays readable during the grace
+        # window (closed, exit code available); it no longer VANISHES.
+        out = sessions.output(sid, since_seq=0)
+        assert out["alive"] is False
+        assert sessions.get(sid).closed is True
 
     def b_prompt_seen(data: str) -> bool:
         return len(data) > 0  # any prompt output means the shell is alive

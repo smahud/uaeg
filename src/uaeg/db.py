@@ -201,14 +201,6 @@ class Store:
         return dict(row) if row else None
 
     @_locked
-    def find_key_by_verifier(self, verifier_hex: str) -> dict[str, Any] | None:
-        """Return the key record for a verifier regardless of status."""
-        row = self._db.execute(
-            "SELECT * FROM keys WHERE verifier=?", (verifier_hex,)
-        ).fetchone()
-        return dict(row) if row else None
-
-    @_locked
     def list_keys(self) -> list[dict[str, Any]]:
         rows = self._db.execute(
             "SELECT key_id, name, prefix, status, permission_mode, created_at,"

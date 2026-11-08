@@ -136,8 +136,19 @@ Rotation is an **exceptional, operator-visible event**, never silent:
    This is documented in the bootstrap's own failure messages and in
    TROUBLESHOOTING.md; it is NOT part of normal upgrade flow.
 
-Current key: `uaeg-release-1` (Ed25519). Fingerprint (sha256 of the PEM, first
-16 hex): see `bash upgrade.sh --bootstrap-info`.
+Current keys: `uaeg-release-1` (historical: releases <= v0.3.3) and
+`uaeg-release-2` (v0.3.4+). Fingerprints (sha256 of the PEM, first 16 hex):
+see `bash upgrade.sh --bootstrap-info`.
+
+**Rotation 1 -> 2 at v0.3.4** (bootstrap keyring v2): the publisher's
+`uaeg-release-1` private key is no longer available, so v0.3.4 and later
+manifests are signed with `uaeg-release-2`. The v0.3.4 bootstrap trusts both
+keys (historical releases keep verifying for pins/downgrades). Operators
+holding a bootstrap downloaded during v0.3.3 will see the explicit
+"signature invalid / key rotation" refusal when targeting v0.3.4+ and must
+perform the ONE-TIME refresh above. Operators who download the bootstrap
+fresh (the normal path for the MicroTix recovery, whose v0.3.1-era upgrade
+never completed) get the v0.3.4 keyring directly and need no refresh.
 
 ## Migration from v0.3.2 installs
 

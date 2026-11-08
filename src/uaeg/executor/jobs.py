@@ -21,6 +21,7 @@ import asyncio
 import logging
 import os
 import signal
+import subprocess
 import sys
 import time
 import uuid
@@ -105,6 +106,12 @@ class JobRuntime:
     job_id: str
     shim_pid: int
     task: asyncio.Task | None = None
+    # The Popen handle of the shim (None for jobs re-attached after a
+    # restart - those shims are children of the PREVIOUS server process
+    # and are reaped by init, not by us). Keeping the handle lets the
+    # watcher reap the shim deterministically instead of leaving a zombie
+    # until the next unrelated subprocess call (v0.3.4).
+    proc: subprocess.Popen | None = None
 
 
 class JobManager:
@@ -133,8 +140,6 @@ class JobManager:
             os.chmod(job_dir, 0o700)
         except OSError:
             pass
-
-        import subprocess
 
         full_env = os.environ.copy()
         if env:
@@ -182,15 +187,36 @@ class JobManager:
             out_f.close()
             err_f.close()
 
-        self.store.insert_job(
-            job_id=job_id,
-            command=command,
-            cwd=cwd,
-            pid=proc.pid,
-            key_id=key_id,
-            key_name=key_name,
-        )
-        runtime = JobRuntime(job_id=job_id, shim_pid=proc.pid)
+        try:
+            self.store.insert_job(
+                job_id=job_id,
+                command=command,
+                cwd=cwd,
+                pid=proc.pid,
+                key_id=key_id,
+                key_name=key_name,
+            )
+        except Exception as exc:
+            # v0.3.4: NEVER leave an unmanaged live process behind. If the
+            # job row cannot be recorded (disk full, db locked), kill the
+            # shim we just spawned and surface a clean JobError (the MCP
+            # tool layer maps JobError to an agent-visible error response;
+            # previously a raw sqlite3 exception escaped and the process ran
+            # on with no job_id, no watcher and no cancel path).
+            log.error(
+                "job %s could not be recorded; killing shim pid %d: %s",
+                job_id, proc.pid, exc,
+            )
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001 - best-effort cleanup
+                pass
+            raise JobError(f"job could not be recorded (database error): {exc}") from exc
+        runtime = JobRuntime(job_id=job_id, shim_pid=proc.pid, proc=proc)
         self._runtime[job_id] = runtime
         runtime.task = asyncio.get_running_loop().create_task(
             self._watch(runtime), name=f"uaeg-job-{job_id}"
@@ -204,12 +230,42 @@ class JobManager:
     # ------------------------------------------------------------------
     # status / output
     # ------------------------------------------------------------------
-    def status(self, job_id: str) -> dict[str, Any] | None:
+    def _gate(
+        self, job_id: str, owner_key_id: str | None = None
+    ) -> dict[str, Any]:
+        """Fetch a job row, enforcing key-scoped ownership when requested.
+
+        ``owner_key_id`` is given by the MCP tool layer (the calling agent
+        key): a job started by key A is invisible to key B. The dashboard,
+        the CLI and revocation containment pass None (operator level) and
+        see everything. Rows with a NULL key_id are operator-level
+        artifacts and stay visible to everyone.
+        """
         job = self.store.get_job(job_id)
+        if not job:
+            raise JobError(f"unknown job_id: {job_id}")
+        if (
+            owner_key_id is not None
+            and job.get("key_id") is not None
+            and job.get("key_id") != owner_key_id
+        ):
+            raise JobError(f"job {job_id} belongs to a different agent key")
         return job
 
-    def list(self, limit: int = 50) -> list[dict[str, Any]]:
-        return self.store.list_jobs(limit=limit)
+    def status(
+        self, job_id: str, owner_key_id: str | None = None
+    ) -> dict[str, Any] | None:
+        return self._gate(job_id, owner_key_id)
+
+    def list(
+        self, limit: int = 50, owner_key_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        jobs = self.store.list_jobs(limit=limit)
+        if owner_key_id is not None:
+            jobs = [
+                j for j in jobs if j.get("key_id") is None or j.get("key_id") == owner_key_id
+            ]
+        return jobs
 
     def output(
         self,
@@ -217,10 +273,9 @@ class JobManager:
         stream: str = "stdout",
         offset: int = 0,
         limit: int = 65536,
+        owner_key_id: str | None = None,
     ) -> dict[str, Any]:
-        job = self.store.get_job(job_id)
-        if not job:
-            raise JobError(f"unknown job_id: {job_id}")
+        job = self._gate(job_id, owner_key_id)
         if stream not in ("stdout", "stderr"):
             raise JobError("stream must be 'stdout' or 'stderr'")
         path = paths.jobs_dir() / job_id / stream
@@ -250,10 +305,13 @@ class JobManager:
             "exit_code": job.get("exit_code"),
         }
 
-    async def wait(self, job_id: str, timeout_s: float | None = 30.0) -> dict[str, Any]:
-        job = self.store.get_job(job_id)
-        if not job:
-            raise JobError(f"unknown job_id: {job_id}")
+    async def wait(
+        self,
+        job_id: str,
+        timeout_s: float | None = 30.0,
+        owner_key_id: str | None = None,
+    ) -> dict[str, Any]:
+        job = self._gate(job_id, owner_key_id)
         deadline = None if timeout_s is None else time.monotonic() + timeout_s
         while True:
             job = self.store.get_job(job_id)
@@ -266,10 +324,10 @@ class JobManager:
     # ------------------------------------------------------------------
     # cancel
     # ------------------------------------------------------------------
-    async def cancel(self, job_id: str) -> dict[str, Any]:
-        job = self.store.get_job(job_id)
-        if not job:
-            raise JobError(f"unknown job_id: {job_id}")
+    async def cancel(
+        self, job_id: str, owner_key_id: str | None = None
+    ) -> dict[str, Any]:
+        job = self._gate(job_id, owner_key_id)
         if job["status"] in FINAL_STATES:
             return job
 
@@ -302,10 +360,13 @@ class JobManager:
             status = "completed" if exit_code == 0 else "failed"
             self.store.update_job(job_id, status, exit_code=exit_code, finished=True)
 
-        runtime = self._runtime.get(job_id)
+        runtime = self._runtime.pop(job_id, None)
         if runtime and runtime.task:
             runtime.task.cancel()
-            self._runtime.pop(job_id, None)
+        if runtime is not None:
+            # Deterministic shim reap (v0.3.4): a killed shim must not linger
+            # as a zombie until the next unrelated subprocess call.
+            await self._reap_shim(runtime)
         log.info("job %s cancelled", job_id)
         return self.store.get_job(job_id) or job
 
@@ -332,6 +393,7 @@ class JobManager:
                 await asyncio.sleep(self.poll_interval)
                 try:
                     if self._check_once(runtime.job_id, runtime.shim_pid):
+                        await self._reap_shim(runtime)
                         return
                 except Exception:  # noqa: BLE001 - a transient DB error must
                     # not kill the watcher and leave the job 'running' forever
@@ -341,6 +403,22 @@ class JobManager:
                         runtime.job_id,
                     )
         except asyncio.CancelledError:
+            pass
+
+    async def _reap_shim(self, runtime: JobRuntime) -> None:
+        """Reap the shim process of a finished/killed job (v0.3.4).
+
+        The dropped Popen reference used to leave the dead shim in zombie
+        state until some LATER subprocess call happened to reap it. Bounded
+        wait: the shim has either written its exit file (it is exiting) or
+        was just signalled by cancel().
+        """
+        proc = runtime.proc
+        if proc is None:
+            return
+        try:
+            await asyncio.to_thread(proc.wait, 10)
+        except Exception:  # noqa: BLE001 - reaping is best-effort
             pass
 
     def _check_once(self, job_id: str, shim_pid: int | None) -> bool:
