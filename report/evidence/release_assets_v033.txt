@@ -1,0 +1,33 @@
+=== Independent verification of published UAEG v0.3.3 release assets — 2026-11-08T03:23:19Z ===
+Method: plain downloads from the documented public URLs (no auth), checksums, Ed25519
+signature verification against the committed public key, manifest consistency.
+
+--- downloads ---
+OK  https://github.com/smahud/uaeg/releases/latest/download/install.sh (24490 bytes)
+OK  https://github.com/smahud/uaeg/releases/latest/download/install.sh.sha256 (77 bytes)
+OK  https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh (17686 bytes)
+OK  https://github.com/smahud/uaeg/releases/latest/download/upgrade.sh.sha256 (77 bytes)
+OK  https://github.com/smahud/uaeg/releases/latest/download/uaeg-updater-0.3.3.sh (52268 bytes)
+OK  https://github.com/smahud/uaeg/releases/latest/download/uaeg-updater-0.3.3.sh.sha256 (88 bytes)
+OK  https://github.com/smahud/uaeg/releases/latest/download/uaeg-manifest.json (548 bytes)
+OK  https://github.com/smahud/uaeg/releases/latest/download/uaeg-manifest.json.sig (64 bytes)
+
+--- sha256sum -c ---
+install.sh: OK
+upgrade.sh: OK
+uaeg-updater-0.3.3.sh: OK
+
+--- Ed25519 manifest signature (key: uaeg-release-1) ---
+Signature Verified Successfully
+
+--- manifest <-> updater consistency ---
+updater sha256+size match the signed manifest; version 0.3.3; interface 1
+
+--- bootstrap introspection (published asset) ---
+UAEG upgrade bootstrap
+  bootstrap version : 1
+  updater interface : v1 (max supported)
+  trusted key       : uaeg-release-1 (fingerprint d6ced90e372b478e)
+  release channel   : https://api.github.com/repos/smahud/uaeg
+  this file         : /tmp/release-verify/upgrade-verify.sh (sha256 3b754eb37a9483b8…)
+  contract          : docs/UPGRADE_CONTRACT.md (v3), docs/BOOTSTRAP.md
