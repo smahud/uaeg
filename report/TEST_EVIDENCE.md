@@ -41,7 +41,10 @@ konsisten).
 
 ## 3. Verifikasi pasca-publikasi (URL publik)
 
-Ditambahkan setelah rilis v0.3.5 dipublikasikan — lihat bagian v0.3.5 pada
+**Selesai: 36 PASS / 0 FAIL** — `report/evidence/published_asset_e2e_v035.txt`
+(termasuk INCIDENT CHECK live: bootstrap terpublikasi + jawaban `y` di
+terminal dengan stdin terputus -> rc=0, prompt tampil, tanpa false
+"cancelled", kunci identik). Rincian: bagian v0.3.5 pada
 RELEASE_VERIFICATION.md.
 
 ---

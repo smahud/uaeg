@@ -1,3 +1,44 @@
+# Release Verification — v0.3.5
+
+**Date:** 2026-11-08 · Tag `v0.3.5` (commit `e8d81f4`) · published by the
+Release workflow (run 42492912159, success) after CI on the same commit was
+fully green: Test matrix 3.11/3.12/3.13 + Install script smoke +
+Safe-upgrade contract suite — all `success` (run 42492568195).
+
+**Independent post-publication verification: 36 PASS / 0 FAIL, strictly from
+the public URLs** (`report/evidence/published_asset_e2e_v035.txt`,
+`scripts/verify_published_v035.sh`):
+
+1. `releases/latest` -> `v0.3.5`; all 8 documented assets present.
+2. `upgrade.sh.sha256` sidecar verifies; **published bootstrap is
+   BYTE-STABLE vs the v0.3.4 asset** — operators keep the file they already
+   downloaded (download-once promise, BOOTSTRAP.md).
+3. Manifest Ed25519 signature verifies with the tagged tree's
+   `uaeg-release-2` public key, NOT with the old key; manifest asset hashes
+   match the downloaded bytes; manifest version 0.3.5; interface 1.
+4. Published bootstrap reports keyring v2 (both release keys).
+5. Fresh install via the published one-line installer (standalone mode,
+   fetches the v0.3.5 tarball from GitHub): rc=0, version 0.3.5, healthz OK
+   over TLS, healthz reports 0.3.5.
+6. **INCIDENT CHECK (2026-11-08, live against the published bytes):**
+   populated v0.3.3 installation (2 agent keys, operator config change),
+   published bootstrap executed WITHOUT `--yes`, stdin DETACHED
+   (`< /dev/null`), the operator answers `y` on a REAL pty — the exact
+   transcript v0.3.4 refused. Result: **rc=0**, the prompt IS displayed,
+   no false "cancelled by the operator", v0.3.3 -> v0.3.5, agent keys
+   identical (zero data loss), operator config preserved,
+   `UPGRADE SUCCESSFUL`.
+7. `--yes` re-run (re-install/repair) rc=0; keys identical.
+8. Fault injection (broken installer): automatic rollback (exit 2),
+   rollback verified over /healthz, keys intact, app back at 0.3.5.
+9. Operator directory file set untouched; the operator's bootstrap file
+   byte-identical after upgrade + re-run + rollback.
+10. Key rotation: a v0.3.3-era bootstrap (keyring v1) REFUSES v0.3.5
+    fail-closed (rc=1, SIGNATURE INVALID, "nothing was executed or
+    changed"), installation untouched.
+
+---
+
 # Release Verification — v0.3.3
 
 ---
