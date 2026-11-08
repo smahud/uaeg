@@ -1,3 +1,90 @@
+# Root Cause Analysis — Insiden 2: Konfirmasi Upgrade v0.3.4 (2026-11-08)
+
+**Operator transcript (VPS MicroTix, root, /opt/uaeg v0.3.3 -> v0.3.4):**
+
+```
+UPGRADE PLAN
+  installation   : /opt/uaeg (v0.3.3)
+  target         : v0.3.4 (v0.3.4, commit 4bda64a)
+  data           : /var/lib/uaeg (1 agent keys)
+  configuration  : /etc/uaeg/config.json (preserved as-is - not modified)
+  backup         : /var/backups/uaeg/upgrade-20261108-203855 (consistent DB + config + app)
+  service        : controlled restart of uaeg (downtime ~15-60 s)
+
+Continue with the upgrade to v0.3.4? [y/N] y
+ERROR: cancelled by the operator
+```
+
+Operator menjawab `y`; upgrade ditolak dengan alasan yang salah.
+
+## Root cause
+
+`updater.sh` (v0.3.4) membaca jawaban konfirmasi y/N dari **stdin skrip**:
+
+```bash
+read -r -p "Continue with the upgrade to v$TARGET_VERSION? [y/N] " reply
+[[ "$reply" =~ ^[Yy]$ ]] || { rm -f "$pre"; die "cancelled by the operator"; }
+```
+
+Kontrak yang benar: jawaban harus dibaca dari **keyboard operator**. stdin
+bukan keyboard pada banyak bentuk eksekusi nyata:
+
+| Bentuk eksekusi | Apa yang dibaca `read` | Akibat di v0.3.4 |
+|---|---|---|
+| `bash upgrade.sh` interaktif (stdin = tty) | keyboard operator | bekerja (satu-satunya bentuk yang benar) |
+| stdin terputus (`< /dev/null`, sudo/CI) | EOF seketika | **mati diam-diam**: `set -e` membunuh skrip pada `read` yang gagal — rc=1 TANPA pesan error |
+| skrip lewat stdin (`curl ... \| bash`) | baris skrip berikutnya | **false cancellation** — `reply` berupa teks skrip, regex gagal, salah lapor "cancelled by the operator"; prompt tidak tampil; dan `BASH_SOURCE[0]` unbound (crash `set -u`) di line 59 sebelum prompt |
+| pipe otomasi (`printf 'y\n' \| bash ...`) | jawaban terpipah | bekerja — inilah mengapa test --yes/terpipah + CI tidak pernah menangkapnya |
+
+Dua cacat pelaporan sekaligus (keduanya melanggar semangat U-2/U-10 yang
+dipelajari dari insiden v0.3.1 "jangan salah melaporkan penyebab"):
+1. Penolakan dikaitkan ke operator padahal penyebabnya input yang tidak
+   terbaca ("cancelled by the operator" setelah operator menjawab y).
+2. Kegagalan baca input tidak dilaporkan sama sekali (silent death).
+
+**Test gap:** seluruh suite kontrak memakai `--yes` atau stdin terpipah;
+jalur prompt interaktif tidak punya satu pun assertion otomatis — bug ini
+lolos ke rilis v0.3.4 melalui celah itu.
+
+## Reproduksi (bukti fail-first)
+
+`report/evidence/incident_repro_confirm_v034.txt` — updater v0.3.4 PUBLISHED
+bytes (sha256 `5b719117...` == aset rilis v0.3.4) vs worktree v0.3.5,
+terhadap instalasi terisolasi (v0.3.3 -> v0.3.4, 1 agent key — persis state
+operator), terminal operator disimulasikan dengan pty sungguhan (`script(1))`:
+
+- **pre-A** (jawab `y` di terminal, stdin terputus): rc=1, upgrade ditolak —
+  insiden terreproduksi dengan byte yang persis dipublikasikan.
+- **pre-B** (updater via stdin ala `curl|bash`): crash `BASH_SOURCE[0]:
+  unbound variable`.
+- **post-A/post-B** (v0.3.5): prompt TAMPIL, jawaban `y` terbaca dari
+  `/dev/tty`, upgrade selesai — kunci agent identik, `UPGRADE SUCCESSFUL`.
+- **post-D** (jawab `n`): penolakan akurat "cancelled by the operator"
+  (perilaku benar yang dipertahankan).
+- **post-F** (tanpa terminal, tanpa jawaban): pesan akurat "no confirmation
+  was received ... pass --yes" (dulu: mati diam-diam).
+
+## Fix (v0.3.5)
+
+`confirm_ask()` di `updater.sh` dan `install.sh` (dokumentasi kontrak:
+UPGRADE_CONTRACT.md **U-15**):
+1. stdin adalah terminal -> baca stdin (run interaktif normal).
+2. ada terminal pengendali -> baca `/dev/tty` (curl|bash, stdin terputus,
+   sudo); prompt tetap tampil (dibuktikan T-32; suppression bug tertangani
+   dengan probe subshell agar `2>/dev/null` tidak menelan prompt).
+3. tidak ada terminal -> terima satu baris terpipah (otomasi) atau laporkan
+   kegagalan dengan jujur.
+Jawaban `y`/`yes` (huruf besar/kecil, CR/spasi di-trim) diterima; baris
+kosong = tidak (default `[y/N]`). Dua situs konfirmasi updater (upgrade +
+rollback) dan satu situs installer (OS tidak didukung) diganti. `BASH_SOURCE`
+diberi fallback `:-bash` sehingga eksekusi via stdin tidak crash.
+
+**Regresi permanen:** T-32..T-38 (tests/test_upgrade_contract.sh) — pty
+sungguhan, keenam bentuk eksekusi, assertion pada rc + versi + kunci +
+pesan + TAMPILNYA prompt + TIDAK adanya false "cancelled".
+
+---
+
 # Root Cause Analysis — Insiden Upgrade v0.3.1 (VPS MicroTix)
 
 ---

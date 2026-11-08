@@ -1,3 +1,68 @@
+# Patch Changelog — v0.3.4 → v0.3.5
+
+**Date:** 2026-11-08 · Fokus: perbaikan end-to-end Insiden 2 (konfirmasi
+upgrade salah menolak jawaban operator `y`). Semua perubahan tercakup oleh
+regresi permanen T-32..T-38 (tests/test_upgrade_contract.sh) dan/atau suite
+penuh (191 PASS / 0 FAIL), kecuali ditandai lain.
+
+## A. Interaksi operator (root cause Insiden 2)
+
+### updater.sh
+- **Konfirmasi y/N kini dibaca dari keyboard operator (`confirm_ask()`),**
+  bukan dari stdin skrip. Urutan resolusi: stdin-jika-tty -> `/dev/tty`
+  (bentuk `curl|bash`, stdin terputus `< /dev/null`, sudo/CI) -> satu baris
+  terpipah (otomasi `printf 'y\n' | ...`). Dua situs diganti: konfirmasi
+  upgrade ("Continue with the upgrade to vX.Y.Z?") dan konfirmasi rollback
+  ("Continue with the rollback?").
+- **Pelaporan penolakan jujur:** jawaban `n`/baris kosong -> "cancelled by
+  the operator" / "aborted" (dipertahankan); TIDAK ADA jawaban (EOF/tanpa
+  terminal) -> pesan eksplisit "no confirmation was received ... pass --yes
+  for an unattended upgrade. Nothing was changed." — menggantikan (a) salah
+  lapor "cancelled by the operator" dan (b) kematian diam-diam `set -e`
+  pada `read` EOF tanpa pesan apa pun.
+- **Jawaban diperluas:** `y`/`yes` huruf besar/kecil, spasi/CR di-trim
+  (CRLF-safe). Baris kosong tetap = tidak (default `[y/N]`).
+- **`BASH_SOURCE` fallback (`:-bash`)** pada `UPDATER_SELF` dan `SCRIPT_DIR`:
+  updater yang dieksekusi via stdin (`cat updater.sh | bash -s -- ...`)
+  tidak lagi crash `BASH_SOURCE[0]: unbound variable` di bawah `set -u`.
+
+### install.sh
+- **`confirm_ask()` yang sama** untuk prompt "Continue anyway?" (OS tidak
+  didukung) — kelas bug identik pada jalur fresh-install standalone.
+
+## B. Kontrak & dokumentasi
+
+- **docs/UPGRADE_CONTRACT.md:** klausul baru **U-15** (konfirmasi interaktif
+  wajib dibaca dari keyboard operator; pelaporan penolakan wajib akurat) +
+  catatan perubahan kontrak v3.1 (klarifikasi semantik; `contract_version`
+  RECORD tetap 3 — tanpa perubahan antarmuka).
+- README.md: current release -> v0.3.5.
+
+## C. Test permanen (anti-recurrence)
+
+- **tests/test_upgrade_contract.sh T-32..T-38** (7 grup, ~40 assertion):
+  T-32 insiden persis (y di terminal + stdin terputus -> upgrade HARUS
+  berjalan, prompt HARUS tampil, tanpa false "cancelled"); T-33 bentuk
+  curl|bash (tanpa crash); T-34 jawab n (penolakan akurat); T-35 tanpa
+  terminal + tanpa jawaban (pesan akurat + arahan --yes); T-36 otomasi
+  terpipah tetap diterima; T-37 konfirmasi rollback (n -> aborted; y via
+  terminal -> rollback berjalan); T-38 probe helper byte-exact dari kedua
+  skrip.
+- **assert_in/assert_not_in kini memakai separator `--`** (grep) — pola
+  assertion yang diawali `--` (mis. `--yes`) tidak lagi tertelan sebagai
+  opsi grep.
+
+## D. Tidak berubah (dijaga)
+
+- `upgrade.sh` (bootstrap operator) **byte-stable** — sha256 identik dengan
+  aset v0.3.4 (prinsip "download once" BOOTSTRAP.md tetap terpenuhi).
+- Semua flag, exit code (0/1/2/3/5), format `RECORD.json`, jalur backup/
+  rollback/verifikasi zero-data-loss: tidak diubah.
+- Kunci agent, verifikator, dashboard password, DB: tidak tersentuh
+  perubahan ini (hanya interaksi prompt).
+
+---
+
 # Patch Changelog — v0.3.2 → v0.3.3
 
 ---

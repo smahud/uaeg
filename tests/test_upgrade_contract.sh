@@ -34,6 +34,21 @@
 #   T-18     missing tag -> accurate message (never misreported
 #             as a fetch/clone failure)                          (U-2, U-10)
 #   T-19     standalone script (no local repo): FULL upgrade     (U-1, U-2)
+#   T-32     INCIDENT v0.3.4 regression: answer "y" ON THE TERMINAL
+#             while stdin is detached (</dev/null) -> the upgrade MUST
+#             proceed, the prompt MUST display, and the refusal must
+#             never falsely claim "cancelled by the operator"
+#   T-33     INCIDENT v0.3.4 regression: updater executed with the
+#             script on stdin (curl|bash shape) + "y" on the terminal
+#             -> MUST proceed (no BASH_SOURCE crash, no false cancel)
+#   T-34     explicit "n" on the terminal -> clean accurate refusal
+#   T-35     no terminal + no answer -> accurate "no confirmation
+#             was received" refusal (never a silent death)
+#   T-36     no terminal + piped "y" -> accepted (automation preserved)
+#   T-37     rollback confirmation: "n" aborts; "y" read from the
+#             terminal while stdin is detached -> rollback proceeds
+#   T-38     confirm_ask helper (byte-exact from install.sh and
+#             updater.sh): y / n / EOF / detached-stdin probes
 #
 set -uo pipefail
 
@@ -88,7 +103,8 @@ assert_eq()  { [[ "$1" == "$2" ]] && ok "$3" || no "$3 (got '$1', want '$2')"; }
 assert_rc()  { [[ "$RUN_RC" == "$1" ]] && ok "$2" || no "$2 (rc=$RUN_RC, want $1)"; }
 assert_file(){ [[ -e "$1" ]] && ok "$2" || no "$2 (missing: $1)"; }
 assert_no()  { [[ ! -e "$1" ]] && ok "$2" || no "$2 (exists: $1)"; }
-assert_in()  { grep -qF "$2" "$1" && ok "$3" || no "$3 ('$2' not found)"; }
+assert_in()  { grep -qF -- "$2" "$1" && ok "$3" || no "$3 ('$2' not found)"; }
+assert_not_in() { ! grep -qF -- "$2" "$1" && ok "$3" || no "$3 ('$2' unexpectedly found in $1)"; }
 
 run() {  # run <logfile> cmd... -> RUN_RC
   local logf="$1"; shift
@@ -855,6 +871,137 @@ assert_in "$LOG" "cached updater" "T-31 menggunakan updater ter-cache"
 # recovery from a success backup = install.sh from the immutable tag.
 assert_eq "$(installed_version)" "14.0.0" "T-31 app tetap 14.0.0 (backup sukses tidak menyimpan app — kontrak U-7)"
 assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-31 data pra-upgrade dipulihkan (kunci identik)"
+
+# ----------------------------------------------------------------------
+# T-32 .. T-38 — INSIDEN v0.3.4 (2026-11-08): konfirmasi interaktif y/N
+# dibaca dari STDIN, bukan dari keyboard operator. Saat stdin bukan
+# keyboard (terputus, </dev/null, skrip lewat pipe ala `curl | bash`,
+# sudo/CI), jawaban "y" tidak pernah sampai ke skrip dan v0.3.4:
+#   - salah lapor "cancelled by the operator" padahal operator menjawab y
+#   - ATAU mati diam-diam (set -e + read EOF) tanpa pesan error sama sekali
+#   - ATAU crash BASH_SOURCE unbound saat skrip dieksekusi via stdin
+# Fix v0.3.5: confirm_ask() membaca keyboard operator (stdin jika tty,
+# lalu /dev/tty, lalu stdin terpipah untuk otomasi) dan melaporkan
+# penolakan dengan alasan yang BENAR. Test memakai pty sungguhan
+# (script(1)) sebagai terminal operator.
+# ----------------------------------------------------------------------
+command -v script >/dev/null 2>&1 \
+  || no "T-32..T-38 memerlukan script(1) dari util-linux di lingkungan test"
+command -v setsid >/dev/null 2>&1 \
+  || no "T-32..T-38 memerlukan setsid(1) dari util-linux di lingkungan test"
+CONFIRM_ARGS=(--install-dir "$INSTALL" --data-dir "$DATA"
+               --config-dir "$CONFIG" --backups-dir "$BACKUPS")
+
+# ----------------------------------------------------------------------
+t "T-32: INSIDEN v0.3.4 — jawab 'y' di terminal saat stdin terputus -> upgrade HARUS berjalan"
+# ----------------------------------------------------------------------
+# Bentuk persis insiden operator: prompt tampil, operator mengetik y,
+# stdin skrip terputus (< /dev/null). Konfirmasi wajib dibaca dari
+# /dev/tty (keyboard operator), bukan stdin.
+SRC_C1="$BASE/src-c1"
+make_source "$SRC_C1" "15.0.0"
+printf 'y\n' | script -qec \
+  "bash $SRC_C1/updater-test.sh --source $SRC_C1 --installer $SRC_C1/install-test.sh ${CONFIRM_ARGS[*]} < /dev/null" \
+  /dev/null > "$LOG" 2>&1
+RUN_RC=$?
+assert_rc 0 "T-32 rc=0 (jawaban y dibaca dari terminal, bukan stdin)"
+assert_eq "$(installed_version)" "15.0.0" "T-32 versi sekarang 15.0.0"
+assert_in "$LOG" "Continue with the upgrade to v15.0.0?" "T-32 prompt konfirmasi TAMPIL di terminal"
+assert_not_in "$LOG" "cancelled by the operator" "T-32 tidak ada false 'cancelled by the operator'"
+assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-32 kunci agent identik (zero data loss)"
+assert_eq "$(latest_record result)" "success" "T-32 RECORD result=success"
+
+# ----------------------------------------------------------------------
+t "T-33: INSIDEN v0.3.4 — skrip dieksekusi via stdin (curl|bash) + 'y' di terminal -> HARUS berjalan"
+# ----------------------------------------------------------------------
+SRC_C2="$BASE/src-c2"
+make_source "$SRC_C2" "16.0.0"
+printf 'y\n' | script -qec \
+  "cat $SRC_C2/updater-test.sh | bash -s -- --source $SRC_C2 --installer $SRC_C2/install-test.sh ${CONFIRM_ARGS[*]}" \
+  /dev/null > "$LOG" 2>&1
+RUN_RC=$?
+assert_rc 0 "T-33 rc=0 (bash -s tanpa crash BASH_SOURCE; jawaban dari /dev/tty)"
+assert_eq "$(installed_version)" "16.0.0" "T-33 versi sekarang 16.0.0"
+assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-33 kunci agent identik"
+assert_not_in "$LOG" "unbound variable" "T-33 tidak ada crash BASH_SOURCE"
+
+# ----------------------------------------------------------------------
+t "T-34: jawab 'n' di terminal -> penolakan bersih dan akurat"
+# ----------------------------------------------------------------------
+V_BEFORE="$(installed_version)"; N_BEFORE="$(backup_count)"
+printf 'n\n' | script -qec \
+  "bash $SRC_C2/updater-test.sh --source $SRC_C2 --installer $SRC_C2/install-test.sh ${CONFIRM_ARGS[*]} < /dev/null" \
+  /dev/null > "$LOG" 2>&1
+RUN_RC=$?
+assert_rc 1 "T-34 rc=1 (penolakan eksplisit oleh operator)"
+assert_in "$LOG" "cancelled by the operator" "T-34 pesan penolakan akurat untuk jawaban n"
+assert_eq "$(installed_version)" "$V_BEFORE" "T-34 versi tidak berubah"
+assert_eq "$(backup_count)" "$N_BEFORE" "T-34 tidak ada backup baru"
+
+# ----------------------------------------------------------------------
+t "T-35: tanpa terminal + tanpa jawaban -> penolakan dengan alasan BENAR (bukan 'cancelled')"
+# ----------------------------------------------------------------------
+# v0.3.4 pada bentuk ini mati diam-diam (set -e membunuh skrip saat read
+# EOF) tanpa pesan apa pun. Fix: pesan harus menyatakan jawaban tidak
+# terbaca + arahkan ke --yes.
+setsid bash "$SRC_C2/updater-test.sh" --source "$SRC_C2" \
+  --installer "$SRC_C2/install-test.sh" "${CONFIRM_ARGS[@]}" \
+  < /dev/null > "$LOG" 2>&1
+RUN_RC=$?
+assert_rc 1 "T-35 rc=1 (ditolak, bukan lanjut diam-diam)"
+assert_in "$LOG" "no confirmation was received" "T-35 pesan menyatakan jawaban tidak dapat dibaca"
+assert_in "$LOG" "--yes" "T-35 pesan mengarah ke --yes untuk unattended"
+assert_not_in "$LOG" "cancelled by the operator" "T-35 tidak salah lapor 'cancelled by the operator'"
+assert_eq "$(installed_version)" "$V_BEFORE" "T-35 versi tidak berubah"
+assert_eq "$(backup_count)" "$N_BEFORE" "T-35 tidak ada backup baru"
+
+# ----------------------------------------------------------------------
+t "T-36: otomasi tanpa terminal — 'y' lewat pipe tetap diterima"
+# ----------------------------------------------------------------------
+SRC_C3="$BASE/src-c3"
+make_source "$SRC_C3" "17.0.0"
+printf 'y\n' | setsid bash "$SRC_C3/updater-test.sh" --source "$SRC_C3" \
+  --installer "$SRC_C3/install-test.sh" "${CONFIRM_ARGS[@]}" > "$LOG" 2>&1
+RUN_RC=$?
+assert_rc 0 "T-36 rc=0 (jawaban terpipah diterima — jalur otomasi terjaga)"
+assert_eq "$(installed_version)" "17.0.0" "T-36 versi sekarang 17.0.0"
+assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-36 kunci agent identik"
+
+# ----------------------------------------------------------------------
+t "T-37: konfirmasi rollback — 'n' -> aborted; 'y' via terminal saat stdin terputus -> rollback berjalan"
+# ----------------------------------------------------------------------
+printf 'n\n' | script -qec \
+  "bash $SRC_C3/updater-test.sh --rollback ${CONFIRM_ARGS[*]} < /dev/null" \
+  /dev/null > "$LOG" 2>&1
+RUN_RC=$?
+assert_rc 1 "T-37 rc=1 ('n' pada rollback -> aborted)"
+assert_in "$LOG" "aborted" "T-37 pesan aborted"
+printf 'y\n' | script -qec \
+  "bash $SRC_C3/updater-test.sh --rollback ${CONFIRM_ARGS[*]} < /dev/null" \
+  /dev/null > "$LOG" 2>&1
+RUN_RC=$?
+assert_rc 0 "T-37 rc=0 (jawaban y via terminal -> rollback berjalan)"
+assert_in "$LOG" "Continue with the rollback?" "T-37 prompt rollback tampil"
+assert_eq "$(db_keys)" "$KEYS_BEFORE" "T-37 data pra-upgrade dipulihkan (kunci identik)"
+
+# ----------------------------------------------------------------------
+t "T-38: helper confirm_ask (diekstrak byte-exact dari install.sh & updater.sh)"
+# ----------------------------------------------------------------------
+for f in "$REPO_DIR/updater.sh" "$REPO_DIR/install.sh"; do
+  name="$(basename "$f" .sh)"
+  sed -n '/^confirm_ask()/,/^}/p' "$f" > "$BASE/ask-$name.sh"
+  echo "confirm_ask 'P? [y/N] ' >/dev/null" >> "$BASE/ask-$name.sh"
+  grep -q '^confirm_ask()' "$BASE/ask-$name.sh" \
+    || { no "T-38 helper confirm_ask tidak ditemukan di $f"; continue; }
+  printf 'y\n' | setsid bash "$BASE/ask-$name.sh" >/dev/null 2>&1; r1=$?
+  printf 'n\n' | setsid bash "$BASE/ask-$name.sh" >/dev/null 2>&1; r2=$?
+  setsid bash "$BASE/ask-$name.sh" < /dev/null >/dev/null 2>&1; r3=$?
+  printf 'y\n' | script -qec "bash $BASE/ask-$name.sh < /dev/null" /dev/null >/dev/null 2>&1; r4=$?
+  assert_eq "$r1" "0" "T-38 $name: 'y' terpipah -> ya (0)"
+  assert_eq "$r2" "1" "T-38 $name: 'n' terpipah -> tidak (1)"
+  assert_eq "$r3" "2" "T-38 $name: EOF tanpa terminal -> tidak ada jawaban (2)"
+  assert_eq "$r4" "0" "T-38 $name: stdin terputus + tty -> 'y' terbaca (0)"
+done
 
 # ----------------------------------------------------------------------
 echo

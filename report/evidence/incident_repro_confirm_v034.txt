@@ -1,0 +1,127 @@
+UAEG incident reproduction — interactive confirmation read from stdin
+date: 2026-11-08T14:20:00Z   harness: scripts/reproduce_incident_confirm.sh (this session)
+
+OPERATOR TRANSCRIPT (MicroTix VPS, root, /opt/uaeg v0.3.3 -> v0.3.4, 2026-11-08):
+  Continue with the upgrade to v0.3.4? [y/N] y
+  ERROR: cancelled by the operator
+
+ENVIRONMENT: isolated installation (v0.3.3 -> v0.3.4 target, exactly 1 agent
+key, mirroring the operator's plan line '1 agent keys'); the operator's
+terminal is simulated with a REAL pty (script(1)); the answer 'y' is typed
+on that terminal. Updater under test:
+  PRE  : published v0.3.4 updater bytes (git tag v0.3.4, sha256 5b7191174536637a6cbffe5bf546d416e51e637e142d73cf9aa8bc602b9b7c8f)
+  POST : fixed v0.3.5 worktree updater (sha256 a045304b1e69899ed021e22757d1918e99b0cbbc50cdedc97069e34c7bf5c89a)
+
+======================================================================
+PRE-FIX (published v0.3.4 bytes)
+======================================================================
+CASE pre-A: answer 'y' on the terminal, stdin DETACHED (< /dev/null)
+EXPECTED (incident): upgrade refused despite the operator answering y
+
+--- pre-A result ---
+exit code : 1
+version  : 0.3.4   keys: k-99906103bd54:active
+log tail :
+  | [1mUPGRADE PLAN[0m
+  |   installation   : /tmp/uaeg-confirm-repro/opt/uaeg (v0.3.4)
+  |   target         : v0.3.4 (--source, commit n/a)
+  |   data           : /tmp/uaeg-confirm-repro/var/lib/uaeg (1 agent keys)
+  |   configuration  : /tmp/uaeg-confirm-repro/etc/uaeg/config.json (preserved as-is - not modified)
+  |   backup         : /tmp/uaeg-confirm-repro/var/backups/uaeg/upgrade-20261108-142000 (consistent DB + config + app)
+  |   service        : no systemd
+  | 
+  !! silent death: no refusal message at all (set -e killed the read)
+
+CASE pre-B: answer 'y' on the terminal, updater executed via stdin (curl|bash shape)
+EXPECTED (incident): crash before the plan completes
+
+--- pre-B result ---
+exit code : 1
+version  : 0.3.4   keys: k-99906103bd54:active
+log tail :
+  | y
+  | bash: line 59: BASH_SOURCE[0]: unbound variable
+  !! BASH_SOURCE[0]: unbound variable (updater unusable via stdin)
+
+======================================================================
+POST-FIX (v0.3.5 worktree)
+======================================================================
+CASE post-A: identical to pre-A (answer 'y' on the terminal, stdin detached)
+EXPECTED (fixed): upgrade proceeds, zero data loss
+
+--- post-A result ---
+exit code : 0
+version  : 0.3.4   keys: k-99906103bd54:active
+log tail :
+  |                 configuration preserved, dashboard password intact
+  |   backup       : /tmp/uaeg-confirm-repro/var/backups/uaeg/upgrade-20261108-142004 (data + config; rollback: sudo bash upgrade.sh --rollback)
+  |   installer log: /tmp/uaeg-confirm-repro/var/backups/uaeg/upgrade-20261108-142004/install.log
+  | 
+  | Next steps:
+  |   uaeg version && sudo uaeg doctor
+  |   sudo uaeg keys list   # confirm your agent keys are intact
+  | 
+  OK prompt is DISPLAYED on the terminal (read from /dev/tty)
+  OK UPGRADE SUCCESSFUL
+
+CASE post-B: identical to pre-B (updater via stdin, 'y' on the terminal)
+EXPECTED (fixed): proceeds without the BASH_SOURCE crash
+
+--- post-B result ---
+exit code : 0
+version  : 0.3.4   keys: k-99906103bd54:active
+log tail :
+  |   installer log: /tmp/uaeg-confirm-repro/var/backups/uaeg/upgrade-20261108-142010/install.log
+  |   note         : the operator clone /home/z/my-project was NOT changed (source came
+  |                  from isolated staging of https://github.com/smahud/uaeg.git)
+  | 
+  | Next steps:
+  |   uaeg version && sudo uaeg doctor
+  |   sudo uaeg keys list   # confirm your agent keys are intact
+  | 
+
+CASE post-D: answer 'n' on the terminal, stdin detached
+EXPECTED: clean, accurate refusal (behaviour preserved)
+
+--- post-D result ---
+exit code : 1
+version  : 0.3.4   keys: k-99906103bd54:active
+log tail :
+  |   installation   : /tmp/uaeg-confirm-repro/opt/uaeg (v0.3.4)
+  |   target         : v0.3.4 (--source, commit n/a)
+  |   data           : /tmp/uaeg-confirm-repro/var/lib/uaeg (1 agent keys)
+  |   configuration  : /tmp/uaeg-confirm-repro/etc/uaeg/config.json (preserved as-is - not modified)
+  |   backup         : /tmp/uaeg-confirm-repro/var/backups/uaeg/upgrade-20261108-142016 (consistent DB + config + app)
+  |   service        : no systemd
+  | 
+  | Continue with the upgrade to v0.3.4? [y/N] [1;31mERROR:[0m cancelled by the operator
+  OK accurate 'cancelled by the operator' for an explicit 'n'
+
+CASE post-F: NO terminal anywhere (setsid), stdin at EOF, no answer
+EXPECTED: accurate 'no confirmation was received' + --yes guidance
+
+--- post-F result ---
+exit code : 1
+version  : 0.3.4   keys: k-99906103bd54:active
+log tail :
+  |   service        : no systemd
+  | 
+  | Continue with the upgrade to v0.3.4? [y/N] 
+  | [1;31mERROR:[0m no confirmation was received: stdin is not a terminal, there is no
+  | controlling terminal (/dev/tty), and no answer was piped in - the operator's
+  | answer could not be read (v0.3.4 misreported this as 'cancelled by the
+  | operator'). Run the upgrade from an interactive terminal, or pass --yes for
+  | an unattended upgrade. Nothing was changed.
+  OK accurate refusal with the true reason (v0.3.4 died silently here)
+
+======================================================================
+SUMMARY
+======================================================================
+pre-A  (y, stdin detached)      : v0.3.4 refused the upgrade the operator
+                                  had approved - the reported incident.
+pre-B  (y, curl|bash shape)     : v0.3.4 crashed (BASH_SOURCE unbound).
+post-A/post-B                   : v0.3.5 proceeds, prompt displayed,
+                                  keys identical, UPGRADE SUCCESSFUL.
+post-D (n)                      : accurate 'cancelled by the operator'.
+post-F (no answer, no terminal) : accurate 'no confirmation was received'
+                                  + --yes guidance (was: silent death).

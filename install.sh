@@ -42,7 +42,7 @@ APP_BACKUP=""
 CONFIG_BACKUP=""
 # Release this installer belongs to (used for standalone bootstrap, FR-002).
 # Override the source version at runtime with: --version X.Y.Z or UAEG_VERSION=X.Y.Z
-UAEG_RELEASE_VERSION="0.3.4"
+UAEG_RELEASE_VERSION="0.3.5"
 FETCH_VERSION=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,6 +53,46 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mWARNING:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# confirm_ask <prompt> — read the operator's y/N answer.
+#
+# v0.3.5 fix (incident 2026-11-08, same class as the updater's): the answer
+# MUST come from the operator's KEYBOARD, never from the script's stdin.
+# The installer can execute with stdin already consumed or detached
+# (`curl ... | bash`, `bash install.sh < /dev/null`, closed stdin under
+# sudo/CI); a plain `read` then returns EOF or script text while the typed
+# "y" never arrives — previously misreported as a plain "aborted", or a
+# silent `set -e` death with no message at all.
+#   1. stdin is a terminal  -> read stdin (normal interactive run)
+#   2. /dev/tty available   -> read the controlling terminal (the fix)
+#   3. neither              -> read one line from stdin (piped automation)
+# Returns: 0 = explicit yes (y/yes, any case); 1 = explicit no / empty line;
+#          2 = NO answer at all — callers must report that truthfully.
+confirm_ask() {
+  local prompt="$1" reply="" rrc=0
+  if [[ -t 0 ]]; then
+    read -r -p "$prompt" reply || rrc=2
+  elif (exec 9<>/dev/tty) 2>/dev/null; then
+    # Controlling terminal exists (curl|bash, detached stdin, sudo): read
+    # the operator's keyboard from /dev/tty. The open was probed in a
+    # subshell above, so this read needs no stderr suppression and `read
+    # -p` displays the prompt normally on the real stderr.
+    read -r -p "$prompt" reply < /dev/tty || rrc=2
+  else
+    if read -r reply; then
+      printf '%s%s\n' "$prompt" "$reply"
+    else
+      rrc=2
+      printf '%s\n' "$prompt"
+    fi
+  fi
+  [[ $rrc -ne 0 ]] && return 2
+  reply="${reply//[[:space:]]/}"
+  if [[ "$reply" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+    return 0
+  fi
+  return 1
+}
 
 usage() {
   cat <<'USAGE'
@@ -146,8 +186,16 @@ if [[ $SUPPORTED_OS -eq 0 ]]; then
   if [[ $ASSUME_YES -eq 1 ]]; then
     warn "continuing anyway (--yes)"
   else
-    read -r -p "Continue anyway? [y/N] " reply
-    [[ "$reply" =~ ^[Yy]$ ]] || die "aborted"
+    crc=0
+    confirm_ask "Continue anyway? [y/N] " || crc=$?
+    if [[ $crc -eq 1 ]]; then
+      die "aborted"
+    fi
+    if [[ $crc -ne 0 ]]; then
+      die "no confirmation was received: stdin is not a terminal, there is no
+controlling terminal (/dev/tty), and no answer was piped in. Run the
+installer from an interactive terminal, or pass --yes."
+    fi
   fi
 fi
 

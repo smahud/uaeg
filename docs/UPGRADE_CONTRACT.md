@@ -252,6 +252,38 @@ dan tanda tangan sebelum aset diunggah (`.github/workflows/release.yml`).
 T-26 (kunci asing), T-27 (interface baru), T-28 (manifest hilang),
 dan `release/verify_release.py` di CI.
 
+### U-15 — Konfirmasi interaktif dibaca dari keyboard operator
+
+Pertanyaan konfirmasi y/N (upgrade, rollback, dan peringatan OS pada
+installer) **wajib dibaca dari keyboard operator, bukan dari stdin skrip**.
+stdin bisa berupa hal lain ketika prompt tampil: skrip itu sendiri
+(`curl ... | bash`), `/dev/null`/stdin terputus (sudo/CI), atau pipe otomasi.
+Membaca stdin pada bentuk-bentuk itu membuat jawaban "y" yang diketik
+operator tidak pernah sampai ke skrip — persis insiden v0.3.4
+(2026-11-08): operator menjawab `y` dan updater salah melapor
+`cancelled by the operator` (atau mati diam-diam karena `set -e` + EOF,
+tanpa pesan sama sekali).
+
+Aturan resolusi input (`confirm_ask()` di `updater.sh`/`install.sh`):
+
+1. stdin adalah terminal → baca stdin (run interaktif normal).
+2. ada terminal pengendali → baca `/dev/tty` (bentuk `curl|bash`, stdin
+   terputus, sudo) — prompt tetap TAMPIL di terminal sungguhan.
+3. tidak ada terminal sama sekali → terima satu baris terpipah (otomasi:
+   `printf 'y\n' | ...`), atau laporkan kegagalan dengan jujur.
+
+Pelaporan penolakan harus menyatakan alasan yang BENAR: jawaban `n`/baris
+kosong → "cancelled by the operator" / "aborted"; tidak ada jawaban sama
+sekali (EOF/tanpa terminal) → pesan eksplisit "no confirmation was
+received" + arahan ke `--yes` untuk run unattended. `y`/`yes` (huruf besar
+atau kecil, dengan atau tanpa spasi/CR) diterima; baris kosong berarti
+tidak (default `[y/N]`).
+
+*Ditegakkan oleh:* T-32 (stdin terputus + y di terminal), T-33 (bentuk
+curl|bash), T-34 (jawaban n), T-35 (tanpa terminal + tanpa jawaban),
+T-36 (otomasi terpipah), T-37 (konfirmasi rollback), T-38 (probe helper
+byte-exact dari kedua skrip).
+
 ---
 
 ## Struktur direktori backup
@@ -292,6 +324,18 @@ efektif 1 — retensi tidak pernah menghapus satu-satunya recovery point).
 Kontrak ini berversi (`contract_version` di `RECORD.json`). Perubahan klausul
 harus: (1) menaikkan versi kontrak, (2) memperbarui test suite di commit yang
 sama, (3) dicatat di `report/`.
+
+### v3.1 (UAEG v0.3.5)
+
+- **U-15 ditambahkan** setelah insiden v0.3.4 (2026-11-08): konfirmasi y/N
+  dibaca dari stdin skrip, sehingga jawaban "y" operator tidak pernah
+  terbaca saat stdin bukan keyboard (terputus, `curl|bash`, sudo/CI) dan
+  kegagalan itu dikelirukan sebagai "cancelled by the operator" — atau mati
+  diam-diam tanpa pesan. Klarifikasi semantik (bukan perubahan antarmuka):
+  semua flag, exit code, dan format RECORD tetap; `contract_version` di
+  RECORD.json tetap `3`. Diregresi permanen oleh T-32..T-38.
+- Bentuk `bash -s` / skrip-via-stdin (curl|bash) tidak lagi crash
+  `BASH_SOURCE unbound` pada updater.
 
 ### v3 (UAEG v0.3.3)
 

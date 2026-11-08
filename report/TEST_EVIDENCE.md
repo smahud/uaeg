@@ -1,3 +1,51 @@
+# Test Evidence — v0.3.5 (Insiden 2: konfirmasi upgrade)
+
+**Date:** 2026-11-08 · Tree: post-fix v0.3.5 (pre-tag). Runner: sandbox
+Debian (user z, tanpa systemd) — adaptasi test identik dengan CI
+(root-check dimatikan, apt dilewati).
+
+## 0. Insiden 2 — reproduksi fail-first + bukti perbaikan
+
+`report/evidence/incident_repro_confirm_v034.txt`: updater **v0.3.4 bytes
+yang benar-benar dipublikasikan** (sha256 `5b719117...` == aset rilis
+v0.3.4) vs v0.3.5, instalasi terisolasi v0.3.3->v0.3.4 + 1 agent key
+(mirror state operator), terminal operator = pty sungguhan (`script(1))`:
+
+| Skenario | v0.3.4 (published) | v0.3.5 |
+|---|---|---|
+| A: jawab `y`, stdin terputus (`< /dev/null`) | rc=1 — upgrade DITOLAK (insiden); tanpa pesan | rc=0 — `UPGRADE SUCCESSFUL`, prompt tampil, kunci identik |
+| B: updater via stdin (curl\|bash) | crash `BASH_SOURCE[0]: unbound variable` | rc=0 — upgrade selesai |
+| C: `y` terpipah, tanpa terminal | rc=0 (bekerja — celah test lama) | rc=0 (dipertahankan) |
+| D: jawab `n` di terminal | rc=1 "cancelled by the operator" | rc=1 "cancelled by the operator" (perilaku benar dipertahankan) |
+| E: interaktif tty murni | rc=0 | rc=0 (dipertahankan) |
+| F: tanpa terminal, tanpa jawaban | mati diam-diam rc=1 TANPA pesan | rc=1 + "no confirmation was received ... pass --yes" |
+
+## 1. Suite kontrak — 191 PASS / 0 FAIL
+
+`report/evidence/upgrade_contract_suite_v035.txt` — suite PENUH T-01..T-38
+termasuk 7 grup regresi insiden baru (T-32..T-38; lihat PATCH_CHANGELOG §C).
+Highlight T-32..T-38 (semua PASS): prompt konfirmasi TAMPIL di terminal;
+tidak ada false "cancelled by the operator" untuk jawaban y; `n` -> penolakan
+akurat; tanpa-terminal-tanpa-jawaban -> pesan akurat + `--yes`; otomasi
+terpipah tetap diterima; rollback via terminal berjalan; helper byte-exact
+dari updater.sh DAN install.sh lolos 4 probe (y/n/EOF/stdin-terputus).
+
+## 2. pytest — unit 103 PASS, e2e 32 PASS
+
+`report/evidence/pytest_v035.txt` — daftar file identik dengan job CI
+"Test (Python 3.x)": unit (core/executor/containment/security-redaction/
+dashboard-auth/regresi v033+v034) 103 passed; e2e (smoke + dashboard-auth +
+hardening, TLS nyata + protokol MCP) 32 passed; termasuk
+`test_version_metadata_consistency` (README/pyproject/installer pin v0.3.5
+konsisten).
+
+## 3. Verifikasi pasca-publikasi (URL publik)
+
+Ditambahkan setelah rilis v0.3.5 dipublikasikan — lihat bagian v0.3.5 pada
+RELEASE_VERIFICATION.md.
+
+---
+
 # Test Evidence — v0.3.3
 
 ---

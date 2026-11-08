@@ -8,7 +8,7 @@ native capabilities of the server, up to and including root.
 
 [![CI](https://github.com/smahud/uaeg/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/smahud/uaeg/actions/workflows/ci.yml)
 
-**Current release: v0.3.4** (tag `v0.3.4`). The repository carries its own audit trail
+**Current release: v0.3.5** (tag `v0.3.5`). The repository carries its own audit trail
 — release decisions, security findings, and test evidence — under [report/](report/).
 
 > **SECURITY WARNING — READ THIS BEFORE INSTALLING**
@@ -215,4 +215,4 @@ deploying, read [docs/SECURITY.md](docs/SECURITY.md) (threat model and hardening
 
 ## License
 
-MIT — see [LICENSE](LICENSE). UAEG is experimental software (v0.3.4); treat it accordingly.
+MIT — see [LICENSE](LICENSE). UAEG is experimental software (v0.3.5); treat it accordingly.

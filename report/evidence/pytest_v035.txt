@@ -1,0 +1,10 @@
+# pytest — v0.3.5 tree
+# date: 2026-11-08T14:56:20Z
+
+## unit suite (CI job: Test matrix — same file list as ci.yml)
+...............................                                          [100%]
+103 passed in 34.12s
+
+## e2e suites (CI jobs: smoke + dashboard auth + hardening)
+................................                                         [100%]
+32 passed in 103.74s (0:01:43)
