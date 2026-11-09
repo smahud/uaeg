@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -37,6 +38,26 @@ log = logging.getLogger("uaeg.jobs")
 FINAL_STATES = {"completed", "failed", "cancelled", "interrupted"}
 
 _BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id"
+_CGROUP_FILE = "/proc/self/cgroup"
+_SYSTEMD_RUN = shutil.which("systemd-run")
+
+
+def _in_systemd_service() -> bool:
+    """True when THIS process runs inside a systemd service unit cgroup.
+
+    Under the shipped unit (KillMode=control-group, the systemd default),
+    ``systemctl stop/restart uaeg`` sends SIGTERM/SIGKILL to EVERY process in
+    the unit's cgroup. ``start_new_session`` (setsid) does NOT change cgroup
+    membership, so background jobs spawned plain would be killed together
+    with the service - contradicting PRD FR-009/AT-11 ("jobs survive service
+    restarts"). Detection lets spawn() move each job into its own transient
+    systemd scope instead (live audit 2026-11-10, finding F5).
+    """
+    try:
+        with open(_CGROUP_FILE, encoding="ascii") as fh:
+            return ".service" in fh.read()
+    except OSError:
+        return False
 
 
 def _boot_id() -> str:
@@ -121,6 +142,61 @@ class JobManager:
         self.poll_interval = poll_interval
         self._runtime: dict[str, JobRuntime] = {}
         self._started_at = time.monotonic()
+        # Lazy, cached probe result for transient-scope support (None = not
+        # probed yet). False also covers "not running under systemd at all"
+        # (tests, --no-service, containers): jobs then spawn exactly as before.
+        self._scope_mode: bool | None = None
+
+    # ------------------------------------------------------------------
+    # Transient-scope support (F5): keep background jobs alive across
+    # ``systemctl stop/restart uaeg``.
+    # ------------------------------------------------------------------
+    def _scope_supported(self) -> bool:
+        if self._scope_mode is None:
+            self._scope_mode = self._probe_scope_support()
+        return self._scope_mode
+
+    def _probe_scope_support(self) -> bool:
+        """One-shot capability probe: can we create transient systemd scopes?
+
+        Runs ``systemd-run --scope true`` once (a few ms); on any failure we
+        stay on the legacy spawn path and say so loudly, because silently
+        broken job spawning would be far worse than jobs that die with the
+        service (the documented pre-0.4.2 behavior under systemd).
+        """
+        if not _in_systemd_service():
+            return False
+        if not _SYSTEMD_RUN:
+            log.warning(
+                "background jobs will NOT survive service restarts on this "
+                "host: no systemd-run binary (inside a systemd service cgroup)"
+            )
+            return False
+        try:
+            proc = subprocess.run(
+                [_SYSTEMD_RUN, "--scope", "--quiet", "--unit=uaeg-job-scope-probe", "true"],
+                capture_output=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log.warning(
+                "background jobs will NOT survive service restarts on this "
+                "host: systemd-run scope probe failed (%s)", exc
+            )
+            return False
+        if proc.returncode != 0:
+            log.warning(
+                "background jobs will NOT survive service restarts on this "
+                "host: systemd-run scope probe exited %d: %s",
+                proc.returncode,
+                proc.stderr.decode(errors="replace")[:200],
+            )
+            return False
+        log.info(
+            "background jobs run in transient systemd scopes "
+            "(they survive 'systemctl stop/restart uaeg')"
+        )
+        return True
 
     # ------------------------------------------------------------------
     # spawn
@@ -158,26 +234,55 @@ class JobManager:
         except OSError:
             pass
         try:
-            proc = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-I",
-                    "-m",
-                    "uaeg._jobwrap",
-                    str(job_dir),
-                    "--",
-                    self.shell,
-                    "-c",
-                    command,
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=out_f,
-                stderr=err_f,
-                cwd=cwd or None,
-                env=full_env,
-                start_new_session=True,
-                close_fds=True,
-            )
+            shim_cmd = [
+                sys.executable,
+                "-I",
+                "-m",
+                "uaeg._jobwrap",
+                str(job_dir),
+                "--",
+                self.shell,
+                "-c",
+                command,
+            ]
+            # F5: when running under systemd, move the job into its own
+            # transient scope so a service stop/restart cannot kill it
+            # (KillMode=control-group kills the whole service cgroup).
+            # systemd-run --scope execs the command in the SAME process, so
+            # proc.pid is still the shim pid and killpg/reap semantics are
+            # unchanged.
+            use_scope = self._scope_supported()
+            try:
+                proc = subprocess.Popen(
+                    ([_SYSTEMD_RUN, "--scope", "--quiet", f"--unit=uaeg-{job_id}"] if use_scope else [])
+                    + shim_cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=out_f,
+                    stderr=err_f,
+                    cwd=cwd or None,
+                    env=full_env,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+            except FileNotFoundError:
+                # Lost a race with the probe result (binary vanished): fall
+                # back to the legacy direct spawn rather than failing the job.
+                if not use_scope:
+                    raise
+                log.warning(
+                    "systemd-run disappeared; spawning job %s without a scope "
+                    "(it will NOT survive a service restart)", job_id
+                )
+                proc = subprocess.Popen(
+                    shim_cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=out_f,
+                    stderr=err_f,
+                    cwd=cwd or None,
+                    env=full_env,
+                    start_new_session=True,
+                    close_fds=True,
+                )
         except OSError as exc:
             out_f.close()
             err_f.close()

@@ -259,6 +259,45 @@ fi
 command -v python3 >/dev/null 2>&1 || die "python3 not found (required for verification)"
 
 # ----------------------------------------------------------------------
+# Self-update protection (audit 2026-11-10, finding F4)
+# ----------------------------------------------------------------------
+# When this updater is started from INSIDE the UAEG service itself (an agent
+# ran it via shell_exec / a background job), we are inside the unit's systemd
+# cgroup. `systemctl stop uaeg` below would then kill THIS updater too
+# (KillMode=control-group kills every process in the cgroup; setsid /
+# start_new_session does NOT change cgroup membership): the upgrade would die
+# mid-flight and the service would stay down. Re-exec into a transient
+# systemd scope first - a separate cgroup that survives the service stop -
+# or refuse loudly when that is impossible. Read-only modes (check, dry-run)
+# never stop the service and skip the guard.
+selfupdate_guard() {
+  [[ $NO_SERVICE -eq 1 ]] && return 0
+  case "$MODE" in check|dry-run) return 0 ;; esac
+  local cg=""
+  cg="$(cat "${UAEG_CGROUP_FILE:-/proc/self/cgroup}" 2>/dev/null)" || return 0
+  case "$cg" in
+    *"/${SERVICE_NAME}.service"*)
+      # Re-exec needs a REAL script file (UAEG_UPDATER or the resolved
+      # BASH_SOURCE); a stdin/eval invocation cannot be re-executed safely.
+      if command -v systemd-run >/dev/null 2>&1 \
+         && [[ -n "${UAEG_UPDATER:-}" || -f "$UPDATER_SELF" ]]; then
+        say "self-update: running inside the ${SERVICE_NAME}.service cgroup;"
+        say "self-update: re-executing in a transient systemd scope so the upgrade survives the service stop"
+        exec systemd-run --scope --quiet --unit="uaeg-selfupdate-$$" bash "$UPDATER_SELF" "$@"
+      fi
+      die "refusing to run a mutating upgrade from inside the ${SERVICE_NAME}.service
+cgroup: stopping the service would kill this updater mid-flight (systemd
+KillMode=control-group; setsid does not escape the cgroup) and it cannot be
+re-executed into a detached scope (no systemd-run, or the script is not
+running from a file). Run the upgrade from an operator shell (SSH/console)
+instead:  sudo bash install.sh    (nothing was changed)"
+      ;;
+  esac
+  return 0
+}
+selfupdate_guard "$@"
+
+# ----------------------------------------------------------------------
 # systemd helpers (tolerant of hosts without systemd)
 # ----------------------------------------------------------------------
 svc_active() {
