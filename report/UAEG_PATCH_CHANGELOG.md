@@ -91,3 +91,40 @@ path — D10 fixed) until the maintainer cuts v0.4.2.
 - This report itself and its SHA-recording sibling were amended in a
   follow-up docs commit on `main` (a SHA cannot be embedded in the commit
   it identifies); final HEAD: see `git log -1`.
+
+---
+
+## 6. Round-2 patch-set (2026-11-09, independent re-audit)
+
+Baseline: `main` @ `c9566785c262c0554323ab3ba0d47da342b70cf1` (round-1
+patch-set + its SHA-recording docs commit). Every round-1 claim was
+re-verified from scratch before this patch was written (203 pytest + 290
+contract checks green, CI green on `c956678`, incident reproduced,
+production re-probed — see `UAEG_TEST_RESULTS.md` §6 and
+`UAEG_CURRENT_STATE.md` §6). All changes are again minimal and
+defect-driven; nothing outside the confirmed defect class was touched.
+
+| File | Change | Defect |
+|---|---|---|
+| `upgrade.sh` | `need_value()` guard on `--version` and `--source` — an actionable `option … requires a value (see --help)` at parse time (before the root check, before any file write, before any network use); option-like tokens (`--version --check`) are treated as missing values. Supersedes round-1 §4's "no defect found" statement for `upgrade.sh`. | D11 |
+| `tests/test_installer_cli_contract.py` | +5 checks (31 → 36): `upgrade.sh` missing-value rejection on `--version`/`--source` (pre-root, zero side effects, no raw bash error), option-like-value rejection, and the positive path — a complete `--version 0.4.1 --bootstrap-info` on a root-gate-disabled copy exits 0 before any network/updater activity, proving the guard never rejects valid invocations. | D11 lock |
+| `report/evidence/*_round2_20261109.txt` (4 files) | NEW: full-suite re-run evidence (208 passed / 0 failed), contract-suite re-run (290 PASS / 0 FAIL), fresh production probe (15:56:58 UTC), incident + D11 before/after reproduction transcript. | — |
+| `report/UAEG_*.md` (5 files) | Round-2 sections appended: independent verification record, D11, timeline erratum, refreshed production state and delivery record. | — |
+| `report/PRODUCTION_RECOVERY_V041.md` | Production-state table refreshed (15:57 UTC probes; v0.4.1 confirmed running since ≈ 03:00 UTC) + explicit Step-1-complete / Steps-2–4-pending status note. | — |
+
+Verification performed BEFORE pushing (this session, fresh venv):
+
+- `pytest tests/` → **208 passed, 0 failed** (203 round-1 + 5 new)
+- `bash tests/test_upgrade_contract.sh` → **290 PASS / 0 FAIL**
+- Manual D11 before/after reproduction (evidence file above)
+- `bash -n` clean on the patched `upgrade.sh` (run as part of the suite's
+  script executions)
+
+`updater.sh` intentionally NOT touched (signed release asset; the
+same-class papercut there is fail-safe and documented as a known
+limitation for the next signed release — `UAEG_ROOT_CAUSE_ANALYSIS.md`
+§5). No CI workflow change needed: the new checks live in an existing,
+already-wired test file.
+
+Round-2 commit: recorded in `UAEG_PRODUCTION_ACCEPTANCE.md` §6 (a SHA
+cannot be embedded in the commit that introduces it).

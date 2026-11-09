@@ -1,0 +1,30 @@
+# UAEG production probe — round 2 verification
+# Executor: independent recovery-verification session (GitHub+network only, no VPS access)
+# Date: 2026-11-09 15:56:58 UTC
+
+== DNS ==
+125.163.142.132 host.zerotier.my.id
+
+== MCP 3902 /healthz (full TLS verification, NO -k) ==
+{"status":"ok","service":"UAEG","version":"0.4.1","uptime_seconds":46693.0}
+== MCP 3902 /mcp without key ==
+http_code=401
+
+== Dashboard 3903 /login (full TLS verification, NO -k) ==
+curl: (7) Failed to connect to host.zerotier.my.id port 3903 after 69 ms: Could not connect to server
+http_code=000
+curl exit=7 (connection refused)
+
+== Dashboard 3903 /api/overview unauthenticated ==
+curl: (7) Failed to connect to host.zerotier.my.id port 3903 after 70 ms: Could not connect to server
+http_code=000
+curl exit=7 (connection refused)
+
+== TLS chain verification (openssl, -verify_return_error) ==
+subject=CN=host.zerotier.my.id
+issuer=C=US, O=Let's Encrypt, CN=YE2
+Verify return code: 0 (ok)
+notBefore=Nov  7 17:20:22 2026 GMT
+notAfter=Feb  5 17:20:21 2027 GMT
+X509v3 Subject Alternative Name: 
+    DNS:host.zerotier.my.id

@@ -75,3 +75,38 @@ full list and rationale):
 **Dashboard: NOT YET RESTORED (3903 refused) — blocked on operator execution
 of the corrected Step 2 + Step 3 of the runbook.** Full acceptance matrix:
 `UAEG_PRODUCTION_ACCEPTANCE.md`.
+
+---
+
+## 6. Round 2 — independent verification (2026-11-09, ~15:40–16:15 UTC)
+
+A second recovery-verification session audited the round-1 patch-set
+(`b428482` + docs commit `c956678`) from scratch, trusting nothing reported
+and re-running everything executable:
+
+| Check | Result (all executed this session) |
+|---|---|
+| Repo HEAD at round-2 start | `c956678` — round-1 patch-set + its SHA-recording docs commit; reference commit `30d047d` is 2 commits behind |
+| Full pytest suite, fresh venv, pre-round-2 | **203 passed, 0 failed** (90 s) — round-1's claim reproduced exactly |
+| Upgrade-contract suite, pre-round-2 | **290 PASS / 0 FAIL** — reproduced exactly |
+| GitHub CI on `c956678` | completed / **success** (run 42557988917) |
+| Incident command reproduction | `ERROR: unknown option: --tls-mode (see --help)`, exit 1, zero mutation — unchanged by design |
+| Production probes (15:56:58 UTC, full TLS verification, no `-k`) | `healthz` HTTP 200, `version 0.4.1`, uptime 46 693 s; `/mcp` 401; **3903 connection refused**; chain `Verify return code: 0 (ok)`; SAN `host.zerotier.my.id`; cert valid 2026-11-07 → 2027-02-05 |
+| Docs↔parser sweep beyond the TLS flags | install.sh flags in docs: contract-tested green. upgrade.sh forwarded flags (`--allow-downgrade`, `--yes`, …): accepted by design via the parser's forward-to-updater catch-all, and the updater's parser really accepts them (`updater.sh:233`). Config keys in `docs/CONFIGURATION.md`: all 20 exist in the schema. **One new defect of the incident's class found: upgrade.sh `--version`/`--source` missing values → raw bash error (D11) — fixed and locked this round** (5 new checks; post-patch suite: **208 passed / 0 failed**, contract **290 PASS / 0 FAIL**) |
+
+**Timeline erratum (report hygiene):** round-1's §2 recorded a probe "at
+~04:20 UTC with uptime 2067.5 s". That reading is internally inconsistent
+with this round's measurement (15:43 UTC, uptime 45 895.6 s ⇒ last service
+start ≈ 02:58 UTC): a later probe cannot show an earlier start time, so the
+round-1 probe time was likely mis-transcribed. The authoritative
+reconstruction from this round's direct measurements: the service
+(re)started on v0.4.1 at ≈ 02:57–03:00 UTC and has been **continuously up
+since** (46 693 s ≈ 13 h at 15:56:58 UTC). No operational conclusion
+changes.
+
+**Operator status (the actionable bottom line):** production completed
+Step 1 (safe upgrade to v0.4.1) around 03:00 UTC, but as of 15:57 UTC the
+runbook's Steps 2–4 have NOT been executed — ~13 h after revision 2 was
+published. The continuous ~13 h uptime proves no restart/config change has
+occurred, and 3903 remains refused. The corrected procedure is verified
+end-to-end in the lab; only the on-box execution is missing.

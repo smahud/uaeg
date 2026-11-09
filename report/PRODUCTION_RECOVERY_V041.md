@@ -20,13 +20,26 @@ verification (`-k` disables validation and is not proof of trusted TLS).
 All corrected commands were re-verified against the real parser and are
 enforced by the regression suite (`tests/test_installer_cli_contract.py`).
 
-**Current production state (external probes, 2026-11-09 02:41 UTC):**
+**Current production state (external probes, round 2 — 2026-11-09 15:56:58 UTC;
+evidence: `report/evidence/production_probe_round2_20261109.txt`):**
 
 | Endpoint | State |
 |---|---|
-| `https://host.zerotier.my.id:3902/healthz` | OK — UAEG **v0.4.0**, uptime ≈ 6.3 h |
+| `https://host.zerotier.my.id:3902/healthz` | OK — UAEG **v0.4.1**, uptime ≈ 13 h (continuously up since ≈ 03:00 UTC) |
 | `https://host.zerotier.my.id:3902/mcp` | 401 without key (auth intact) |
-| `https://host.zerotier.my.id:3903/login` | **connection refused — the P0 to fix** |
+| `https://host.zerotier.my.id:3903/login` | **connection refused — the P0 still to fix** |
+
+**Status note (round 2, 15:57 UTC):** Step 1 below (safe upgrade to
+v0.4.1) is **COMPLETE** in production — the healthz version plus the
+continuous ~13 h uptime prove it, and prove that no restart or
+configuration change has happened since. **Steps 2–4 remain to be executed
+by the operator.** The round-2 independent re-audit (see
+`report/UAEG_CURRENT_STATE.md` §6) re-verified the whole patch-set from
+scratch (208 pytest + 290 upgrade-contract checks, 0 failures) and found
+one additional small defect in `upgrade.sh` (fixed on `main`; does not
+affect the commands in this runbook — all of which pass complete values).
+The historical probe table from revision 2 (02:41 UTC, v0.4.0) is
+superseded by the one above.
 
 ---
 

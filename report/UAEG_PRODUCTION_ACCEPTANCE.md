@@ -4,7 +4,8 @@
 against the production system; anything proven only in the lab/sandbox or
 not proven at all is marked accordingly. **This audit environment has no
 VPS credentials** — production observations are external, read-only probes
-(2026-11-09 ~04:20 UTC).
+(latest: round 2, 2026-11-09 15:56:58 UTC; matrix statuses below unchanged
+since round 1 — the dashboard plane has not been restored yet).
 
 ---
 
@@ -34,6 +35,35 @@ verified operational. This matches the mission rule: no success declaration
 while the dashboard remains unreachable.
 
 ## 2. External probe evidence (read-only, full TLS verification, no `-k`)
+
+**Round 2 (latest, 2026-11-09 15:56:58 UTC — independent re-verification
+session; evidence file: `report/evidence/production_probe_round2_20261109.txt`):**
+
+```
+DNS:      host.zerotier.my.id -> 125.163.142.132
+MCP:      curl -fsS https://host.zerotier.my.id:3902/healthz -> HTTP 200
+          {"status":"ok","service":"UAEG","version":"0.4.1","uptime_seconds":46693.0}
+MCP auth: GET /mcp (no bearer) -> HTTP 401
+TLS:      subject=CN=host.zerotier.my.id
+          issuer=C=US, O=Let's Encrypt, CN=YE2
+          notBefore=Nov  7 17:20:22 2026 GMT
+          notAfter=Feb  5 17:20:21 2027 GMT
+          SAN=DNS:host.zerotier.my.id
+          openssl s_client -verify_return_error -> "Verify return code: 0 (ok)"
+DASH:     https://host.zerotier.my.id:3903/login -> connection refused (RST)
+          https://host.zerotier.my.id:3903/api/overview -> connection refused
+```
+
+Interpretation (facts only): the MCP plane is healthy on v0.4.1 with a
+browser-trusted chain. Uptime 46 693 s at 15:56:58 UTC ⇒ the service has
+been continuously up since ≈ 02:59 UTC — i.e. Step 1 (safe upgrade to
+v0.4.1) is complete in production, and **no restart or configuration
+change has happened since**; the dashboard exposure (Steps 2–4) remains
+unexecuted ~13 h after runbook revision 2 was published.
+
+**Round 1 (2026-11-09, historical — superseded by the round-2 probe above;
+the round-1 probe timestamp contained a transcription inconsistency, see
+`UAEG_CURRENT_STATE.md` §6 erratum):**
 
 ```
 DNS:      host.zerotier.my.id -> 125.163.142.132
@@ -112,9 +142,16 @@ the operator executes §3 steps 2–5.
 ## 6. Delivery record
 
 - Baseline commit: `30d047d04729a3d703f00c8bcd3fc288ff7bb4f8`
-- **Patch-set commit: `b4284822adf2f3c46e82baaa90307e3938d3ed5e`**
+- Round-1 patch-set commit: `b4284822adf2f3c46e82baaa90307e3938d3ed5e`
   (pushed to `origin/main`, verified via `git ls-remote`)
-- CI run: https://github.com/smahud/uaeg/actions/runs/42557757475 —
+- CI run (round 1): https://github.com/smahud/uaeg/actions/runs/42557757475 —
   sandbox re-ran the identical suites locally: **203 pytest + 290
   upgrade-contract checks, 0 failures** (`UAEG_TEST_RESULTS.md`); the
   GitHub Actions result for the push is tracked at the run URL above.
+- Round-2 patch-set commit (D11 fix + re-verification reports): recorded
+  in the follow-up docs commit on `main` (a SHA cannot be embedded in the
+  commit it identifies) — see `git log` and the CI run noted there.
+- CI on `c956678` (round-1 final HEAD, pre-round-2): completed / **success**
+  — run 42557988917.
+- Post-round-2 local verification: **208 pytest + 290 upgrade-contract
+  checks, 0 failures** (`UAEG_TEST_RESULTS.md` §6).

@@ -96,3 +96,53 @@ plus the real-browser matrix. The corrected recovery command is proven
 end-to-end against a real installation with full data preservation. The
 only unexecuted items require production-box access, which this environment
 does not have.
+
+---
+
+## 6. Round 2 — independent re-audit (2026-11-09, ~16:00 UTC)
+
+A second session re-verified everything from scratch (fresh venv, HEAD
+`c956678`), trusting nothing from round 1's reports, then applied and
+verified the round-2 patch (D11: `upgrade.sh` missing-value guards — see
+`UAEG_ROOT_CAUSE_ANALYSIS.md` §5). Every command below was actually
+executed in this session:
+
+| Command | Result |
+|---|---|
+| `pytest tests/` @ `c956678` (pre-round-2, fresh venv, Python 3.12.16) | **203 passed, 0 failed** (90.06s) — round 1's claim reproduced exactly |
+| `bash tests/test_upgrade_contract.sh` @ `c956678` | **290 PASS / 0 FAIL** (rc=0) — reproduced exactly |
+| Incident command `bash install.sh --repair … --tls-mode manual --cert-file … --key-file …` | exit 1, `ERROR: unknown option: --tls-mode (see --help)`, zero mutation — reproduced |
+| D11 BEFORE: `bash <upgrade.sh @ c956678> --version` | exit 1, raw `line 152: 2: unbound variable` (cryptic, but pre-mutation) |
+| D11 AFTER: `bash upgrade.sh --version` / `bash upgrade.sh --source` | exit 1, `option --version requires a value (see --help)` — actionable |
+| D11 positive path: root-gate-disabled `upgrade.sh --version 0.4.1 --bootstrap-info` | exit 0, bootstrap info printed (complete pairs pass the parser; exits before any network/updater activity) |
+| `pytest tests/` (post-round-2 patch) | **208 passed, 0 failed** (203 + 5 new D11 locks) — evidence: `report/evidence/pytest_audit_round2_20261109.txt` |
+| `bash tests/test_upgrade_contract.sh` (post-round-2 patch) | **290 PASS / 0 FAIL** — evidence: `report/evidence/upgrade_contract_round2_20261109.txt` |
+
+Full reproduction transcript incl. the D11 before/after:
+`report/evidence/incident_repro_round2_20261109.txt`.
+
+GitHub CI on `c956678` (pre-round-2 HEAD): completed / **success** — run
+42557988917. CI for the round-2 commit is recorded in
+`UAEG_PRODUCTION_ACCEPTANCE.md` §6.
+
+Round-2 coverage audit of the mission §10 test matrix — nothing taken on
+faith; each required item was located in the actually-executed suite:
+
+| Mission §10 item | Where it is locked (verified green this round) |
+|---|---|
+| Canonical TLS flags accepted | `test_installer_cli_contract.py` (dry-run plan acceptance) |
+| Unsupported flags rejected before mutation | same (incident reproduction + ghost flags) |
+| Missing values rejected | same — install.sh (10 value-taking options) and, since round 2, upgrade.sh (`--version`/`--source`) |
+| Conflicting options rejected | same (4 conflicting-TLS-source combinations) |
+| Public dashboard requires password + TLS | `test_unit_core.py::test_config_validation_rules` (wildcard without allow_public / without tls → `ConfigError`), serve-time fail-closed gate (`server.py:128`), installer password prerequisite (e2e repair, step 3) |
+| Ports 3902 and 3903 cannot conflict | `test_unit_core.py::test_config_validation_rules` (equal ports → `ConfigError`) |
+| Existing configuration survives repair | `test_e2e_installer_repair.py` (custom `exec.default_timeout_s=333` preserved) |
+| Manual TLS validates certificate and key | installer parse-time pair + file-existence checks; `uaeg config set` file validation (`test_unit_regression_configset_pass.py`) |
+| Login success/failure; protected API rejection; logout; session expiry; password rotation; MCP key independence | `test_dashboard_auth.py`, `test_e2e_dashboard_auth.py`, `test_unit_regression_configset_pass.py` (rotation kills sessions; keys byte-identical and still authenticate) |
+| Stale-source rejection; schema compatibility; database persistence; rollback | upgrade-contract suite, 290 checks (incl. older-source refusal and rollback drills) |
+| Post-repair listener verification | `test_e2e_installer_repair.py` (both listeners live) + install.sh dashboard-listener proof block |
+| MCP initialization; HTTPS dashboard login; API after authentication; both ports simultaneously | `test_e2e_smoke.py`, `test_e2e_installer_repair.py` |
+
+**Round-2 verdict:** 208 + 290 checks green after the patch; every round-1
+claim that was re-checkable in-sandbox reproduced exactly; one additional
+defect of the incident's class found and fixed (D11).

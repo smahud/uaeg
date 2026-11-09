@@ -1,0 +1,11 @@
+# UAEG audit round 2 — full test-suite re-run (post round-2 patch)
+# Date: 2026-11-09 16:14:21 UTC
+# Env: Debian sandbox, Python 3.12.16, fresh venv, 'pip install -e .[dev]'
+# Command: ./.venv-audit/bin/python -m pytest tests/ -q -p no:warnings
+
+........................................................................ [ 34%]
+........................................................................ [ 69%]
+................................................................         [100%]
+
+exit code: 0 — 208/208 passed (203 round-1 checks + 5 round-2 checks), 0 failed, 0 errors.
+(Dot-only quiet output: 208 dots above, no F/E markers.)

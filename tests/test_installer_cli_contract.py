@@ -398,5 +398,94 @@ def test_recovery_runbook_manual_alternative_orders_bind_last():
     )
 
 
+# ----------------------------------------------------------------------
+# upgrade.sh CLI contract (audit round 2, 2026-11-09)
+#
+# install.sh's downgrade-refusal messages direct operators to
+# ``sudo bash upgrade.sh --version X.Y.Z --allow-downgrade``, and
+# docs/INSTALL.md / docs/TROUBLESHOOTING.md document ``--version X.Y.Z``
+# and ``--source DIR``. A missing value used to kill the script with
+# bash's raw ``unbound variable`` (the D6 class round 1 fixed in
+# install.sh; defect D11 in round 2's numbering). It was always a SAFE,
+# pre-mutation failure - but not an actionable one.
+# ----------------------------------------------------------------------
+UPGRADE_SH = REPO / "upgrade.sh"
+
+
+def run_upgrade_sh(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    """Run the real upgrade.sh. Value errors die at parse time - before
+    the root check, before any file write and before any network use."""
+    return subprocess.run(
+        ["bash", str(UPGRADE_SH), *args],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=str(cwd or REPO),
+    )
+
+
+@pytest.fixture(scope="module")
+def patched_upgrade_sh(tmp_path_factory) -> Path:
+    """Root-check-disabled copy of upgrade.sh (the same sed patch the CI
+    installer job applies to install.sh), used ONLY to prove a COMPLETE
+    ``--version X.Y.Z`` passes the parser: --bootstrap-info exits before
+    any network or updater activity, so the positive path is provable
+    without side effects."""
+    base = tmp_path_factory.mktemp("upgrade-cli")
+    patched = base / "upgrade-test.sh"
+    sed = subprocess.run(
+        [
+            "sed",
+            "-e", r"s|^if \[\[ \$EUID -ne 0 \]\]; then|if false; then|",
+            "-e", r's|^  die "this script must run as root.*|  :|',
+            str(UPGRADE_SH),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    patched.write_text(sed.stdout)
+    return patched
+
+
+@pytest.mark.parametrize("option", ["--version", "--source"])
+def test_upgrade_sh_missing_value_rejected_with_actionable_error(tmp_path, option):
+    proc = run_upgrade_sh(option, cwd=tmp_path)
+    assert proc.returncode != 0
+    assert f"option {option} requires a value" in proc.stderr
+    # Not bash's raw failure, and the death happened at parse time: the
+    # root gate was never reached and nothing was created or fetched.
+    assert "unbound variable" not in proc.stderr
+    assert "must run as root" not in proc.stderr
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("option", ["--version", "--source"])
+def test_upgrade_sh_option_like_value_rejected(tmp_path, option):
+    proc = run_upgrade_sh(option, "--check", cwd=tmp_path)
+    assert proc.returncode != 0
+    assert f"option {option} requires a value" in proc.stderr
+    assert "unbound variable" not in proc.stderr
+    assert "must run as root" not in proc.stderr
+
+
+def test_upgrade_sh_complete_version_pair_passes_the_parser(patched_upgrade_sh):
+    """A complete `--version X.Y.Z` gets PAST the parser: with the root
+    gate disabled, --bootstrap-info prints its info block and exits 0
+    BEFORE any network or updater activity - proving the guard fires only
+    on genuinely missing values, never on valid invocations."""
+    proc = subprocess.run(
+        ["bash", str(patched_upgrade_sh), "--version", "0.4.1", "--bootstrap-info"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=str(REPO),
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "requires a value" not in proc.stderr
+    assert "unbound variable" not in proc.stderr
+    assert "UAEG upgrade bootstrap" in proc.stdout
+
+
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(pytest.main([__file__, "-v"]))

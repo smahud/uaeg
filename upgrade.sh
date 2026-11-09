@@ -144,14 +144,26 @@ OPT_MAIN=0
 OPT_SOURCE=""
 FORWARD_ARGS=()
 
+need_value() {  # $1=option name, $2=remaining argc (incl. the option), $3=candidate
+  # Audit round 2 (2026-11-09): same guard class as install.sh (round 1,
+  # defect D6 there). A value-taking option that is last on the command
+  # line, or whose candidate looks like an option ("--version --check"),
+  # must fail with an actionable message instead of bash's raw "unbound
+  # variable". Runs at parse time - before the root check, before any
+  # file write and before any network activity.
+  if [[ "$2" -lt 2 || -z "${3:-}" || "$3" == -* ]]; then
+    die "option $1 requires a value (see --help)"
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --check)          BOOT_MODE="check"; shift ;;
     --dry-run)        BOOT_MODE="dry-run"; shift ;;
     --rollback)       BOOT_MODE="rollback"; FORWARD_ARGS+=("$1"); shift ;;
-    --version)        OPT_VERSION="${2#v}"; FORWARD_ARGS+=("$1" "$2"); shift 2 ;;
+    --version)        need_value "$1" "$#" "${2:-}"; OPT_VERSION="${2#v}"; FORWARD_ARGS+=("$1" "$2"); shift 2 ;;
     --main)           OPT_MAIN=1; FORWARD_ARGS+=("$1"); shift ;;
-    --source)         OPT_SOURCE="$2"; FORWARD_ARGS+=("$1" "$2"); shift 2 ;;
+    --source)         need_value "$1" "$#" "${2:-}"; OPT_SOURCE="$2"; FORWARD_ARGS+=("$1" "$2"); shift 2 ;;
     --bootstrap-info) BOOT_MODE="info"; shift ;;
     -h|--help)        usage; exit 0 ;;
     *)                FORWARD_ARGS+=("$1"); shift ;;

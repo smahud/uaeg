@@ -1,0 +1,26 @@
+# UAEG audit round 2 — upgrade-contract suite re-run (post round-2 patch)
+# Date: 2026-11-09 16:14:21 UTC
+# Command: bash tests/test_upgrade_contract.sh
+
+
+[1;36m[16:06:57][0m T-56: UAEG_ALLOW_DOWNGRADE=1 + sumber lama yang KOMPATIBEL skema -> repair berjalan (jalur resmi)
+  [1;32mPASS[0m T-56 rc=0 (downgrade tersurat selesai)
+  [1;32mPASS[0m T-56 peringatan persetujuan tampil
+  [1;32mPASS[0m T-56 probe skema lolos
+  [1;32mPASS[0m T-56 versi sekarang v0.4.1 (sumber lama)
+  [1;32mPASS[0m T-56 kunci agent identik
+  [1;32mPASS[0m T-56 konfigurasi operator dipertahankan
+
+[1;36m[16:06:59][0m T-57: PYTHONPATH busuk (paket uaeg LAMA) tidak bisa membayangi — sanitasi interpreter v0.4.1
+  [1;32mPASS[0m T-57 rc=0 (repair kebal PYTHONPATH busuk)
+  [1;32mPASS[0m T-57 probe memakai sumber ter-staging, bukan bayangan
+  [1;32mPASS[0m T-57 versi 0.4.1
+  [1;32mPASS[0m T-57 konfigurasi tetap membawa dashboard.tls (skema benar yang menulis)
+
+==============================================================
+ HASIL: [1;32m290 PASS[0m / [1;31m0 FAIL[0m
+==============================================================
+
+[suite selesai rc=0 | base=/tmp/uaeg-upgtest.O6JK1H]
+
+exit code: 0

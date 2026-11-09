@@ -1,0 +1,30 @@
+# UAEG audit round 2 — incident reproduction + D11 before/after
+# Date: 2026-11-09 16:14:11 UTC · Executor: independent recovery-verification session
+
+== 1. The reported incident, reproduced against main (post-round-1 fix) ==
+$ bash install.sh --repair --dashboard-bind public --tls-mode manual --cert-file .../fullchain.pem --key-file .../privkey.pem
+[1;31mERROR:[0m unknown option: --tls-mode (see --help)
+exit=1
+
+== 2. D11 BEFORE (upgrade.sh @ c956678, pre-round-2) ==
+$ bash upgrade.sh --version
+/tmp/upgrade-pre-d11.sh: line 152: 2: unbound variable
+exit=1
+
+== 3. D11 AFTER (upgrade.sh @ working tree, round-2 patch) ==
+$ bash upgrade.sh --version
+[1;31mERROR:[0m option --version requires a value (see --help)
+exit=1
+$ bash upgrade.sh --source
+[1;31mERROR:[0m option --source requires a value (see --help)
+exit=1
+
+== 4. Positive path: complete --version X.Y.Z passes the parser (root-gate-disabled copy, --bootstrap-info exits before network) ==
+UAEG upgrade bootstrap
+  bootstrap version : 4
+  updater interface : v1 (max supported)
+  trusted keys      : uaeg-release-1,uaeg-release-2,uaeg-release-3,uaeg-release-4 (fingerprints d6ced90e372b478e, 8d3fcff09c9aed7d, ed1c626c6e2def7a, 653454fbdf237c1b)
+  release channel   : https://api.github.com/repos/smahud/uaeg
+  this file         : /tmp/upgrade-noroot.sh (sha256 2162152bf07fbd07…)
+  contract          : docs/UPGRADE_CONTRACT.md (v3), docs/BOOTSTRAP.md
+exit=0

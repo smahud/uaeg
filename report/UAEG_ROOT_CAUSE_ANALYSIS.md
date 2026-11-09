@@ -173,3 +173,55 @@ canonical interface (`--cert`/`--key` — no compatibility aliases added;
 decision rationale in `UAEG_PATCH_CHANGELOG.md` §2) plus a permanent
 doc↔parser contract test and an end-to-end repair regression that drives
 the exact production recovery command shape.
+
+---
+
+## 5. Round-2 findings (2026-11-09, independent re-audit)
+
+A second session re-ran the entire verification (all claims reproduced:
+203 pytest + 290 contract checks green pre-round-2) and swept the remaining
+CLI/doc surfaces beyond the TLS flags. One additional defect of the
+incident's class was found, plus one report-hygiene erratum:
+
+### D11 (low, fixed this round) — upgrade.sh missing values: raw bash error
+
+`bash upgrade.sh --version` (or `--source`) as the last argument died with
+bash's raw `line 152: 2: unbound variable` instead of an actionable
+message — the exact D6 class round 1 fixed in `install.sh`, missed in the
+sibling bootstrap (round 1's changelog §4 had recorded "updater.sh /
+upgrade.sh: no defect found in the audit scope" — that finding is
+superseded for `upgrade.sh` by this round).
+
+Why it matters despite being fail-safe: `install.sh`'s own
+downgrade-refusal messages — the documented recovery path for the exit-5
+class — direct operators to
+`sudo bash upgrade.sh --version X.Y.Z --allow-downgrade`, and
+`docs/INSTALL.md` / `docs/TROUBLESHOOTING.md` document `--version X.Y.Z`
+and `--source DIR`. An operator who truncates the command now gets the
+same actionable "requires a value" error class as `install.sh`.
+
+Fixed with the same `need_value()` guard at parse time (before the root
+check, before any file write, before any network use). Locked by 5 new
+checks in `tests/test_installer_cli_contract.py`: missing-value rejection
+(pre-root, zero side effects, no raw bash error) on both options,
+option-like-value rejection, and the positive proof that a complete
+`--version X.Y.Z --bootstrap-info` passes the parser and exits cleanly
+before any network or updater activity.
+
+**Known limitation (deferred to the next release):** `updater.sh` — the
+signed, versioned release asset — has the same unguarded `$2` shifts for
+its value-taking options (`--backup`, `--version`, `--source`,
+`--installer`, `--repo`, `--install-dir`, …). The failure is fail-safe
+(dies at parse time, pre-mutation) and already-published release assets
+cannot be hot-fixed; the guard should accompany the next signed updater.
+Not a blocker for the current recovery: every recovery path passes
+complete values, verified by the 290-check contract suite re-run after
+the round-2 patch.
+
+### Report-hygiene erratum
+
+Round-1's `UAEG_CURRENT_STATE.md` §2 probe timestamp ("~04:20 UTC,
+uptime 2067.5 s") is internally inconsistent with round-2's direct
+measurement (15:43 UTC, uptime 45 895.6 s ⇒ last service start ≈ 02:58
+UTC). Corrected in `UAEG_CURRENT_STATE.md` §6; no operational conclusion
+changes.
