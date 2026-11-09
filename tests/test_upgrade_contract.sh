@@ -305,6 +305,11 @@ t "T-13: remote upgrade ke tag terbaru (7.7.7) via staging terisolasi (U-1, U-2,
 WORK="$BASE/work"; REMOTE="$BASE/remote.git"
 git init --bare -q "$REMOTE"
 git clone -q "$REPO_DIR" "$WORK"
+# Branch-agnostic harness (2026-11-10 audit): when this suite runs from a
+# non-main checkout (e.g. a PR branch), the clone's default branch is that
+# branch and 'push origin main' fails with 'src refspec main does not match
+# any'. Force a local main at HEAD so the staging remote always receives it.
+git -C "$WORK" checkout -q -B main
 git -C "$WORK" remote set-url origin "$REMOTE"
 sed -i 's/^version[[:space:]]*=[[:space:]]*".*"/version = "7.7.7"/' "$WORK/pyproject.toml"
 sed -i 's/^__version__[[:space:]]*=[[:space:]]*".*"/__version__ = "7.7.7"/' "$WORK/src/uaeg/__init__.py"
@@ -493,6 +498,7 @@ INC="$BASE/incident"
 mkdir -p "$INC"
 git init --bare -q "$INCREMOTE"
 git clone -q "$REPO_DIR" "$INCWORK"
+git -C "$INCWORK" checkout -q -B main   # branch-agnostic harness (see T-13)
 git -C "$INCWORK" remote set-url origin "$INCREMOTE"
 sed -i 's/^version[[:space:]]*=[[:space:]]*".*"/version = "10.0.0"/' "$INCWORK/pyproject.toml"
 sed -i 's/^__version__[[:space:]]*=[[:space:]]*".*"/__version__ = "10.0.0"/' "$INCWORK/src/uaeg/__init__.py"
@@ -657,6 +663,7 @@ set_latest_tag() { printf '{"tag_name":"%s"}\n' "v$1" > "$RELROOT/releases/lates
 make_release_repo() {
   local gdir="$1" remote="$2" ver="$3"
   git clone -q "$REPO_DIR" "$gdir"
+  git -C "$gdir" checkout -q -B main   # branch-agnostic harness (see T-13)
   git -C "$gdir" remote set-url origin "$remote"
   sed -i "s/^version[[:space:]]*=[[:space:]]*\".*\"/version = \"$ver\"/" "$gdir/pyproject.toml"
   sed -i "s/^__version__[[:space:]]*=[[:space:]]*\".*\"/__version__ = \"$ver\"/" "$gdir/src/uaeg/__init__.py"
@@ -1057,6 +1064,7 @@ assert_file "$OPERATOR_UNI/install.sh" "T-39 install.sh terpadu operator dibuat 
 make_release_repo_uni() {
   local gdir="$1" remote="$2" ver="$3"
   git clone -q "$REPO_DIR" "$gdir"
+  git -C "$gdir" checkout -q -B main   # branch-agnostic harness (see T-13)
   git -C "$gdir" remote set-url origin "$remote"
   sed -i "s/^version[[:space:]]*=[[:space:]]*\".*\"/version = \"$ver\"/" "$gdir/pyproject.toml"
   sed -i "s/^__version__[[:space:]]*=[[:space:]]*\".*\"/__version__ = \"$ver\"/" "$gdir/src/uaeg/__init__.py"
