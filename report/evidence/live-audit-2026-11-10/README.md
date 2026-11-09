@@ -37,7 +37,8 @@ Tindak lanjut 2026-11-10 (sesi lanjutan, lihat addendum §6 pada
 (CI pada merge commit 5/5 sukses); PR #2 (`release/v0.4.2-prep`) menyiapkan
 rilis v0.4.2 — bump versi, pin unduhan e2e (`PINNED_SOURCE_RELEASE`,
 memperbaiki race CI-latent yang ditemukan saat tindak lanjut), runbook
-penandatanganan operator; pytest pada branch PR #2 → **226/226 lulus**. Rilis
+penandatanganan operator; pytest pada branch PR #2 → **226/226 lulus**; CI PR #2
+(head `9fbe42e`) → **5/5 job SUKSES**. Rilis
 resmi v0.4.2 tetap menunggu penandatanganan operator (kunci privat
 `uaeg-release-4`).
 
