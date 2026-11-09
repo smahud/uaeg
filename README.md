@@ -8,7 +8,7 @@ native capabilities of the server, up to and including root.
 
 [![CI](https://github.com/smahud/uaeg/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/smahud/uaeg/actions/workflows/ci.yml)
 
-**Current release: v0.4.1** (tag `v0.4.1`). The repository carries its own audit trail
+**Current release: v0.4.2** (tag `v0.4.2`). The repository carries its own audit trail
 — release decisions, security findings, and test evidence — under [report/](report/).
 
 > **SECURITY WARNING — READ THIS BEFORE INSTALLING**
@@ -128,6 +128,18 @@ sudo bash install.sh --check                   # status + available update
 sudo bash install.sh --rollback                # restore the latest upgrade backup
 ```
 
+> **v0.4.2 note (live audit 2026-11-10, findings F1–F8):** security and reliability
+> hardening from the first full live audit of a production deployment: the MCP tool layer
+> is now fail-closed when a key identity cannot be resolved (F1), `uaeg doctor`/`status`
+> report the real listener bind instead of the probe address (F2), the installer summary
+> reads back the effective TLS mode on config-preserving upgrades (F3), self-updates
+> started from inside the service re-exec into a transient systemd scope instead of being
+> killed by their own `systemctl stop` (F4), background jobs run in per-job transient
+> scopes and survive service restarts under systemd (F5, AT-11 verified live), plus log
+> hygiene (F6/F7) and a branch-agnostic upgrade-contract harness (F8). Full audit trail:
+> `report/UAEG_LIVE_FINDINGS_AND_FIXES.md` (and the live evidence pack under
+> `report/evidence/live-audit-2026-11-10/`).
+
 > **v0.4.1 note (production-incident fix + release-key rotation 3→4):** the installer now
 > refuses — before touching anything — to `--repair` from an older source tree over a newer
 > installation (the 2026-11-08 `dashboard.tls` incident class), verifies the staged schema
@@ -226,4 +238,4 @@ deploying, read [docs/SECURITY.md](docs/SECURITY.md) (threat model and hardening
 
 ## License
 
-MIT — see [LICENSE](LICENSE). UAEG is experimental software (v0.4.1); treat it accordingly.
+MIT — see [LICENSE](LICENSE). UAEG is experimental software (v0.4.2); treat it accordingly.

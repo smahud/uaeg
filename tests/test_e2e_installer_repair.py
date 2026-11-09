@@ -48,6 +48,16 @@ PASSWORD = "correct-horse-battery-staple-e2e"
 MCP_PORT = 3902
 DASH_PORT = 3903
 
+# The standalone-install phases below download a REAL tagged source archive
+# from GitHub (github.com/smahud/uaeg/archive/refs/tags/vX.Y.Z.tar.gz). Pin
+# that download to the newest PUBLISHED release so this suite:
+#   - stays green on a release-prep commit (version already bumped in the
+#     tree while the matching tag is not pushed yet), and
+#   - never races release.yml asset publication again.
+# Bump the pin whenever the e2e repair flow should track a newer published
+# release (optional - the flow itself is version-agnostic).
+PINNED_SOURCE_RELEASE = "0.4.1"
+
 _UNVERIFIED = ssl._create_unverified_context()
 
 
@@ -187,6 +197,7 @@ def repaired(installer, install) -> Install:
     # -- Phase 1: fresh install (loopback dashboard, manual TLS) --
     proc = install.run_installer(
         installer,
+        "--version", PINNED_SOURCE_RELEASE,
         "--port", str(MCP_PORT), "--dashboard-port", str(DASH_PORT),
         "--dashboard-bind", "loopback",
         "--public-ip", "127.0.0.1",
@@ -215,6 +226,7 @@ def repaired(installer, install) -> Install:
     proc = install.run_installer(
         installer,
         "--repair",
+        "--version", PINNED_SOURCE_RELEASE,
         "--dashboard-bind", "public",
         "--cert", str(install.cert),
         "--key", str(install.key),
@@ -412,7 +424,7 @@ def test_both_listeners_operational_simultaneously(serving):
     with _client() as c:
         dash = c.get("/login")
     assert health.get("status") == "ok"
-    assert health.get("version") == "0.4.1"
+    assert health.get("version") == PINNED_SOURCE_RELEASE
     assert dash.status_code == 200
 
 
