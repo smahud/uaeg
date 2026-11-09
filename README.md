@@ -8,7 +8,7 @@ native capabilities of the server, up to and including root.
 
 [![CI](https://github.com/smahud/uaeg/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/smahud/uaeg/actions/workflows/ci.yml)
 
-**Current release: v0.4.2** (tag `v0.4.2`). The repository carries its own audit trail
+**Current release: v1.0.0** (tag `v1.0.0`). The repository carries its own audit trail
 — release decisions, security findings, and test evidence — under [report/](report/).
 
 > **SECURITY WARNING — READ THIS BEFORE INSTALLING**
@@ -128,7 +128,7 @@ sudo bash install.sh --check                   # status + available update
 sudo bash install.sh --rollback                # restore the latest upgrade backup
 ```
 
-> **v0.4.2 note (live audit 2026-11-10, findings F1–F8):** security and reliability
+> **v1.0.0 note (live audit 2026-11-10, findings F1–F8):** security and reliability
 > hardening from the first full live audit of a production deployment: the MCP tool layer
 > is now fail-closed when a key identity cannot be resolved (F1), `uaeg doctor`/`status`
 > report the real listener bind instead of the probe address (F2), the installer summary
@@ -238,4 +238,4 @@ deploying, read [docs/SECURITY.md](docs/SECURITY.md) (threat model and hardening
 
 ## License
 
-MIT — see [LICENSE](LICENSE). UAEG is experimental software (v0.4.2); treat it accordingly.
+MIT — see [LICENSE](LICENSE). UAEG v1.0.0: every suite green and production-live-verified — but it still grants full root execution with no sandbox; treat it accordingly.

@@ -138,3 +138,28 @@ Sisa langkah operator (urutan lengkap di `report/RELEASE_v0.4.2_RUNBOOK.md`):
 merge PR #2 saat siap menandatangani → `python3 release/make_release.py --key <uaeg-release-4>` →
 commit manifest → tag anotasi `v0.4.2` → `release.yml` verifikasi ulang & publikasi →
 `sudo bash install.sh` di VPS (dari `0.4.1+audit1`, key sama, tanpa rotasi) → verifikasi pascapatch.
+
+---
+
+## 7. Addendum sesi 3 — 2026-11-10 (verifikasi ulang, merge PR #2, dan keputusan versi 1.0.0)
+
+Operator memerintahkan: "lanjutkan merge, commit, and push; bump version ke 1.0.0
+jika diperlukan jika project sudah benar-benar final dan lulus semua uji tanpa
+ada masalah apapun". Hasil eksekusi:
+
+| Langkah | Status | Bukti |
+|---|---|---|
+| Verifikasi ulang live bridge (sesi baru, key baru hasil rotasi operator) | ✅ `initialize`/`tools/list`/`server_info`/`shell_exec` — `0.4.1+audit1`, `root@microtix`, 13 tools; key lama `k-837c0f289a4a` diuji → **401 per-request** (pencabutan ditegakkan); 1 key aktif / 2 revoked | `evidence/session3-verification/SESSION3_SUMMARY.md` |
+| Verifikasi ulang repositori | ✅ `origin/main` (`705c792`) memuat seluruh patch F1–F8 + 5 laporan live; branch deploy `8369e6e` == kode VPS (diff hanya string versi). Catatan metodologis: branch `main` lokal pada clone lama tertinggal di `478907c` — verifikasi wajib terhadap remote ref | `evidence/session3-verification/` |
+| Suite penuh dijalankan ulang independen (checkout `origin/main`, Python 3.12) | ✅ pytest **197 unit/regresi + 18 regresi v042 + 21 e2e LULUS**; `tests/test_upgrade_contract.sh` **290 PASS / 0 FAIL** | log di `evidence/session3-verification/` |
+| Disposisi item audit 7.1–7.5 | ✅ semua item terdisposisi dengan bukti (lihat `UAEG_SESSION3_VERIFICATION.md` §4) — termasuk bukti live auto-rollback jujur (deploy-1 gagal versi non-PEP440 → `result:"rolled-back"`, `rollback_verified:true`) | `UAEG_SESSION3_VERIFICATION.md` |
+| **PR #2 di-merge ke `main`** | ✅ merge commit `4e40c66` | https://github.com/smahud/uaeg/pull/2 |
+| **Keputusan versi: lompat ke `1.0.0`** (bukan 0.4.2) | ✅ sesuai kriteria operator: seluruh suite hijau (lokal 197+18+21 pytest, kontrak 290/290, CI 5/5 pada head PR), live VPS terverifikasi sehat, seluruh temuan F1–F8 diperbaiki dengan regresi permanen, tidak ada defect terbuka — batasan yang tersisa adalah keputusan desain terdokumentasi (LIMITATIONS.md), bukan cacat. `sort -V`: `0.4.1+audit1 < 1.0.0` → upgrade VPS tetap mulus | commit bump v1.0.0 di `main` |
+| Runbook rilis diperbarui | ✅ `report/RELEASE_v0.4.2_RUNBOOK.md` → **`report/RELEASE_1.0.0_RUNBOOK.md`** (langkah tanda tangan operator untuk tag `v1.0.0`) | repo |
+| Verdict RILIS v1.0.0 | **TETAP BLOCKED menunggu tanda tangan operator** (tidak berubah secara substansi: agent tidak memiliki kunci privat `uaeg-release-4` dan tidak memalsukannya) | §2 + `RELEASE_1.0.0_RUNBOOK.md` |
+
+Catatan kejujuran: "1.0.0" di sini berarti *seluruh suite pengujian hijau, audit
+live selesai, dan semua temuan telah diperbaiki* — BUKAN klaim bebas risiko. UAEG
+tetap gateway eksekusi root tanpa sandbox (LIMITATIONS.md #1), restricted paths
+tetap advisory (#2), dan tidak ada RBAC (#10); dokumentasi README/LIMITATIONS
+diperbarui agar klaim versi tidak menyesatkan.

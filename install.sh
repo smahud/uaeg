@@ -81,7 +81,7 @@ APP_BACKUP=""
 CONFIG_BACKUP=""
 # Release this installer belongs to (used for standalone bootstrap, FR-002).
 # Override the source version at runtime with: --version X.Y.Z or UAEG_VERSION=X.Y.Z
-UAEG_RELEASE_VERSION="0.4.2"
+UAEG_RELEASE_VERSION="1.0.0"
 FETCH_VERSION=""
 
 # ----------------------------------------------------------------------

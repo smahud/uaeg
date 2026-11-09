@@ -1,4 +1,4 @@
-"""Regression tests for the 2026-11-10 live bridge audit (v0.4.2 patch set).
+"""Regression tests for the 2026-11-10 live bridge audit (the "v0.4.2" patch set, shipped as v1.0.0).
 
 Findings covered (see report/UAEG_LIVE_FINDINGS_AND_FIXES.md):
 
