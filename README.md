@@ -8,7 +8,7 @@ native capabilities of the server, up to and including root.
 
 [![CI](https://github.com/smahud/uaeg/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/smahud/uaeg/actions/workflows/ci.yml)
 
-**Current release: v0.4.1.zaudit1** (live-audit build of the 2026-11-10 patch set; the next official release continues from v0.4.1). The repository carries its own audit trail
+**Current release: v0.4.1+audit1** (live-audit build of the 2026-11-10 patch set; the next official release continues from v0.4.1). The repository carries its own audit trail
 — release decisions, security findings, and test evidence — under [report/](report/).
 
 > **SECURITY WARNING — READ THIS BEFORE INSTALLING**
