@@ -1,0 +1,15 @@
+== PUBLISHED ASSET E2E — v0.4.1 (2026-11-09T02:50:41Z) ==
+all 8 documented assets fetched from:
+  https://github.com/smahud/uaeg/releases/download/v0.4.1/
+sha256 sidecars: install.sh OK, upgrade.sh OK, uaeg-updater-0.4.1.sh OK
+manifest signature: key 3 -> FAIL (documented rotation refusal), key 4 -> OK
+manifest version: 0.4.1, updater interface 1, asset hashes match
+
+-- fresh install with the PUBLISHED install.sh (isolated dirs) --
+rc=0; summary: Dashboard http://127.0.0.1:3953 (loopback only), MCP https://127.0.0.1:3952/mcp
+
+-- served from the installed location --
+uaeg version -> 0.4.1
+healthz -> {"status":"ok","service":"UAEG","version":"0.4.1",...}
+MCP initialize (bearer key) -> serverInfo UAEG 0.4.1
+dashboard /login (loopback) -> 200
