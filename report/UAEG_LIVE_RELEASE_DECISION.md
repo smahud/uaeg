@@ -121,3 +121,20 @@ menambah CIDR allowlist dashboard kapan saja via `uaeg config set`
    pada model argumen tool (perilaku abaikan-diam-diam parameter asing saat ini
    terdokumentasi), dan penambahan pengujian e2e khusus self-update dalam
    VM systemd-disposable di CI (kontrak sudah mencakup sebagian besar).
+
+## 6. Addendum tindak lanjut — 2026-11-10 (sesi lanjutan)
+
+Eksekusi rekomendasi §5 sejauh yang dapat dilakukan agent (tanpa kunci privat):
+
+| Langkah | Status | Bukti |
+|---|---|---|
+| Live bridge dicek ulang sebelum bertindak | ✅ `server_info` + `shell_exec` dengan key lama: `0.4.1+audit1`, `root@microtix`, service aktif, TLS Let's Encrypt s.d. Feb 2027 | `evidence/live-audit-2026-11-10/07_followup.jsonl` |
+| **PR #1 di-merge ke `main`** | ✅ merge commit `705c792` (merge commit biasa — SHA patch `f1d326f`/`16c2475`/`121a7ca` terjaga); CI pada merge commit: **5/5 SUKSES** | https://github.com/smahud/uaeg/pull/1 |
+| **PR #2: persiapan rilis v0.4.2** dibuka | ✅ branch `release/v0.4.2-prep` @ `42a3dea`: bump versi 0.4.1→0.4.2 (pyproject/`__init__.py`/install.sh), catatan v0.4.2 di README, runbook penandatanganan operator (`report/RELEASE_v0.4.2_RUNBOOK.md`), pin unduhan e2e | https://github.com/smahud/uaeg/pull/2 · pytest lokal 226/226 |
+| Perbaikan infra test (temuan tindak lanjut) | ✅ suite e2e installer-repair mengunduh arsip tag riil dari GitHub sesuai versi pohon — commit bump versi akan 404 sebelum tag ada (CI rilis v0.4.1 hanya hijau karena push tag menang race melawan `release.yml`). Kini fase unduhan dipatok ke `PINNED_SOURCE_RELEASE` (rilis terbit terbaru) → deterministik | PR #2 |
+| Verdict RILIS v0.4.2 | **TETAP BLOCKED — menunggu operator menandatangani** (tidak berubah; agent tidak memiliki kunci privat `uaeg-release-4` dan tidak memalsukannya) | §2 + runbook |
+
+Sisa langkah operator (urutan lengkap di `report/RELEASE_v0.4.2_RUNBOOK.md`):
+merge PR #2 saat siap menandatangani → `python3 release/make_release.py --key <uaeg-release-4>` →
+commit manifest → tag anotasi `v0.4.2` → `release.yml` verifikasi ulang & publikasi →
+`sudo bash install.sh` di VPS (dari `0.4.1+audit1`, key sama, tanpa rotasi) → verifikasi pascapatch.
