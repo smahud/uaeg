@@ -163,3 +163,8 @@ live selesai, dan semua temuan telah diperbaiki* — BUKAN klaim bebas risiko. U
 tetap gateway eksekusi root tanpa sandbox (LIMITATIONS.md #1), restricted paths
 tetap advisory (#2), dan tidak ada RBAC (#10); dokumentasi README/LIMITATIONS
 diperbarui agar klaim versi tidak menyesatkan.
+
+**Hasil CI pada HEAD `cdae21e` (main, tree v1.0.0): 5/5 SUKSES** — Test Python
+3.11 / 3.12 / 3.13, Install script smoke (no-service), Safe-upgrade contract
+tests (run 42719476176, 2026-11-09T23:19Z). `main` siap ditag `v1.0.0` oleh
+operator mengikuti `RELEASE_1.0.0_RUNBOOK.md`.
