@@ -6,6 +6,20 @@ this audit environment has GitHub access only (no VPS credentials); every
 command below was verified in the isolated lab against the real scripts,
 and the release assets are public.
 
+**Revision 2 (2026-11-09, installer-contract audit):** revision 1 shipped a
+`--repair` invocation with flags that do not exist (`--tls-mode`,
+`--cert-file`, `--key-file`) — the repair died with
+`ERROR: unknown option: --tls-mode` **before any mutation** (safe failure,
+nothing was changed; reproduced in `report/evidence/` of the audit). The
+canonical TLS interface of `install.sh` is exactly:
+`--domain DOMAIN` · `--cert FILE --key FILE` · `--self-signed`.
+This revision corrects the invocation, the `uaeg config set` ordering
+(each `set` validates the WHOLE config, so `dashboard.bind 0.0.0.0` must
+come LAST), and replaces the `curl -sk` external check with real TLS
+verification (`-k` disables validation and is not proof of trusted TLS).
+All corrected commands were re-verified against the real parser and are
+enforced by the regression suite (`tests/test_installer_cli_contract.py`).
+
 **Current production state (external probes, 2026-11-09 02:41 UTC):**
 
 | Endpoint | State |
@@ -62,17 +76,33 @@ active, and the installer prints a **verified dashboard listener** line.
 The dashboard requires, in this order (nothing is exposed until all hold):
 
 ```bash
+# 2a-0. Preflight (read-only — nothing is changed; abort if any check fails)
+systemctl is-active uaeg                                  # must print: active
+uaeg version                                               # must print: 0.4.1
+sudo uaeg status                                           # listeners + health
+# TLS material exists, is currently valid, covers the host, and the
+# certificate matches the private key (the same files the healthy MCP
+# listener on 3902 already serves):
+LE=/etc/letsencrypt/live/host.zerotier.my.id
+sudo openssl x509 -in "$LE/fullchain.pem" -noout -dates -ext subjectAltName
+[ "$(sudo openssl x509 -in "$LE/fullchain.pem" -noout -modulus)" = \
+  "$(sudo openssl rsa  -in "$LE/privkey.pem"    -noout -modulus)" ] \
+  && echo "cert/key match" || echo "MISMATCH — STOP"
+df -h /var/lib/uaeg                                        # room for backups
+
 # 2a. Dashboard password (skip if already set — it is preserved either way;
 #     do NOT reset it if you know it)
 sudo uaeg pass                          # interactive, hidden input, twice
 
 # 2b. Apply the public bind with the v0.4.1 installer (from the SAME
-#     v0.4.1 file downloaded in step 1 — a current source is now enforced)
+#     v0.4.1 file downloaded in step 1 — a current source is now enforced).
+#     TLS flags are EXACTLY "--cert FILE --key FILE" (manual mode); there
+#     is no --tls-mode / --cert-file / --key-file option (see revision 2
+#     note above — verified against the parser and by regression tests).
 sudo bash install.sh --repair \
   --dashboard-bind public \
-  --tls-mode manual \
-  --cert-file /etc/letsencrypt/live/host.zerotier.my.id/fullchain.pem \
-  --key-file  /etc/letsencrypt/live/host.zerotier.my.id/privkey.pem
+  --cert /etc/letsencrypt/live/host.zerotier.my.id/fullchain.pem \
+  --key  /etc/letsencrypt/live/host.zerotier.my.id/privkey.pem
 ```
 
 Notes:
@@ -80,16 +110,38 @@ Notes:
   `allow_public=true`, `dashboard.tls=true` and reuses your existing
   Let's Encrypt material (the same certificate the healthy MCP listener on
   3902 already serves — valid to 2027-02-05).
+- **D10 caveat (audit 2026-11-09):** the RELEASED v0.4.1 installer
+  contains a defect where `--dashboard-bind public` never actually sets
+  `allow_public`/`tls` (the flag was assigned inside a command-
+  substitution subshell and lost, since v0.3.0), so the config write is
+  refused unless the existing config ALREADY has
+  `dashboard.allow_public=true`. The defect is fixed on the `main`
+  branch (regression-tested by `tests/test_e2e_installer_repair.py`)
+  and will ship in the next release. Until then, either run step 2b
+  from a current `main` checkout (`git clone
+  https://github.com/smahud/uaeg.git && cd uaeg`), or use the manual
+  alternative below — it works on the installed v0.4.1 as-is and needs
+  no installer at all.
 - The installer **refuses** to expose the dashboard without a password
   (fail-closed) and now **positively verifies** the dashboard listener
   answers on its effective bind before declaring success.
 - If your certificate lives elsewhere, adjust the two paths; `sudo uaeg
   doctor` lists what it found.
-- Equivalent manual alternative (same effect, no installer):
+- Since the audit that follows this runbook, the installer additionally
+  validates the TLS flags BEFORE any mutation: `--cert` without `--key`
+  (or vice versa), a missing certificate file, or mixing TLS sources
+  (`--domain` + `--cert`, `--self-signed` + `--cert`) each fail immediately
+  with an explicit error instead of dying half-way through.
+- Equivalent manual alternative (same effect, no installer). **ORDER
+  MATTERS**: every `uaeg config set` re-validates the WHOLE configuration,
+  so the wildcard bind must be set LAST — setting `dashboard.bind 0.0.0.0`
+  first is rejected ("Refusing to bind ... without an explicit opt-in")
+  and silently leaves the dashboard on 127.0.0.1 (verified defect in
+  revision 1 of this runbook):
   ```bash
-  sudo uaeg config set dashboard.bind 0.0.0.0
   sudo uaeg config set dashboard.allow_public true
   sudo uaeg config set dashboard.tls true
+  sudo uaeg config set dashboard.bind 0.0.0.0
   sudo systemctl restart uaeg
   ```
 
@@ -115,8 +167,11 @@ curl -sI https://host.zerotier.my.id:3903/login | head -1        # HTTP/2 200
 curl -sv https://host.zerotier.my.id:3903/login 2>&1 | grep -E 'subject:|issuer:|SSL cert'
 # 4c. Unauthenticated API access is refused
 curl -s https://host.zerotier.my.id:3903/api/overview | head -1  # 401/403, NOT data
-# 4d. MCP untouched
-curl -sk https://host.zerotier.my.id:3902/healthz                 # {"status":"ok",...,"version":"0.4.1"}
+# 4d. MCP untouched — REAL TLS verification. Do NOT use -k here: a -k
+#     response is not proof of trusted TLS (revision 1 of this runbook
+#     used -k — corrected). The Let's Encrypt chain must validate as-is:
+curl -fsS https://host.zerotier.my.id:3902/healthz
+#     expected: {"status":"ok",...,"version":"0.4.1"}
 ```
 
 Then in a real browser: `https://host.zerotier.my.id:3903` → login page →
@@ -145,5 +200,8 @@ deploying; rollback is one command and does not touch your agent keys.
   thing that was wrong, not the configuration.
 - Do not bind the dashboard publicly without the password step — the
   installer refuses it by design (fail-closed).
-- Do not use `--tls-mode self-signed` for the public dashboard —
+- Do not use `--self-signed` for the public dashboard —
   browsers will reject it; the existing Let's Encrypt material is reused.
+  (There is no `--tls-mode` flag in any version of the installer — TLS mode
+  is selected by the flag you pass: `--domain`, `--cert/--key`, or
+  `--self-signed`.)

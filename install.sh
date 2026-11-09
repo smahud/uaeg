@@ -63,6 +63,11 @@ CERT_FILE=""
 KEY_FILE=""
 TLS_MODE="self-signed"
 TLS_MODE_GIVEN=0
+# Which TLS SOURCE the operator selected on the command line (exactly one
+# per invocation - enforced after parsing, before any mutation):
+TLS_SRC_DOMAIN=0        # --domain        (certbot)
+TLS_SRC_MANUAL=0        # --cert / --key  (manual)
+TLS_SRC_SELFSIGNED=0    # --self-signed
 DATA_DIR="/var/lib/uaeg"
 CONFIG_DIR="/etc/uaeg"
 INSTALL_DIR="/opt/uaeg"
@@ -229,11 +234,6 @@ Commands:
                          from must not be OLDER than the installed app
                          (refused, exit 5) and its schema must accept the
                          existing configuration (verified BEFORE the
-                         service is stopped or any file is replaced).
-                         v0.4.1 safety: the source tree this script runs
-                         from must not be OLDER than the installed app
-                         (refused, exit 5) and its schema must accept the
-                         existing configuration (verified BEFORE the
                          service is stopped or any file is replaced)
   --start                start the UAEG systemd service
   --stop                 stop the UAEG systemd service
@@ -281,6 +281,15 @@ USAGE
 # ----------------------------------------------------------------------
 # Argument parsing
 # ----------------------------------------------------------------------
+need_value() {  # $1=option name, $2=remaining argc (incl. the option), $3=candidate
+  # Fail with an actionable message instead of bash's raw "unbound
+  # variable" when a value-taking option is last on the command line, and
+  # treat an option-like token ("--cert --key x") as a MISSING value.
+  if [[ "$2" -lt 2 || -z "${3:-}" || "$3" == -* ]]; then
+    die "option $1 requires a value (see --help)"
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --start)            MODE_CMD="start"; shift ;;
@@ -296,17 +305,17 @@ while [[ $# -gt 0 ]]; do
       if [[ $# -ge 2 && "$2" != -* ]]; then ROLLBACK_ID="$2"; shift; fi
       shift ;;
     --repair)           MODE_CMD="repair"; FORCE_INPLACE=1; shift ;;
-    --port)             MCP_PORT="$2"; MCP_PORT_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
-    --dashboard-port)   DASHBOARD_PORT="$2"; DASHBOARD_PORT_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
-    --dashboard-bind)   DASHBOARD_BIND="$2"; DASHBOARD_BIND_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
-    --domain)           DOMAIN="$2"; TLS_MODE="certbot"; TLS_MODE_GIVEN=1; PUBLIC_HOST_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
-    --public-ip)        PUBLIC_IP="$2"; PUBLIC_HOST_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
-    --cert)             CERT_FILE="$2"; TLS_MODE="manual"; TLS_MODE_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
-    --key)              KEY_FILE="$2"; TLS_MODE="manual"; TLS_MODE_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
-    --self-signed)      TLS_MODE="self-signed"; TLS_MODE_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift ;;
-    --data-dir)         DATA_DIR="$2"; TARGETING_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
-    --config-dir)       CONFIG_DIR="$2"; TARGETING_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
-    --install-dir)      INSTALL_DIR="$2"; TARGETING_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --port)             need_value "$1" "$#" "${2:-}"; MCP_PORT="$2"; MCP_PORT_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --dashboard-port)   need_value "$1" "$#" "${2:-}"; DASHBOARD_PORT="$2"; DASHBOARD_PORT_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --dashboard-bind)   need_value "$1" "$#" "${2:-}"; DASHBOARD_BIND="$2"; DASHBOARD_BIND_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --domain)           need_value "$1" "$#" "${2:-}"; DOMAIN="$2"; TLS_MODE="certbot"; TLS_MODE_GIVEN=1; TLS_SRC_DOMAIN=1; PUBLIC_HOST_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --public-ip)        need_value "$1" "$#" "${2:-}"; PUBLIC_IP="$2"; PUBLIC_HOST_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --cert)             need_value "$1" "$#" "${2:-}"; CERT_FILE="$2"; TLS_MODE="manual"; TLS_MODE_GIVEN=1; TLS_SRC_MANUAL=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --key)              need_value "$1" "$#" "${2:-}"; KEY_FILE="$2"; TLS_MODE="manual"; TLS_MODE_GIVEN=1; TLS_SRC_MANUAL=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --self-signed)      TLS_MODE="self-signed"; TLS_MODE_GIVEN=1; TLS_SRC_SELFSIGNED=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift ;;
+    --data-dir)         need_value "$1" "$#" "${2:-}"; DATA_DIR="$2"; TARGETING_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --config-dir)       need_value "$1" "$#" "${2:-}"; CONFIG_DIR="$2"; TARGETING_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+    --install-dir)      need_value "$1" "$#" "${2:-}"; INSTALL_DIR="$2"; TARGETING_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
     --no-service)       NO_SERVICE=1; TARGETING_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift ;;
     --open-firewall)    OPEN_FIREWALL=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift ;;
     --yes|-y)           ASSUME_YES=1; shift ;;
@@ -333,6 +342,32 @@ if [[ -n "$MODE_CMD" && $CONFIG_FLAGS_GIVEN -eq 1 && "$MODE_CMD" != "dry-run" &&
   die "configuration flags (--port, --dashboard-bind, --domain, ...) apply to the
 install flow, not to --$MODE_CMD. For a read-only preview use --dry-run;
 to APPLY configuration changes to an existing installation use --repair."
+fi
+
+# ----------------------------------------------------------------------
+# TLS option contract (contract audit 2026-11-09). Everything below runs
+# BEFORE any mutation: no privilege escalation, no apt, no service stop, no
+# file write has happened yet. The canonical TLS interface is exactly:
+#   --domain DOMAIN | --cert FILE --key FILE | --self-signed
+# (there is NO --tls-mode / --cert-file / --key-file option; the v0.4.1
+# recovery runbook shipped with those non-existent flags and is corrected
+# by the same audit). One invocation selects ONE TLS source, and manual
+# TLS requires the complete pair to exist - previously "--cert x" without
+# "--key" was only detected AFTER the application had already been copied
+# to the install directory (partial fresh install), and mixing e.g.
+# "--domain --cert" silently took the last one.
+# ----------------------------------------------------------------------
+if (( TLS_SRC_DOMAIN + TLS_SRC_MANUAL + TLS_SRC_SELFSIGNED > 1 )); then
+  die "conflicting TLS options: choose exactly ONE of
+    --domain DOMAIN         (Let's Encrypt via certbot)
+    --cert FILE --key FILE  (operator-provided certificate, manual mode)
+    --self-signed           (local testing only)
+(see --help)"
+fi
+if [[ $TLS_SRC_MANUAL -eq 1 ]]; then
+  [[ -n "$CERT_FILE" && -n "$KEY_FILE" ]] || die "manual TLS requires BOTH --cert FILE and --key FILE (see --help)"
+  [[ -f "$CERT_FILE" ]] || die "certificate file not found: $CERT_FILE"
+  [[ -f "$KEY_FILE" ]] || die "key file not found: $KEY_FILE"
 fi
 
 # ----------------------------------------------------------------------
@@ -1006,7 +1041,9 @@ resolve_dashboard_bind() {
     loopback|127.0.0.1|localhost)
       echo "127.0.0.1" ;;
     public|0.0.0.0|::)
-      DASHBOARD_PUBLIC=1
+      # NOTE: this function runs inside a command substitution (a sub-
+      # shell). Do NOT set DASHBOARD_PUBLIC here - the assignment would
+      # be lost. The caller derives it from the resolved bind address.
       echo "0.0.0.0" ;;
     lan)
       # Prefer a proper private (RFC1918) address; "lan" must never
@@ -1033,6 +1070,18 @@ resolve_dashboard_bind() {
   esac
 }
 DASH_BIND_IP="$(resolve_dashboard_bind)"
+
+# D10 (audit 2026-11-09): resolve_dashboard_bind runs in a subshell, so
+# the historical `DASHBOARD_PUBLIC=1` inside it NEVER reached this shell.
+# Since v0.3.0 this silently skipped the password prerequisite check and
+# made the config writer omit dashboard.allow_public/dashboard.tls, so
+# every `--dashboard-bind public` invocation (fresh install AND --repair)
+# was ultimately refused by Config.validate with a confusing error after
+# the application had already been deployed. Derive the public opt-in
+# HERE, in the parent shell, from the resolved bind address.
+case "$DASH_BIND_IP" in
+  0.0.0.0|::) DASHBOARD_PUBLIC=1 ;;
+esac
 
 # ----------------------------------------------------------------------
 # Public dashboard requires a password BEFORE anything is reconfigured
@@ -1063,8 +1112,17 @@ else
     # best-effort: primary interface address
     PUBLIC_HOST=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="src"){print $(i+1); exit}}' || true)
     [[ -n "$PUBLIC_HOST" ]] || PUBLIC_HOST="localhost"
-    warn "no --domain/--public-ip given; using detected address '$PUBLIC_HOST' (self-signed TLS only)"
-    TLS_MODE="self-signed"
+    # Audit 2026-11-09 (silent-downgrade guard): an EXPLICITLY requested TLS
+    # source (--cert/--key, --self-signed) must never be silently replaced
+    # by self-signed because address detection failed on this host. Only
+    # the implicit default (no TLS flags at all) may fall back to
+    # self-signed - an explicit operator choice is kept as given.
+    if [[ $TLS_MODE_GIVEN -eq 1 ]]; then
+      warn "no --domain/--public-ip given; using detected address '$PUBLIC_HOST' (keeping the explicitly requested TLS mode: $TLS_MODE)"
+    else
+      warn "no --domain/--public-ip given; using detected address '$PUBLIC_HOST' (self-signed TLS only)"
+      TLS_MODE="self-signed"
+    fi
   fi
 fi
 

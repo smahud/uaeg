@@ -114,10 +114,14 @@ sudo uaeg doctor
 # 1. Dashboard password (fail-closed prerequisite; skip if already set)
 sudo uaeg pass                               # interactive, hidden input, twice
 
-# 2. Enable the public dashboard (fail-closed: password + TLS + opt-in)
-sudo uaeg config set dashboard.bind 0.0.0.0
+# 2. Enable the public dashboard (fail-closed: password + TLS + opt-in).
+#    ORDER MATTERS (errata 2026-11-09): every `uaeg config set` re-validates
+#    the WHOLE configuration, so the wildcard bind must be set LAST —
+#    `dashboard.bind 0.0.0.0` set FIRST is rejected by validation and the
+#    dashboard silently stays on 127.0.0.1 (verified; corrected here).
 sudo uaeg config set dashboard.allow_public true
 sudo uaeg config set dashboard.tls true      # reuses the existing LE certificate
+sudo uaeg config set dashboard.bind 0.0.0.0
 
 # 3. Apply + open the firewall
 sudo systemctl restart uaeg
