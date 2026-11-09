@@ -126,5 +126,9 @@ limitation for the next signed release — `UAEG_ROOT_CAUSE_ANALYSIS.md`
 §5). No CI workflow change needed: the new checks live in an existing,
 already-wired test file.
 
-Round-2 commit: recorded in `UAEG_PRODUCTION_ACCEPTANCE.md` §6 (a SHA
-cannot be embedded in the commit that introduces it).
+Round-2 patch-set commit: **`2c3b66db1f90aad17cb597a2369dcc9eca9b87d4`** —
+pushed to `origin/main` and verified via `git ls-remote`; GitHub CI run
+42653244177: **all 5 jobs success** (Python 3.11/3.12/3.13 test matrix,
+upgrade-contract suite, installer smoke). This SHA-recording amendment
+itself is the follow-up docs commit on `main` (a SHA cannot be embedded
+in the commit it identifies); final HEAD: see `git log -1`.

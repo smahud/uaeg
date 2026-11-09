@@ -148,9 +148,12 @@ the operator executes §3 steps 2–5.
   sandbox re-ran the identical suites locally: **203 pytest + 290
   upgrade-contract checks, 0 failures** (`UAEG_TEST_RESULTS.md`); the
   GitHub Actions result for the push is tracked at the run URL above.
-- Round-2 patch-set commit (D11 fix + re-verification reports): recorded
-  in the follow-up docs commit on `main` (a SHA cannot be embedded in the
-  commit it identifies) — see `git log` and the CI run noted there.
+- Round-2 patch-set commit (D11 fix + re-verification reports):
+  **`2c3b66db1f90aad17cb597a2369dcc9eca9b87d4`** (pushed to `origin/main`,
+  verified via `git ls-remote`) — GitHub CI run
+  https://github.com/smahud/uaeg/actions/runs/42653244177 : **all 5 jobs
+  success** (Python 3.11/3.12/3.13 matrix, upgrade-contract suite,
+  installer smoke).
 - CI on `c956678` (round-1 final HEAD, pre-round-2): completed / **success**
   — run 42557988917.
 - Post-round-2 local verification: **208 pytest + 290 upgrade-contract
