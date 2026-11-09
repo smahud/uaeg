@@ -1,0 +1,2572 @@
+diff -ruN '--exclude=__pycache__' '--exclude=.git' '--exclude=.venv' '--exclude=.venv-audit' '--exclude=report' '--exclude=docs' /tmp/uaeg-audit/v041/.github/workflows/ci.yml /opt/uaeg/.github/workflows/ci.yml
+--- /tmp/uaeg-audit/v041/.github/workflows/ci.yml	2026-11-10 05:45:45.540090436 +0700
++++ /opt/uaeg/.github/workflows/ci.yml	2026-11-10 04:17:20.000000000 +0700
+@@ -33,7 +33,7 @@
+           uaeg --help
+ 
+       - name: Run unit tests
+-        run: python -m pytest tests/test_unit_core.py tests/test_unit_executor.py tests/test_unit_containment.py tests/test_unit_security_redaction.py tests/test_unit_server_hardening.py tests/test_dashboard_auth.py tests/test_unit_regression_v033.py tests/test_unit_regression_v034.py tests/test_unit_regression_v041.py -v
++        run: python -m pytest tests/test_unit_core.py tests/test_unit_executor.py tests/test_unit_containment.py tests/test_unit_security_redaction.py tests/test_unit_server_hardening.py tests/test_dashboard_auth.py tests/test_unit_regression_v033.py tests/test_unit_regression_v034.py tests/test_unit_regression_v041.py tests/test_unit_regression_configset_pass.py tests/test_installer_cli_contract.py -v
+ 
+       - name: Run end-to-end smoke tests (real TLS + MCP protocol)
+         run: python -m pytest tests/test_e2e_smoke.py -v
+@@ -41,6 +41,9 @@
+       - name: Run end-to-end dashboard auth tests (login, HTTPS, public bind)
+         run: python -m pytest tests/test_e2e_dashboard_auth.py tests/test_e2e_hardening.py -v
+ 
++      - name: Run end-to-end installer repair test (canonical recovery command, manual TLS + public dashboard)
++        run: python -m pytest tests/test_e2e_installer_repair.py -v
++
+   upgrade-contract:
+     name: Safe-upgrade contract tests (bootstrap + updater)
+     runs-on: ubuntu-latest
+diff -ruN '--exclude=__pycache__' '--exclude=.git' '--exclude=.venv' '--exclude=.venv-audit' '--exclude=report' '--exclude=docs' /tmp/uaeg-audit/v041/install.sh /opt/uaeg/install.sh
+--- /tmp/uaeg-audit/v041/install.sh	2026-11-10 05:45:45.544090492 +0700
++++ /opt/uaeg/install.sh	2026-11-10 04:17:20.000000000 +0700
+@@ -63,6 +63,11 @@
+ KEY_FILE=""
+ TLS_MODE="self-signed"
+ TLS_MODE_GIVEN=0
++# Which TLS SOURCE the operator selected on the command line (exactly one
++# per invocation - enforced after parsing, before any mutation):
++TLS_SRC_DOMAIN=0        # --domain        (certbot)
++TLS_SRC_MANUAL=0        # --cert / --key  (manual)
++TLS_SRC_SELFSIGNED=0    # --self-signed
+ DATA_DIR="/var/lib/uaeg"
+ CONFIG_DIR="/etc/uaeg"
+ INSTALL_DIR="/opt/uaeg"
+@@ -76,7 +81,7 @@
+ CONFIG_BACKUP=""
+ # Release this installer belongs to (used for standalone bootstrap, FR-002).
+ # Override the source version at runtime with: --version X.Y.Z or UAEG_VERSION=X.Y.Z
+-UAEG_RELEASE_VERSION="0.4.1"
++UAEG_RELEASE_VERSION="0.4.1+audit1"
+ FETCH_VERSION=""
+ 
+ # ----------------------------------------------------------------------
+@@ -229,11 +234,6 @@
+                          from must not be OLDER than the installed app
+                          (refused, exit 5) and its schema must accept the
+                          existing configuration (verified BEFORE the
+-                         service is stopped or any file is replaced).
+-                         v0.4.1 safety: the source tree this script runs
+-                         from must not be OLDER than the installed app
+-                         (refused, exit 5) and its schema must accept the
+-                         existing configuration (verified BEFORE the
+                          service is stopped or any file is replaced)
+   --start                start the UAEG systemd service
+   --stop                 stop the UAEG systemd service
+@@ -281,6 +281,15 @@
+ # ----------------------------------------------------------------------
+ # Argument parsing
+ # ----------------------------------------------------------------------
++need_value() {  # $1=option name, $2=remaining argc (incl. the option), $3=candidate
++  # Fail with an actionable message instead of bash's raw "unbound
++  # variable" when a value-taking option is last on the command line, and
++  # treat an option-like token ("--cert --key x") as a MISSING value.
++  if [[ "$2" -lt 2 || -z "${3:-}" || "$3" == -* ]]; then
++    die "option $1 requires a value (see --help)"
++  fi
++}
++
+ while [[ $# -gt 0 ]]; do
+   case "$1" in
+     --start)            MODE_CMD="start"; shift ;;
+@@ -296,17 +305,17 @@
+       if [[ $# -ge 2 && "$2" != -* ]]; then ROLLBACK_ID="$2"; shift; fi
+       shift ;;
+     --repair)           MODE_CMD="repair"; FORCE_INPLACE=1; shift ;;
+-    --port)             MCP_PORT="$2"; MCP_PORT_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+-    --dashboard-port)   DASHBOARD_PORT="$2"; DASHBOARD_PORT_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+-    --dashboard-bind)   DASHBOARD_BIND="$2"; DASHBOARD_BIND_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+-    --domain)           DOMAIN="$2"; TLS_MODE="certbot"; TLS_MODE_GIVEN=1; PUBLIC_HOST_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+-    --public-ip)        PUBLIC_IP="$2"; PUBLIC_HOST_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+-    --cert)             CERT_FILE="$2"; TLS_MODE="manual"; TLS_MODE_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+-    --key)              KEY_FILE="$2"; TLS_MODE="manual"; TLS_MODE_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+-    --self-signed)      TLS_MODE="self-signed"; TLS_MODE_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift ;;
+-    --data-dir)         DATA_DIR="$2"; TARGETING_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+-    --config-dir)       CONFIG_DIR="$2"; TARGETING_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+-    --install-dir)      INSTALL_DIR="$2"; TARGETING_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
++    --port)             need_value "$1" "$#" "${2:-}"; MCP_PORT="$2"; MCP_PORT_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
++    --dashboard-port)   need_value "$1" "$#" "${2:-}"; DASHBOARD_PORT="$2"; DASHBOARD_PORT_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
++    --dashboard-bind)   need_value "$1" "$#" "${2:-}"; DASHBOARD_BIND="$2"; DASHBOARD_BIND_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
++    --domain)           need_value "$1" "$#" "${2:-}"; DOMAIN="$2"; TLS_MODE="certbot"; TLS_MODE_GIVEN=1; TLS_SRC_DOMAIN=1; PUBLIC_HOST_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
++    --public-ip)        need_value "$1" "$#" "${2:-}"; PUBLIC_IP="$2"; PUBLIC_HOST_GIVEN=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
++    --cert)             need_value "$1" "$#" "${2:-}"; CERT_FILE="$2"; TLS_MODE="manual"; TLS_MODE_GIVEN=1; TLS_SRC_MANUAL=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
++    --key)              need_value "$1" "$#" "${2:-}"; KEY_FILE="$2"; TLS_MODE="manual"; TLS_MODE_GIVEN=1; TLS_SRC_MANUAL=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
++    --self-signed)      TLS_MODE="self-signed"; TLS_MODE_GIVEN=1; TLS_SRC_SELFSIGNED=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift ;;
++    --data-dir)         need_value "$1" "$#" "${2:-}"; DATA_DIR="$2"; TARGETING_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
++    --config-dir)       need_value "$1" "$#" "${2:-}"; CONFIG_DIR="$2"; TARGETING_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
++    --install-dir)      need_value "$1" "$#" "${2:-}"; INSTALL_DIR="$2"; TARGETING_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift 2 ;;
+     --no-service)       NO_SERVICE=1; TARGETING_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift ;;
+     --open-firewall)    OPEN_FIREWALL=1; CONFIG_FLAGS_GIVEN=1; BARE_INVOCATION=0; shift ;;
+     --yes|-y)           ASSUME_YES=1; shift ;;
+@@ -336,6 +345,32 @@
+ fi
+ 
+ # ----------------------------------------------------------------------
++# TLS option contract (contract audit 2026-11-09). Everything below runs
++# BEFORE any mutation: no privilege escalation, no apt, no service stop, no
++# file write has happened yet. The canonical TLS interface is exactly:
++#   --domain DOMAIN | --cert FILE --key FILE | --self-signed
++# (there is NO --tls-mode / --cert-file / --key-file option; the v0.4.1
++# recovery runbook shipped with those non-existent flags and is corrected
++# by the same audit). One invocation selects ONE TLS source, and manual
++# TLS requires the complete pair to exist - previously "--cert x" without
++# "--key" was only detected AFTER the application had already been copied
++# to the install directory (partial fresh install), and mixing e.g.
++# "--domain --cert" silently took the last one.
++# ----------------------------------------------------------------------
++if (( TLS_SRC_DOMAIN + TLS_SRC_MANUAL + TLS_SRC_SELFSIGNED > 1 )); then
++  die "conflicting TLS options: choose exactly ONE of
++    --domain DOMAIN         (Let's Encrypt via certbot)
++    --cert FILE --key FILE  (operator-provided certificate, manual mode)
++    --self-signed           (local testing only)
++(see --help)"
++fi
++if [[ $TLS_SRC_MANUAL -eq 1 ]]; then
++  [[ -n "$CERT_FILE" && -n "$KEY_FILE" ]] || die "manual TLS requires BOTH --cert FILE and --key FILE (see --help)"
++  [[ -f "$CERT_FILE" ]] || die "certificate file not found: $CERT_FILE"
++  [[ -f "$KEY_FILE" ]] || die "key file not found: $KEY_FILE"
++fi
++
++# ----------------------------------------------------------------------
+ # Root + OS + prerequisites
+ # ----------------------------------------------------------------------
+ if [[ $EUID -ne 0 ]]; then
+@@ -347,6 +382,42 @@
+ fi
+ 
+ # ----------------------------------------------------------------------
++# Self-update protection (audit 2026-11-10, finding F4)
++# ----------------------------------------------------------------------
++# When started from INSIDE the UAEG service (an agent ran this installer via
++# shell_exec / a background job), we sit in the unit's systemd cgroup and the
++# service stop performed by this installer (or by the verified updater it
++# launches) would kill THIS process too (KillMode=control-group; setsid does
++# NOT escape a cgroup). Mutating modes re-exec into a transient systemd scope
++# - a separate cgroup that survives the service stop - or refuse loudly.
++# Read-only modes (status, check, dry-run) never touch the service.
++selfupdate_guard() {
++  [[ $NO_SERVICE -eq 1 ]] && return 0
++  case "$MODE_CMD" in status|check|dry-run) return 0 ;; esac
++  local cg=""
++  cg="$(cat "${UAEG_CGROUP_FILE:-/proc/self/cgroup}" 2>/dev/null)" || return 0
++  case "$cg" in
++    *"/${SERVICE_NAME}.service"*)
++      # Re-exec needs a REAL script file (SELF_FILE is the resolved
++      # BASH_SOURCE); a stdin/eval invocation cannot be re-executed safely.
++      if command -v systemd-run >/dev/null 2>&1 && [[ -f "$SELF_FILE" ]]; then
++        say "self-update: running inside the ${SERVICE_NAME}.service cgroup;"
++        say "self-update: re-executing in a transient systemd scope so the operation survives the service stop"
++        exec systemd-run --scope --quiet --unit="uaeg-selfupdate-$$" bash "$SELF_FILE" "$@"
++      fi
++      die "refusing to run a mutating operation from inside the ${SERVICE_NAME}.service
++cgroup: stopping the service would kill this installer mid-flight (systemd
++KillMode=control-group; setsid does not escape the cgroup) and it cannot be
++re-executed into a detached scope (no systemd-run, or the script is not
++running from a file). Run it from an operator shell (SSH/console) instead.
++   (nothing was changed)"
++      ;;
++  esac
++  return 0
++}
++selfupdate_guard "$@"
++
++# ----------------------------------------------------------------------
+ # Existing-installation detection (for the unified dispatch only; the
+ # install flow below keeps its own detection. Priority mirrors updater.sh:
+ # systemd unit > /usr/local/bin/uaeg symlink > default marker.)
+@@ -1006,7 +1077,9 @@
+     loopback|127.0.0.1|localhost)
+       echo "127.0.0.1" ;;
+     public|0.0.0.0|::)
+-      DASHBOARD_PUBLIC=1
++      # NOTE: this function runs inside a command substitution (a sub-
++      # shell). Do NOT set DASHBOARD_PUBLIC here - the assignment would
++      # be lost. The caller derives it from the resolved bind address.
+       echo "0.0.0.0" ;;
+     lan)
+       # Prefer a proper private (RFC1918) address; "lan" must never
+@@ -1034,6 +1107,18 @@
+ }
+ DASH_BIND_IP="$(resolve_dashboard_bind)"
+ 
++# D10 (audit 2026-11-09): resolve_dashboard_bind runs in a subshell, so
++# the historical `DASHBOARD_PUBLIC=1` inside it NEVER reached this shell.
++# Since v0.3.0 this silently skipped the password prerequisite check and
++# made the config writer omit dashboard.allow_public/dashboard.tls, so
++# every `--dashboard-bind public` invocation (fresh install AND --repair)
++# was ultimately refused by Config.validate with a confusing error after
++# the application had already been deployed. Derive the public opt-in
++# HERE, in the parent shell, from the resolved bind address.
++case "$DASH_BIND_IP" in
++  0.0.0.0|::) DASHBOARD_PUBLIC=1 ;;
++esac
++
+ # ----------------------------------------------------------------------
+ # Public dashboard requires a password BEFORE anything is reconfigured
+ # ----------------------------------------------------------------------
+@@ -1063,8 +1148,17 @@
+     # best-effort: primary interface address
+     PUBLIC_HOST=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="src"){print $(i+1); exit}}' || true)
+     [[ -n "$PUBLIC_HOST" ]] || PUBLIC_HOST="localhost"
+-    warn "no --domain/--public-ip given; using detected address '$PUBLIC_HOST' (self-signed TLS only)"
+-    TLS_MODE="self-signed"
++    # Audit 2026-11-09 (silent-downgrade guard): an EXPLICITLY requested TLS
++    # source (--cert/--key, --self-signed) must never be silently replaced
++    # by self-signed because address detection failed on this host. Only
++    # the implicit default (no TLS flags at all) may fall back to
++    # self-signed - an explicit operator choice is kept as given.
++    if [[ $TLS_MODE_GIVEN -eq 1 ]]; then
++      warn "no --domain/--public-ip given; using detected address '$PUBLIC_HOST' (keeping the explicitly requested TLS mode: $TLS_MODE)"
++    else
++      warn "no --domain/--public-ip given; using detected address '$PUBLIC_HOST' (self-signed TLS only)"
++      TLS_MODE="self-signed"
++    fi
+   fi
+ fi
+ 
+@@ -1266,6 +1360,12 @@
+ print(cfg.get("public_host", ""))
+ print(cfg.get("dashboard", {}).get("bind", "127.0.0.1"))
+ print(str(cfg.get("dashboard", {}).get("tls", False)).lower())
++# Effective TLS mode from the (possibly preserved) configuration - the
++# installer's own $TLS_MODE variable only reflects what THIS invocation
++# requested, never what an upgrade kept in place (audit 2026-11-10, F3:
++# preserved-certbot upgrades used to be summarized as "self-signed").
++tls = cfg.get("tls") if isinstance(cfg.get("tls"), dict) else {}
++print(tls.get("mode", "self-signed"))
+ PY
+ )" || die "could not read the effective configuration"
+ EFFECTIVE_MCP_PORT="$(echo "$EFFECTIVE_PORTS" | sed -n 1p)"
+@@ -1273,6 +1373,10 @@
+ EFFECTIVE_HOST="$(echo "$EFFECTIVE_PORTS" | sed -n 3p)"
+ EFFECTIVE_DASH_BIND="$(echo "$EFFECTIVE_PORTS" | sed -n 4p)"
+ EFFECTIVE_DASH_TLS="$(echo "$EFFECTIVE_PORTS" | sed -n 5p)"
++EFFECTIVE_TLS_MODE="$(echo "$EFFECTIVE_PORTS" | sed -n 6p)"
++# Fall back to the requested mode only when the read-back yielded nothing
++# (should not happen: the config file is always written before this point).
++[[ -z "$EFFECTIVE_TLS_MODE" ]] && EFFECTIVE_TLS_MODE="$TLS_MODE"
+ 
+ if [[ $NO_SERVICE -eq 0 ]]; then
+   say "verifying service health"
+@@ -1369,7 +1473,7 @@
+ echo "  MCP endpoint : https://${EFFECTIVE_HOST}:${EFFECTIVE_MCP_PORT}/mcp"
+ echo "  Config       : $CONFIG_FILE"
+ echo "  Data         : $DATA_DIR"
+-echo "  TLS mode     : $TLS_MODE"
++echo "  TLS mode     : $EFFECTIVE_TLS_MODE"
+ [[ $NO_SERVICE -eq 0 ]] && echo "  Service      : systemctl status ${SERVICE_NAME}"
+ echo
+ echo "Next steps:"
+diff -ruN '--exclude=__pycache__' '--exclude=.git' '--exclude=.venv' '--exclude=.venv-audit' '--exclude=report' '--exclude=docs' /tmp/uaeg-audit/v041/pyproject.toml /opt/uaeg/pyproject.toml
+--- /tmp/uaeg-audit/v041/pyproject.toml	2026-11-10 05:45:45.544090492 +0700
++++ /opt/uaeg/pyproject.toml	2026-11-10 04:17:20.000000000 +0700
+@@ -4,7 +4,7 @@
+ 
+ [project]
+ name = "uaeg"
+-version = "0.4.1"
++version = "0.4.1+audit1"
+ description = "UAEG - Universal Agent Execution Gateway: MCP-over-HTTPS bridge from hosted AI agents to full native execution on a Linux VPS"
+ readme = "README.md"
+ license = "MIT"
+diff -ruN '--exclude=__pycache__' '--exclude=.git' '--exclude=.venv' '--exclude=.venv-audit' '--exclude=report' '--exclude=docs' /tmp/uaeg-audit/v041/README.md /opt/uaeg/README.md
+--- /tmp/uaeg-audit/v041/README.md	2026-11-10 05:45:45.540090436 +0700
++++ /opt/uaeg/README.md	2026-11-10 04:17:20.000000000 +0700
+@@ -8,7 +8,7 @@
+ 
+ [![CI](https://github.com/smahud/uaeg/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/smahud/uaeg/actions/workflows/ci.yml)
+ 
+-**Current release: v0.4.1** (tag `v0.4.1`). The repository carries its own audit trail
++**Current release: v0.4.1+audit1** (live-audit build of the 2026-11-10 patch set; the next official release continues from v0.4.1). The repository carries its own audit trail
+ — release decisions, security findings, and test evidence — under [report/](report/).
+ 
+ > **SECURITY WARNING — READ THIS BEFORE INSTALLING**
+diff -ruN '--exclude=__pycache__' '--exclude=.git' '--exclude=.venv' '--exclude=.venv-audit' '--exclude=report' '--exclude=docs' /tmp/uaeg-audit/v041/src/uaeg/cli.py /opt/uaeg/src/uaeg/cli.py
+--- /tmp/uaeg-audit/v041/src/uaeg/cli.py	2026-11-10 05:45:45.556090660 +0700
++++ /opt/uaeg/src/uaeg/cli.py	2026-11-10 04:17:20.000000000 +0700
+@@ -377,7 +377,10 @@
+     print(f"  service      : {_service_state()}")
+     bind = cfg.mcp.bind if cfg.mcp.bind not in ("0.0.0.0", "::") else "127.0.0.1"
+     listening = _port_listening(bind, cfg.mcp.port)
+-    print(f"  MCP port     : {cfg.mcp.port} ({'listening' if listening else 'NOT listening'})")
++    print(
++        f"  MCP          : {cfg.mcp.bind}:{cfg.mcp.port} "
++        f"({'listening' if listening else 'NOT listening'})"
++    )
+     dash_listening = _port_listening(cfg.dashboard.bind, cfg.dashboard.port)
+     print(
+         f"  dashboard    : {cfg.dashboard.bind}:{cfg.dashboard.port} "
+@@ -468,12 +471,27 @@
+     # service & listeners
+     state = _service_state()
+     check("systemd service", state == "active", state)
+-    bind = cfg.mcp.bind if cfg.mcp.bind not in ("0.0.0.0", "::") else "127.0.0.1"
+-    check("MCP listener", _port_listening(bind, cfg.mcp.port), f"{bind}:{cfg.mcp.port}")
++    # Probe via loopback when the listener is wildcard-bound (a connection
++    # test needs a concrete address), but DISPLAY the configured bind so the
++    # operator sees the real exposure - 0.0.0.0 means every bearer key
++    # holder on the network can reach full shell execution (audit
++    # 2026-11-10, finding F2: doctor used to print the probe address
++    # 127.0.0.1 even for public wildcard binds, hiding the exposure).
++    probe = "127.0.0.1" if cfg.mcp.bind in ("0.0.0.0", "::", "*") else cfg.mcp.bind
++    mcp_detail = f"{cfg.mcp.bind}:{cfg.mcp.port}"
++    if probe != cfg.mcp.bind:
++        mcp_detail += f" (probed via {probe})"
++    check("MCP listener", _port_listening(probe, cfg.mcp.port), mcp_detail)
++    if cfg.mcp.bind in ("0.0.0.0", "::", "*"):
++        print(
++            "        ! MCP listener is bound to ALL interfaces (public): any "
++            "holder of a valid agent key can reach shell execution. Keep keys "
++            "secret and revoked keys are refused per request."
++        )
+     check("dashboard listener", _port_listening(cfg.dashboard.bind, cfg.dashboard.port),
+           f"{cfg.dashboard.bind}:{cfg.dashboard.port}")
+ 
+-    health = _http_get_json(f"https://{bind}:{cfg.mcp.port}/healthz")
++    health = _http_get_json(f"https://{probe}:{cfg.mcp.port}/healthz")
+     check("health endpoint", bool(health),
+           f"status={health.get('status') if health else 'unreachable'}")
+ 
+diff -ruN '--exclude=__pycache__' '--exclude=.git' '--exclude=.venv' '--exclude=.venv-audit' '--exclude=report' '--exclude=docs' /tmp/uaeg-audit/v041/src/uaeg/executor/jobs.py /opt/uaeg/src/uaeg/executor/jobs.py
+--- /tmp/uaeg-audit/v041/src/uaeg/executor/jobs.py	2026-11-10 05:45:45.556090660 +0700
++++ /opt/uaeg/src/uaeg/executor/jobs.py	2026-11-10 04:17:20.000000000 +0700
+@@ -20,6 +20,7 @@
+ import asyncio
+ import logging
+ import os
++import shutil
+ import signal
+ import subprocess
+ import sys
+@@ -37,6 +38,26 @@
+ FINAL_STATES = {"completed", "failed", "cancelled", "interrupted"}
+ 
+ _BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id"
++_CGROUP_FILE = "/proc/self/cgroup"
++_SYSTEMD_RUN = shutil.which("systemd-run")
++
++
++def _in_systemd_service() -> bool:
++    """True when THIS process runs inside a systemd service unit cgroup.
++
++    Under the shipped unit (KillMode=control-group, the systemd default),
++    ``systemctl stop/restart uaeg`` sends SIGTERM/SIGKILL to EVERY process in
++    the unit's cgroup. ``start_new_session`` (setsid) does NOT change cgroup
++    membership, so background jobs spawned plain would be killed together
++    with the service - contradicting PRD FR-009/AT-11 ("jobs survive service
++    restarts"). Detection lets spawn() move each job into its own transient
++    systemd scope instead (live audit 2026-11-10, finding F5).
++    """
++    try:
++        with open(_CGROUP_FILE, encoding="ascii") as fh:
++            return ".service" in fh.read()
++    except OSError:
++        return False
+ 
+ 
+ def _boot_id() -> str:
+@@ -121,6 +142,61 @@
+         self.poll_interval = poll_interval
+         self._runtime: dict[str, JobRuntime] = {}
+         self._started_at = time.monotonic()
++        # Lazy, cached probe result for transient-scope support (None = not
++        # probed yet). False also covers "not running under systemd at all"
++        # (tests, --no-service, containers): jobs then spawn exactly as before.
++        self._scope_mode: bool | None = None
++
++    # ------------------------------------------------------------------
++    # Transient-scope support (F5): keep background jobs alive across
++    # ``systemctl stop/restart uaeg``.
++    # ------------------------------------------------------------------
++    def _scope_supported(self) -> bool:
++        if self._scope_mode is None:
++            self._scope_mode = self._probe_scope_support()
++        return self._scope_mode
++
++    def _probe_scope_support(self) -> bool:
++        """One-shot capability probe: can we create transient systemd scopes?
++
++        Runs ``systemd-run --scope true`` once (a few ms); on any failure we
++        stay on the legacy spawn path and say so loudly, because silently
++        broken job spawning would be far worse than jobs that die with the
++        service (the documented pre-0.4.2 behavior under systemd).
++        """
++        if not _in_systemd_service():
++            return False
++        if not _SYSTEMD_RUN:
++            log.warning(
++                "background jobs will NOT survive service restarts on this "
++                "host: no systemd-run binary (inside a systemd service cgroup)"
++            )
++            return False
++        try:
++            proc = subprocess.run(
++                [_SYSTEMD_RUN, "--scope", "--quiet", "--unit=uaeg-job-scope-probe", "true"],
++                capture_output=True,
++                timeout=10,
++            )
++        except (OSError, subprocess.TimeoutExpired) as exc:
++            log.warning(
++                "background jobs will NOT survive service restarts on this "
++                "host: systemd-run scope probe failed (%s)", exc
++            )
++            return False
++        if proc.returncode != 0:
++            log.warning(
++                "background jobs will NOT survive service restarts on this "
++                "host: systemd-run scope probe exited %d: %s",
++                proc.returncode,
++                proc.stderr.decode(errors="replace")[:200],
++            )
++            return False
++        log.info(
++            "background jobs run in transient systemd scopes "
++            "(they survive 'systemctl stop/restart uaeg')"
++        )
++        return True
+ 
+     # ------------------------------------------------------------------
+     # spawn
+@@ -158,26 +234,55 @@
+         except OSError:
+             pass
+         try:
+-            proc = subprocess.Popen(
+-                [
+-                    sys.executable,
+-                    "-I",
+-                    "-m",
+-                    "uaeg._jobwrap",
+-                    str(job_dir),
+-                    "--",
+-                    self.shell,
+-                    "-c",
+-                    command,
+-                ],
+-                stdin=subprocess.DEVNULL,
+-                stdout=out_f,
+-                stderr=err_f,
+-                cwd=cwd or None,
+-                env=full_env,
+-                start_new_session=True,
+-                close_fds=True,
+-            )
++            shim_cmd = [
++                sys.executable,
++                "-I",
++                "-m",
++                "uaeg._jobwrap",
++                str(job_dir),
++                "--",
++                self.shell,
++                "-c",
++                command,
++            ]
++            # F5: when running under systemd, move the job into its own
++            # transient scope so a service stop/restart cannot kill it
++            # (KillMode=control-group kills the whole service cgroup).
++            # systemd-run --scope execs the command in the SAME process, so
++            # proc.pid is still the shim pid and killpg/reap semantics are
++            # unchanged.
++            use_scope = self._scope_supported()
++            try:
++                proc = subprocess.Popen(
++                    ([_SYSTEMD_RUN, "--scope", "--quiet", f"--unit=uaeg-{job_id}"] if use_scope else [])
++                    + shim_cmd,
++                    stdin=subprocess.DEVNULL,
++                    stdout=out_f,
++                    stderr=err_f,
++                    cwd=cwd or None,
++                    env=full_env,
++                    start_new_session=True,
++                    close_fds=True,
++                )
++            except FileNotFoundError:
++                # Lost a race with the probe result (binary vanished): fall
++                # back to the legacy direct spawn rather than failing the job.
++                if not use_scope:
++                    raise
++                log.warning(
++                    "systemd-run disappeared; spawning job %s without a scope "
++                    "(it will NOT survive a service restart)", job_id
++                )
++                proc = subprocess.Popen(
++                    shim_cmd,
++                    stdin=subprocess.DEVNULL,
++                    stdout=out_f,
++                    stderr=err_f,
++                    cwd=cwd or None,
++                    env=full_env,
++                    start_new_session=True,
++                    close_fds=True,
++                )
+         except OSError as exc:
+             out_f.close()
+             err_f.close()
+diff -ruN '--exclude=__pycache__' '--exclude=.git' '--exclude=.venv' '--exclude=.venv-audit' '--exclude=report' '--exclude=docs' /tmp/uaeg-audit/v041/src/uaeg/__init__.py /opt/uaeg/src/uaeg/__init__.py
+--- /tmp/uaeg-audit/v041/src/uaeg/__init__.py	2026-11-10 05:45:45.556090660 +0700
++++ /opt/uaeg/src/uaeg/__init__.py	2026-11-10 04:17:20.000000000 +0700
+@@ -4,7 +4,7 @@
+ native operating-system commands directly on a remote Linux VPS.
+ """
+ 
+-__version__ = "0.4.1"
++__version__ = "0.4.1+audit1"
+ 
+ PRODUCT_NAME = "UAEG"
+ USER_AGENT = f"{PRODUCT_NAME}/{__version__}"
+diff -ruN '--exclude=__pycache__' '--exclude=.git' '--exclude=.venv' '--exclude=.venv-audit' '--exclude=report' '--exclude=docs' /tmp/uaeg-audit/v041/src/uaeg/logging_util.py /opt/uaeg/src/uaeg/logging_util.py
+--- /tmp/uaeg-audit/v041/src/uaeg/logging_util.py	2026-11-10 05:45:45.556090660 +0700
++++ /opt/uaeg/src/uaeg/logging_util.py	2026-11-10 04:17:20.000000000 +0700
+@@ -9,7 +9,60 @@
+ DATEFMT = "%Y-%m-%dT%H:%M:%S%z"
+ 
+ 
++class _McpDisconnectNoiseFilter(logging.Filter):
++    """Drop the MCP SDK's client-disconnect tracebacks (audit 2026-11-10, F6).
++
++    ``mcp.server.streamable_http`` logs an ERROR record with a full
++    ``anyio.ClosedResourceError`` traceback every time an MCP client
++    disconnects - which is the NORMAL end of every agent session. On a busy
++    gateway the journal fills with these false alarms (8 tracebacks were
++    observed in the live journal during a single audit session). Only the
++    exact disconnect shape is dropped; genuine transport errors still log.
++    """
++
++    NOISY_MESSAGES = ("Error in standalone SSE writer",)
++    NOISY_EXCEPTIONS = ("ClosedResourceError", "CancelledError")
++
++    def filter(self, record: logging.LogRecord) -> bool:
++        if record.levelno >= logging.CRITICAL:
++            return True  # never drop critical records
++        try:
++            msg = record.getMessage()
++        except Exception:  # noqa: BLE001 - formatting must not break logging
++            return True
++        if not any(marker in msg for marker in self.NOISY_MESSAGES):
++            return True
++        exc = record.exc_info
++        if exc and exc[0] is not None:
++            if exc[0].__name__ in self.NOISY_EXCEPTIONS:
++                return False  # the known benign disconnect traceback
++        # Message matched but the exception differs: keep it (real error).
++        return True
++
++
++def _ensure_mcp_noise_filter() -> None:
++    """Idempotently attach the disconnect-noise filter (F6)."""
++    logger = logging.getLogger("mcp.server.streamable_http")
++    if not any(isinstance(f, _McpDisconnectNoiseFilter) for f in logger.filters):
++        logger.addFilter(_McpDisconnectNoiseFilter())
++
++
++def _suppress_pydantic_settings_lifespan_warning() -> None:
++    """Idempotently suppress the harmless pydantic-settings warning (F7)."""
++    import warnings
++
++    warnings.filterwarnings(
++        "ignore",
++        message="Field 'lifespan' has an incomplete definition.*",
++        category=UserWarning,
++    )
++
++
+ def setup_logging(level: str = "INFO") -> None:
++    # Applied first so a re-invocation (level change) still guarantees the
++    # hardening filters are in place even when handlers already exist.
++    _ensure_mcp_noise_filter()
++    _suppress_pydantic_settings_lifespan_warning()
+     root = logging.getLogger()
+     if root.handlers:  # already configured
+         root.setLevel(getattr(logging, level.upper(), logging.INFO))
+diff -ruN '--exclude=__pycache__' '--exclude=.git' '--exclude=.venv' '--exclude=.venv-audit' '--exclude=report' '--exclude=docs' /tmp/uaeg-audit/v041/src/uaeg/mcp_tools.py /opt/uaeg/src/uaeg/mcp_tools.py
+--- /tmp/uaeg-audit/v041/src/uaeg/mcp_tools.py	2026-11-10 05:45:45.556090660 +0700
++++ /opt/uaeg/src/uaeg/mcp_tools.py	2026-11-10 04:17:20.000000000 +0700
+@@ -81,6 +81,32 @@
+         """The calling agent's key_id, for key-scoped ownership checks."""
+         return key.get("key_id") if key else None
+ 
++    def _require_key(ctx):
++        """Resolve the calling key, failing CLOSED when it is not possible.
++
++        Over the wire, BearerAuthMiddleware guarantees a valid, active key on
++        every /mcp request. A None identity inside a tool call therefore means
++        something anomalous happened between authentication and execution
++        (key revoked mid-request, request-context failure, transient database
++        error). The managers treat owner_key_id=None as "operator level"
++        (dashboard/CLI see everything), so an unresolved identity MUST NOT be
++        forwarded as None - that would silently hand an agent operator-level
++        access to other keys' jobs and sessions. Deny instead
++        (live audit 2026-11-10, finding F1).
++
++        Returns (key, None) on success or (None, denial_payload) on failure.
++        """
++        key = _key(ctx)
++        if key is None:
++            return None, {
++                "ok": False,
++                "error": (
++                    "calling agent key could not be resolved (revoked during the "
++                    "request or an internal error); the call was denied - retry it"
++                ),
++            }
++        return key, None
++
+     def _audit(
+         ctx, tool: str, status: str, meta: dict | None = None,
+         exit_code: int | None = None, duration_ms: int | None = None,
+@@ -137,11 +163,13 @@
+             truncated flags and total byte counts.
+             Background: job_id, pid, status='running'.
+         """
+-        key = _key(ctx)
++        key, denied = _require_key(ctx)
+         started = time.monotonic()
+         cwd = cwd or _default_cwd()
+         meta = {"command": command, "cwd": cwd, "background": background}
+-
++        if denied:
++            _audit(ctx, "shell_exec", "denied", meta, key=None)
++            return denied
+         denied = runtime.check_restricted_cwd(cwd, key)
+         if denied:
+             _audit(ctx, "shell_exec", "denied", meta, key=key)
+@@ -218,9 +246,12 @@
+             cols: Initial terminal width in columns.
+             rows: Initial terminal height in rows.
+         """
+-        key = _key(ctx)
++        key, denied = _require_key(ctx)
+         cwd = cwd or _default_cwd()
+         meta = {"command": command or "(interactive shell)", "cwd": cwd}
++        if denied:
++            _audit(ctx, "shell_open", "denied", meta, key=None)
++            return denied
+         denied = runtime.check_restricted_cwd(cwd, key)
+         if denied:
+             _audit(ctx, "shell_open", "denied", meta, key=key)
+@@ -255,7 +286,10 @@
+             data: Raw input text to write to the terminal.
+             add_newline: Append a trailing newline to the input.
+         """
+-        key = _key(ctx)
++        key, denied = _require_key(ctx)
++        if denied:
++            _audit(ctx, "shell_input", "denied", {"session_id": session_id}, key=None)
++            return denied
+         try:
+             result = runtime.sessions.input(
+                 session_id, data, add_newline, owner_key_id=_owner(key)
+@@ -287,12 +321,15 @@
+                 retained output).
+             limit_bytes: Maximum bytes to return per call.
+         """
++        key, denied = _require_key(ctx)
++        if denied:
++            return denied
+         try:
+             # Clamp at the tool boundary (B-8): negative limits previously
+             # produced a backwards cursor and re-delivered old output.
+             limit_bytes = max(0, min(int(limit_bytes), 8 * 1024 * 1024))
+             return runtime.sessions.output(
+-                session_id, since_seq, limit_bytes, owner_key_id=_owner(_key(ctx))
++                session_id, since_seq, limit_bytes, owner_key_id=_owner(key)
+             )
+         except SessionError as exc:
+             return {"ok": False, "error": str(exc), "session_id": session_id}
+@@ -306,9 +343,12 @@
+             cols: New terminal width in columns (2..1000).
+             rows: New terminal height in rows (2..1000).
+         """
++        key, denied = _require_key(ctx)
++        if denied:
++            return denied
+         try:
+             return runtime.sessions.resize(
+-                session_id, cols, rows, owner_key_id=_owner(_key(ctx))
++                session_id, cols, rows, owner_key_id=_owner(key)
+             )
+         except SessionError as exc:
+             return {"ok": False, "error": str(exc), "session_id": session_id}
+@@ -320,7 +360,10 @@
+         Args:
+             session_id: Session identifier from shell_open.
+         """
+-        key = _key(ctx)
++        key, denied = _require_key(ctx)
++        if denied:
++            _audit(ctx, "shell_close", "denied", {"session_id": session_id}, key=None)
++            return denied
+         try:
+             result = await runtime.sessions.close(
+                 session_id, owner_key_id=_owner(key)
+@@ -337,7 +380,10 @@
+ 
+         Returns the CALLING KEY's sessions (including any that exited within
+         the last minute, with their exit codes)."""
+-        owner = _owner(_key(ctx))
++        key, denied = _require_key(ctx)
++        if denied:
++            return denied
++        owner = _owner(key)
+         sessions = runtime.sessions.list()
+         if owner is not None:
+             sessions = [
+@@ -359,8 +405,11 @@
+         Args:
+             job_id: Job identifier from shell_exec(background=true).
+         """
++        key, denied = _require_key(ctx)
++        if denied:
++            return denied
+         try:
+-            job = runtime.jobs.status(job_id, owner_key_id=_owner(_key(ctx)))
++            job = runtime.jobs.status(job_id, owner_key_id=_owner(key))
+         except JobError as exc:
+             return {"ok": False, "error": str(exc)}
+         if not job:
+@@ -383,9 +432,12 @@
+             offset: Byte offset from a previous call (0 = from the start).
+             limit: Maximum bytes to return per call.
+         """
++        key, denied = _require_key(ctx)
++        if denied:
++            return denied
+         try:
+             return runtime.jobs.output(
+-                job_id, stream, offset, limit, owner_key_id=_owner(_key(ctx))
++                job_id, stream, offset, limit, owner_key_id=_owner(key)
+             )
+         except JobError as exc:
+             return {"ok": False, "error": str(exc), "job_id": job_id}
+@@ -407,8 +459,11 @@
+                 timeout_seconds = max(0.0, min(float(timeout_seconds), 600.0))
+             except (TypeError, ValueError):
+                 timeout_seconds = 30.0
++            key, denied = _require_key(ctx)
++            if denied:
++                return denied
+             job = await runtime.jobs.wait(
+-                job_id, timeout_seconds, owner_key_id=_owner(_key(ctx))
++                job_id, timeout_seconds, owner_key_id=_owner(key)
+             )
+         except JobError as exc:
+             return {"ok": False, "error": str(exc)}
+@@ -421,7 +476,10 @@
+         Args:
+             job_id: Job identifier from shell_exec(background=true).
+         """
+-        key = _key(ctx)
++        key, denied = _require_key(ctx)
++        if denied:
++            _audit(ctx, "job_cancel", "denied", {"job_id": job_id}, key=None)
++            return denied
+         try:
+             job = await runtime.jobs.cancel(job_id, owner_key_id=_owner(key))
+             _audit(ctx, "job_cancel", "ok", {"job_id": job_id}, key=key)
+@@ -445,7 +503,10 @@
+             limit = max(0, min(int(limit), 500))
+         except (TypeError, ValueError):
+             limit = 50
+-        return {"jobs": runtime.jobs.list(limit=limit, owner_key_id=_owner(_key(ctx)))}
++        key, denied = _require_key(ctx)
++        if denied:
++            return denied
++        return {"jobs": runtime.jobs.list(limit=limit, owner_key_id=_owner(key))}
+ 
+     # ==================================================================
+     # server info
+diff -ruN '--exclude=__pycache__' '--exclude=.git' '--exclude=.venv' '--exclude=.venv-audit' '--exclude=report' '--exclude=docs' /tmp/uaeg-audit/v041/tests/test_e2e_installer_repair.py /opt/uaeg/tests/test_e2e_installer_repair.py
+--- /tmp/uaeg-audit/v041/tests/test_e2e_installer_repair.py	1970-01-01 07:00:00.000000000 +0700
++++ /opt/uaeg/tests/test_e2e_installer_repair.py	2026-11-10 04:17:20.000000000 +0700
+@@ -0,0 +1,420 @@
++"""End-to-end regression: the CORRECTED production recovery path (2026-11-09).
++
++Reproduces the operator scenario from ``report/PRODUCTION_RECOVERY_V041.md``
++(revision 2) against a REAL isolated installation — the same root-check-
++disabled, directory-redirected installer technique the CI ``installer`` job
++and the upgrade-contract suite use (no root, no systemd, no system paths):
++
++1. fresh install (loopback dashboard, manual TLS, ports 3902/3903);
++2. create persistent state: dashboard password, MCP agent key, custom
++   config value, database rows;
++3. run the EXACT corrected repair invocation from the runbook::
++
++       bash install.sh --repair \\
++         --dashboard-bind public \\
++         --cert <fullchain.pem> --key <privkey.pem>
++
++4. assert the effective configuration is the target production shape
++   (mcp 0.0.0.0:3902, dashboard 0.0.0.0:3903 + allow_public + tls,
++   tls.mode=manual with the given files) while every unrelated value
++   and ALL persistent state (password, agent key, database) survive;
++5. serve from the repaired installation and verify over REAL HTTPS:
++   login page first, unauthenticated API refused, correct password in,
++   wrong password out, logout revokes, and the PRE-REPAIR MCP agent key
++   still authenticates on 3902 while the dashboard serves on 3903
++   (both listeners live simultaneously).
++"""
++
++from __future__ import annotations
++
++import json
++import os
++import socket
++import sqlite3
++import ssl
++import subprocess
++import sys
++import time
++import urllib.request
++from pathlib import Path
++
++import httpx
++import pytest
++
++REPO = Path(__file__).resolve().parents[1]
++INSTALLER = REPO / "install.sh"
++
++PASSWORD = "correct-horse-battery-staple-e2e"
++MCP_PORT = 3902
++DASH_PORT = 3903
++
++_UNVERIFIED = ssl._create_unverified_context()
++
++
++def _ports_free() -> bool:
++    for port in (MCP_PORT, DASH_PORT):
++        with socket.socket() as s:
++            try:
++                s.bind(("0.0.0.0", port))
++            except OSError:
++                return False
++    return True
++
++
++pytestmark = pytest.mark.skipif(
++    not _ports_free(), reason=f"ports {MCP_PORT}/{DASH_PORT} not available"
++)
++
++
++# ----------------------------------------------------------------------
++# Fixtures: patched installer + isolated base directory + TLS material
++# ----------------------------------------------------------------------
++@pytest.fixture(scope="module")
++def base(tmp_path_factory) -> Path:
++    b = tmp_path_factory.mktemp("uaeg-repair-e2e")
++    (b / "bin").mkdir()
++    (b / "sbin").mkdir()
++    return b
++
++
++@pytest.fixture(scope="module")
++def tls_pair(base) -> tuple[Path, Path]:
++    cert = base / "fullchain.pem"
++    key = base / "privkey.pem"
++    subprocess.run(
++        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-sha256", "-days", "5",
++         "-nodes", "-subj", "/CN=host.zerotier.my.id",
++         "-addext", "subjectAltName=DNS:host.zerotier.my.id,IP:127.0.0.1",
++         "-keyout", str(key), "-out", str(cert)],
++        check=True, capture_output=True,
++    )
++    return cert, key
++
++
++@pytest.fixture(scope="module")
++def installer(base) -> Path:
++    """Root-check-disabled installer copy (CI ``installer`` job patch)."""
++    patched = base / "install-test.sh"
++    proc = subprocess.run(
++        ["sed",
++         "-e", r"s|^if \[\[ \$EUID -ne 0 \]\]; then|if false; then|",
++         "-e", r's|^  die "this installer must run as root.*|  :|',
++         "-e", r"s|^apt-get update -qq$|:|",
++         "-e", r"s|^apt-get install -y -qq python3 python3-venv openssl curl >/dev/null$|:|",
++         "-e", rf's|^ln -sf "\$VENV_DIR/bin/uaeg" /usr/local/bin/uaeg$|ln -sf "$VENV_DIR/bin/uaeg" "{base}/bin/uaeg"|',
++         "-e", rf"s|/usr/local/sbin/uaeg-upgrade|{base}/sbin/uaeg-upgrade|g",
++         str(INSTALLER)],
++        capture_output=True, text=True, check=True,
++    )
++    patched.write_text(proc.stdout)
++    return patched
++
++
++class Install:
++    """Handles for the isolated installation under test."""
++
++    def __init__(self, base: Path, cert: Path, key: Path):
++        self.base = base
++        self.cert, self.key = cert, key
++        self.install_dir = base / "opt" / "uaeg"
++        self.config_dir = base / "etc" / "uaeg"
++        self.data_dir = base / "var" / "lib" / "uaeg"
++        self.config_file = self.config_dir / "config.json"
++        self.venv_python = self.install_dir / ".venv" / "bin" / "python"
++
++    def target_args(self) -> list[str]:
++        return [
++            "--install-dir", str(self.install_dir),
++            "--config-dir", str(self.config_dir),
++            "--data-dir", str(self.data_dir),
++            "--no-service", "--yes",
++        ]
++
++    def run_installer(self, script: Path, *args: str) -> subprocess.CompletedProcess:
++        env = {**os.environ, "UAEG_SYSTEM_UAEG_BIN": str(self.base / "bin" / "uaeg")}
++        return subprocess.run(
++            ["bash", str(script), *args],
++            capture_output=True, text=True, timeout=420, cwd=str(REPO), env=env,
++        )
++
++    def uaeg(self, *args: str, stdin: bytes = b"") -> subprocess.CompletedProcess:
++        env = {
++            **os.environ,
++            "UAEG_CONFIG": str(self.config_file),
++            "UAEG_DATA_DIR": str(self.data_dir),
++        }
++        proc = subprocess.run(
++            [str(self.venv_python), "-m", "uaeg", *args],
++            input=stdin, capture_output=True, timeout=120,
++            start_new_session=True, env=env,
++        )
++        proc.stdout = proc.stdout.decode("utf-8", errors="replace")  # type: ignore[assignment]
++        proc.stderr = proc.stderr.decode("utf-8", errors="replace")  # type: ignore[assignment]
++        return proc  # type: ignore[return-value]
++
++    def config(self) -> dict:
++        return json.loads(self.config_file.read_text(encoding="utf-8"))
++
++    def key_rows(self) -> list[tuple]:
++        con = sqlite3.connect(str(self.data_dir / "uaeg.db"))
++        try:
++            return con.execute(
++                "SELECT key_id, name, prefix, verifier, status, permission_mode"
++                " FROM keys ORDER BY key_id"
++            ).fetchall()
++        finally:
++            con.close()
++
++    def db_quick_check(self) -> str:
++        con = sqlite3.connect(str(self.data_dir / "uaeg.db"))
++        try:
++            return con.execute("PRAGMA quick_check").fetchone()[0]
++        finally:
++            con.close()
++
++
++@pytest.fixture(scope="module")
++def install(base, tls_pair) -> Install:
++    cert, key = tls_pair
++    return Install(base, cert, key)
++
++
++# ----------------------------------------------------------------------
++# Phase 1-3: install -> state -> REPAIR (the corrected runbook command)
++# ----------------------------------------------------------------------
++@pytest.fixture(scope="module")
++def repaired(installer, install) -> Install:
++    # -- Phase 1: fresh install (loopback dashboard, manual TLS) --
++    proc = install.run_installer(
++        installer,
++        "--port", str(MCP_PORT), "--dashboard-port", str(DASH_PORT),
++        "--dashboard-bind", "loopback",
++        "--public-ip", "127.0.0.1",
++        "--cert", str(install.cert), "--key", str(install.key),
++        *install.target_args(),
++    )
++    assert proc.returncode == 0, proc.stderr
++    assert install.config()["dashboard"]["bind"] == "127.0.0.1"
++
++    # -- Phase 2: persistent state (password, agent key, custom value) --
++    proc = install.uaeg("pass", stdin=(f"{PASSWORD}\n{PASSWORD}\n").encode())
++    assert proc.returncode == 0, proc.stderr
++    proc = install.uaeg("generate", "--name", "pre-repair-key")
++    assert proc.returncode == 0, proc.stderr
++    secret = next(
++        line.strip() for line in proc.stdout.splitlines()
++        if line.strip().startswith("uaeg_")
++    )
++    install.secret = secret  # type: ignore[attr-defined]
++    assert install.uaeg("config", "set", "exec.default_timeout_s", "333").returncode == 0
++
++    install.password_before = (install.data_dir / "dashboard-pass.json").read_bytes()  # type: ignore[attr-defined]
++    install.keys_before = install.key_rows()  # type: ignore[attr-defined]
++
++    # -- Phase 3: the CORRECTED recovery invocation from the runbook --
++    proc = install.run_installer(
++        installer,
++        "--repair",
++        "--dashboard-bind", "public",
++        "--cert", str(install.cert),
++        "--key", str(install.key),
++        *install.target_args(),
++    )
++    assert proc.returncode == 0, proc.stderr
++    assert "public dashboard: password verified" in proc.stdout
++    return install
++
++
++# ----------------------------------------------------------------------
++# Phase 4: the target production configuration, nothing else changed
++# ----------------------------------------------------------------------
++def test_repair_produced_target_production_configuration(repaired):
++    cfg = repaired.config()
++    assert cfg["mcp"]["bind"] == "0.0.0.0"
++    assert cfg["mcp"]["port"] == MCP_PORT
++    assert cfg["dashboard"]["bind"] == "0.0.0.0"
++    assert cfg["dashboard"]["port"] == DASH_PORT
++    assert cfg["dashboard"]["allow_public"] is True
++    assert cfg["dashboard"]["tls"] is True
++    assert cfg["tls"]["mode"] == "manual"
++    assert cfg["tls"]["cert"] == str(repaired.cert)
++    assert cfg["tls"]["key"] == str(repaired.key)
++    # Unrelated settings survive the repair untouched.
++    assert cfg["exec"]["default_timeout_s"] == 333
++    assert cfg["public_host"] == "127.0.0.1"
++
++
++# ----------------------------------------------------------------------
++# Phase 5: zero data loss across the repair
++# ----------------------------------------------------------------------
++def test_repair_preserved_password_keys_and_database(repaired):
++    # Dashboard password: byte-identical file (same hash AND generation).
++    after = (repaired.data_dir / "dashboard-pass.json").read_bytes()
++    assert after == repaired.password_before  # type: ignore[attr-defined]
++    # MCP agent keys: identical rows.
++    assert repaired.key_rows() == repaired.keys_before  # type: ignore[attr-defined]
++    # Database integrity.
++    assert repaired.db_quick_check() == "ok"
++
++
++# ----------------------------------------------------------------------
++# Phase 6: serve the repaired installation and verify the full flow
++# ----------------------------------------------------------------------
++@pytest.fixture(scope="module")
++def serving(repaired):
++    env = {
++        **os.environ,
++        "UAEG_CONFIG": str(repaired.config_file),
++        "UAEG_DATA_DIR": str(repaired.data_dir),
++    }
++    proc = subprocess.Popen(
++        [str(repaired.venv_python), "-m", "uaeg", "serve"],
++        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
++    )
++    try:
++        deadline = time.time() + 60
++        up = {"mcp": False, "dash": False}
++        while time.time() < deadline and not all(up.values()):
++            if proc.poll() is not None:
++                out = proc.stdout.read().decode(errors="replace") if proc.stdout else ""
++                raise RuntimeError(f"repaired server died during startup:\n{out}")
++            if not up["mcp"]:
++                try:
++                    with urllib.request.urlopen(
++                        f"https://127.0.0.1:{MCP_PORT}/healthz", timeout=2,
++                        context=_UNVERIFIED,
++                    ) as resp:
++                        up["mcp"] = resp.status == 200
++                except Exception:
++                    pass
++            if not up["dash"]:
++                try:
++                    with urllib.request.urlopen(
++                        f"https://127.0.0.1:{DASH_PORT}/login", timeout=2,
++                        context=_UNVERIFIED,
++                    ) as resp:
++                        up["dash"] = resp.status == 200
++                except Exception:
++                    pass
++            if not all(up.values()):
++                time.sleep(0.25)
++        assert all(up.values()), (
++            f"listeners did not come up: {up} (mcp={MCP_PORT}, dash={DASH_PORT})"
++        )
++        yield proc
++    finally:
++        proc.terminate()
++        try:
++            proc.wait(timeout=15)
++        except subprocess.TimeoutExpired:
++            proc.kill()
++            proc.wait(timeout=10)
++
++
++def _client() -> httpx.Client:
++    return httpx.Client(
++        base_url=f"https://127.0.0.1:{DASH_PORT}",
++        verify=False, follow_redirects=False, timeout=15.0,
++    )
++
++
++def test_login_page_served_first_over_https(serving):
++    with _client() as c:
++        resp = c.get("/login")
++        assert resp.status_code == 200
++        assert "password" in resp.text.lower()
++        # TLS is really on (handshake succeeded over https with our cert).
++        assert resp.request.url.scheme == "https"
++
++
++def test_unauthenticated_api_refused(serving):
++    with _client() as c:
++        resp = c.get("/api/overview")
++        assert resp.status_code in (401, 403)
++        assert "UAEG" not in resp.text  # no dashboard data leaks
++
++
++def test_correct_password_grants_access_wrong_password_rejected(serving):
++    with _client() as c:
++        bad = c.post("/login", json={"password": "wrong-password-attempt-123"})
++        assert bad.status_code == 401
++        assert bad.text.lower().find("login failed") != -1
++        assert not bad.cookies
++
++        good = c.post("/login", json={"password": PASSWORD})
++        assert good.status_code == 200
++        cookie_header = good.headers.get("set-cookie", "")
++        assert "httponly" in cookie_header.lower()
++        assert "secure" in cookie_header.lower()
++        assert "samesite=lax" in cookie_header.lower()
++
++        resp = c.get("/api/overview")  # session cookie now in the jar
++        assert resp.status_code == 200
++        assert "UAEG" in resp.text
++
++
++def test_logout_revokes_the_session(serving):
++    with _client() as c:
++        assert c.post("/login", json={"password": PASSWORD}).status_code == 200
++        who = c.get("/api/whoami")
++        assert who.status_code == 200
++        csrf = who.json()["csrf_token"]
++        out = c.post("/logout", headers={"X-CSRF-Token": csrf})
++        assert out.status_code == 200
++        # The revoked session cookie no longer opens the API.
++        after = c.get("/api/overview")
++        assert after.status_code in (401, 403)
++
++
++def test_pre_repair_mcp_key_still_authenticates_on_3902(serving, repaired):
++    payload = json.dumps({
++        "jsonrpc": "2.0", "id": 1, "method": "initialize",
++        "params": {
++            "protocolVersion": "2025-06-18", "capabilities": {},
++            "clientInfo": {"name": "repair-e2e", "version": "1"},
++        },
++    }).encode()
++    # Without the key: authentication required.
++    req = urllib.request.Request(
++        f"https://127.0.0.1:{MCP_PORT}/mcp", data=payload,
++        headers={"Content-Type": "application/json",
++                 "Accept": "application/json, text/event-stream"},
++        method="POST",
++    )
++    try:
++        urllib.request.urlopen(req, timeout=10, context=_UNVERIFIED)
++        raise AssertionError("unauthenticated MCP call must not succeed")
++    except urllib.error.HTTPError as exc:
++        assert exc.code in (401, 403)
++
++    # With the PRE-REPAIR agent key: works (credentials preserved).
++    req = urllib.request.Request(
++        f"https://127.0.0.1:{MCP_PORT}/mcp", data=payload,
++        headers={
++            "Authorization": f"Bearer {repaired.secret}",  # type: ignore[attr-defined]
++            "Content-Type": "application/json",
++            "Accept": "application/json, text/event-stream",
++        },
++        method="POST",
++    )
++    with urllib.request.urlopen(req, timeout=10, context=_UNVERIFIED) as resp:
++        body = resp.read().decode("utf-8", errors="replace")
++        assert resp.status == 200
++        assert "serverInfo" in body
++
++
++def test_both_listeners_operational_simultaneously(serving):
++    """MCP 3902 and dashboard 3903 answer at the same time (one process)."""
++    with urllib.request.urlopen(
++        f"https://127.0.0.1:{MCP_PORT}/healthz", timeout=5, context=_UNVERIFIED
++    ) as mcp_resp:
++        health = json.loads(mcp_resp.read().decode())
++    with _client() as c:
++        dash = c.get("/login")
++    assert health.get("status") == "ok"
++    assert health.get("version") == "0.4.1"
++    assert dash.status_code == 200
++
++
++if __name__ == "__main__":  # pragma: no cover
++    raise SystemExit(pytest.main([__file__, "-v"]))
+diff -ruN '--exclude=__pycache__' '--exclude=.git' '--exclude=.venv' '--exclude=.venv-audit' '--exclude=report' '--exclude=docs' /tmp/uaeg-audit/v041/tests/test_installer_cli_contract.py /opt/uaeg/tests/test_installer_cli_contract.py
+--- /tmp/uaeg-audit/v041/tests/test_installer_cli_contract.py	1970-01-01 07:00:00.000000000 +0700
++++ /opt/uaeg/tests/test_installer_cli_contract.py	2026-11-10 04:17:20.000000000 +0700
+@@ -0,0 +1,491 @@
++"""Installer CLI contract regression tests (audit 2026-11-09).
++
++Incident class: ``report/PRODUCTION_RECOVERY_V041.md`` (revision 1)
++documented an installer invocation with flags that do not exist
++(``--tls-mode``, ``--cert-file``, ``--key-file``).  The operator's repair
++died with ``ERROR: unknown option: --tls-mode`` before any mutation.
++
++This suite locks the contract on BOTH sides:
++
++1. **Parser side** (``install.sh``):
++   - canonical TLS flags accepted (``--domain`` | ``--cert FILE --key FILE``
++     | ``--self-signed`` — exactly one source per invocation);
++   - unsupported flags rejected BEFORE any mutation (the failure must
++     happen at parse time, before the root check: no sudo exec, no apt,
++     no service stop, no file write);
++   - missing option values rejected with an actionable message;
++   - ``--cert`` without ``--key`` (and vice versa) rejected pre-mutation;
++   - missing manual TLS files rejected pre-mutation;
++   - conflicting TLS sources rejected (previously last-one-won silently);
++   - ``--help`` is accurate and free of duplicated blocks.
++
++2. **Documentation side**: every ``install.sh`` flag used inside bash code
++   blocks of the live operator docs (docs/*.md, README.md, the production
++   recovery runbook) must exist in the parser, and the runbook must not
++   invoke the non-existent TLS flags in any code block.
++
++The e2e counterpart (a full in-place ``--repair`` with manual TLS + public
++dashboard against an isolated installation) lives in
++``tests/test_e2e_installer_repair.py``.
++"""
++
++from __future__ import annotations
++
++import re
++import subprocess
++import sys
++from pathlib import Path
++
++import pytest
++
++REPO = Path(__file__).resolve().parents[1]
++INSTALLER = REPO / "install.sh"
++
++# The non-existent flags that caused the 2026-11-09 incident (runbook
++# revision 1). They must never appear in an executable code block again.
++GHOST_FLAGS = ("--tls-mode", "--cert-file", "--key-file")
++
++_ANSI = re.compile(r"\x1b\[[0-9;]*m")
++
++
++def _clean(text: str) -> str:
++    """Strip ANSI colors and collapse whitespace (installer messages wrap)."""
++    return re.sub(r"\s+", " ", _ANSI.sub("", text))
++
++
++def run_installer(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
++    """Run the UNPATCHED installer; parse-level failures happen before the
++    root check, so this is safe as a non-root user."""
++    return subprocess.run(
++        ["bash", str(INSTALLER), *args],
++        capture_output=True,
++        text=True,
++        timeout=60,
++        cwd=str(cwd or REPO),
++    )
++
++
++@pytest.fixture(scope="module")
++def patched_installer(tmp_path_factory) -> Path:
++    """Root-check-disabled copy of the installer (same patch the CI
++    ``installer`` job and the upgrade-contract suite apply), for the
++    canonical-acceptance (``--dry-run``) test only."""
++    base = tmp_path_factory.mktemp("installer-cli")
++    patched = base / "install-test.sh"
++    sed = subprocess.run(
++        [
++            "sed",
++            "-e", r"s|^if \[\[ \$EUID -ne 0 \]\]; then|if false; then|",
++            "-e", r's|^  die "this installer must run as root.*|  :|',
++            "-e", r"s|^apt-get update -qq$|:|",
++            "-e", r"s|^apt-get install -y -qq python3 python3-venv openssl curl >/dev/null$|:|",
++            str(INSTALLER),
++        ],
++        capture_output=True,
++        text=True,
++        check=True,
++    )
++    patched.write_text(sed.stdout)
++    return patched
++
++
++@pytest.fixture(scope="module")
++def tls_pair(tmp_path_factory) -> tuple[Path, Path]:
++    """A real, parseable certificate/key pair for manual-TLS tests."""
++    base = tmp_path_factory.mktemp("tls")
++    cert, key = base / "manual.crt", base / "manual.key"
++    subprocess.run(
++        [
++            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-sha256",
++            "-days", "5", "-nodes", "-subj", "/CN=host.zerotier.my.id",
++            "-addext", "subjectAltName=DNS:host.zerotier.my.id,IP:127.0.0.1",
++            "-keyout", str(key), "-out", str(cert),
++        ],
++        check=True,
++        capture_output=True,
++    )
++    return cert, key
++
++
++# ----------------------------------------------------------------------
++# The incident, locked: unsupported flags die at parse time, pre-mutation
++# ----------------------------------------------------------------------
++def test_incident_unknown_tls_mode_flag_rejected_before_mutation(tmp_path):
++    """The EXACT operator invocation from the incident must fail cleanly
++    at argument parsing — before privilege escalation, apt, service
++    control or any file write (no root check reached)."""
++    proc = run_installer(
++        "--repair",
++        "--dashboard-bind", "public",
++        "--tls-mode", "manual",
++        "--cert-file", "/etc/letsencrypt/live/host.zerotier.my.id/fullchain.pem",
++        "--key-file", "/etc/letsencrypt/live/host.zerotier.my.id/privkey.pem",
++        cwd=tmp_path,
++    )
++    assert proc.returncode != 0
++    assert "unknown option: --tls-mode" in proc.stderr
++    # Parse-time rejection: the root check must NOT have been reached.
++    assert "must run as root" not in proc.stderr
++    assert "sudo" not in proc.stderr
++    # Nothing was mutated: no files in the working directory, no bootstrap
++    # scratch dirs.
++    assert list(tmp_path.iterdir()) == []
++
++
++@pytest.mark.parametrize("ghost", GHOST_FLAGS)
++def test_ghost_flags_are_not_options(tmp_path, ghost):
++    proc = run_installer(ghost, "manual", cwd=tmp_path)
++    assert proc.returncode != 0
++    assert "unknown option" in proc.stderr
++    assert "must run as root" not in proc.stderr
++
++
++def test_help_advertises_canonical_tls_interface():
++    proc = run_installer("--help")
++    assert proc.returncode == 0
++    help_text = proc.stdout
++    assert "--cert FILE --key FILE" in help_text
++    assert "--domain DOMAIN" in help_text
++    assert "--self-signed" in help_text
++    for ghost in GHOST_FLAGS:
++        assert ghost not in help_text, f"--help must not mention {ghost}"
++    # Regression for the duplicated --repair paragraph (v0.4.1 help bug):
++    # no help line may appear twice in the whole output.
++    lines = [ln.rstrip() for ln in help_text.splitlines()]
++    seen: set[str] = set()
++    for line in lines:
++        if not line.strip():
++            continue
++        assert line not in seen, f"duplicated help line: {line!r}"
++        seen.add(line)
++
++
++# ----------------------------------------------------------------------
++# Missing values / incomplete pairs / bad paths — pre-mutation rejections
++# ----------------------------------------------------------------------
++@pytest.mark.parametrize(
++    "option", ["--port", "--dashboard-port", "--dashboard-bind", "--domain",
++               "--public-ip", "--cert", "--key", "--data-dir", "--config-dir",
++               "--install-dir"],
++)
++def test_missing_option_value_rejected_with_actionable_error(tmp_path, option):
++    proc = run_installer(option, cwd=tmp_path)
++    assert proc.returncode != 0
++    assert f"option {option} requires a value" in proc.stderr
++    assert "must run as root" not in proc.stderr
++
++
++def test_option_like_value_rejected(tmp_path):
++    proc = run_installer("--cert", "--key", "x.pem", cwd=tmp_path)
++    assert proc.returncode != 0
++    assert "option --cert requires a value" in proc.stderr
++
++
++@pytest.mark.parametrize("args", [["--cert", "/tmp/x.pem"], ["--key", "/tmp/y.pem"]])
++def test_manual_tls_requires_the_complete_pair(tmp_path, args):
++    proc = run_installer(*args, cwd=tmp_path)
++    assert proc.returncode != 0
++    assert "manual TLS requires BOTH --cert FILE and --key FILE" in proc.stderr
++    assert "must run as root" not in proc.stderr
++
++
++def test_manual_tls_rejects_missing_files_before_mutation(tmp_path):
++    proc = run_installer("--cert", str(tmp_path / "nope.crt"),
++                         "--key", str(tmp_path / "nope.key"), cwd=tmp_path)
++    assert proc.returncode != 0
++    assert "certificate file not found" in proc.stderr
++    assert "must run as root" not in proc.stderr
++
++
++# ----------------------------------------------------------------------
++# Conflicting TLS sources — exactly one per invocation
++# ----------------------------------------------------------------------
++@pytest.mark.parametrize(
++    "args",
++    [
++        ["--domain", "gw.example.com", "--cert", "C", "--key", "K"],   # certbot+manual
++        ["--cert", "C", "--key", "K", "--domain", "gw.example.com"],   # order-independent
++        ["--self-signed", "--cert", "C", "--key", "K"],                # selfsigned+manual
++        ["--domain", "gw.example.com", "--self-signed"],               # certbot+selfsigned
++    ],
++)
++def test_conflicting_tls_sources_rejected(tmp_path, args):
++    # Give real file paths so the conflict check is what fires for the
++    # manual variants (existence is checked after the conflict check).
++    args = [
++        "C" if a == "C" else ("K" if a == "K" else a) for a in args
++    ]
++    proc = run_installer(*args, cwd=tmp_path)
++    assert proc.returncode != 0
++    assert "conflicting TLS options" in proc.stderr
++    assert "must run as root" not in proc.stderr
++
++
++# ----------------------------------------------------------------------
++# Canonical acceptance: the corrected recovery invocation parses and plans
++# ----------------------------------------------------------------------
++def test_canonical_recovery_invocation_accepted(patched_installer, tls_pair):
++    """The CORRECTED runbook invocation (revision 2) parses and produces
++    the expected plan — manual TLS, public dashboard, default ports."""
++    cert, key = tls_pair
++    proc = subprocess.run(
++        [
++            "bash", str(patched_installer), "--dry-run",
++            "--dashboard-bind", "public",
++            "--cert", str(cert),
++            "--key", str(key),
++        ],
++        capture_output=True,
++        text=True,
++        timeout=120,
++        cwd=str(REPO),  # a checkout (pyproject.toml present): no download
++    )
++    assert proc.returncode == 0, proc.stderr
++    assert "TLS mode       : manual" in proc.stdout
++    assert "dashboard      : public:3903" in proc.stdout
++    assert "MCP port       : 3902" in proc.stdout
++
++
++def test_canonical_flags_with_explicit_ports_accepted(patched_installer, tls_pair):
++    cert, key = tls_pair
++    proc = subprocess.run(
++        [
++            "bash", str(patched_installer), "--dry-run",
++            "--port", "3902", "--dashboard-port", "3903",
++            "--dashboard-bind", "public",
++            "--cert", str(cert), "--key", str(key),
++            "--no-service",
++        ],
++        capture_output=True,
++        text=True,
++        timeout=120,
++        cwd=str(REPO),
++    )
++    assert proc.returncode == 0, proc.stderr
++    assert "public:3903" in proc.stdout
++    assert "--no-service" in proc.stdout
++
++
++def test_config_flags_with_service_command_rejected(tmp_path):
++    proc = run_installer("--status", "--port", "3902", cwd=tmp_path)
++    assert proc.returncode != 0
++    assert "apply to the install flow" in _clean(proc.stderr)
++    assert "must run as root" not in _clean(proc.stderr)
++
++
++# ----------------------------------------------------------------------
++# Documentation contract: docs must use the parser's real flags
++# ----------------------------------------------------------------------
++def _parser_options() -> set[str]:
++    """Ground truth: the long options the case-statement actually accepts
++    (covers the plain, ``--yes|-y`` and ``-h|--help`` arm forms)."""
++    source = INSTALLER.read_text(encoding="utf-8")
++    return set(
++        re.findall(r"^    (?:-[a-z]\|)?(--[a-z][a-z0-9-]*)(?:\|-[a-z])?\)", source, re.M)
++    )
++
++
++def _bash_blocks(markdown: str, skip_comments: bool = True) -> list[str]:
++    blocks: list[str] = []
++    inside = False
++    for line in markdown.splitlines():
++        if line.strip().startswith("```bash"):
++            inside = True
++            continue
++        if inside and line.strip().startswith("```"):
++            inside = False
++            continue
++        if inside:
++            if skip_comments and line.lstrip().startswith("#"):
++                continue
++            blocks.append(line)
++    return blocks
++
++
++def _flags_on_install_sh_lines(bash_lines: list[str]) -> set[str]:
++    """Long options used on (continuation-joined) command lines that invoke
++    install.sh — 'uninstall.sh' does NOT count (word boundary)."""
++    joined: list[str] = []
++    buf = ""
++    for line in bash_lines:
++        text = line.lstrip()
++        if text.startswith("#"):
++            continue  # comments
++        if buf:
++            buf += " " + text
++        else:
++            buf = text
++        if buf.rstrip().endswith("\\"):
++            buf = buf.rstrip()[:-1]
++            continue
++        joined.append(buf)
++        buf = ""
++    if buf:
++        joined.append(buf)
++    flags: set[str] = set()
++    for line in joined:
++        if not re.search(r"(?<![A-Za-z])install\.sh(?![A-Za-z])", line):
++            continue
++        flags.update(re.findall(r"(?<![\w/-])(--[a-z][a-z0-9-]*)", line))
++    return flags
++
++
++LIVE_DOCS = sorted(
++    [REPO / "README.md", *sorted((REPO / "docs").glob("*.md")),
++     REPO / "report" / "PRODUCTION_RECOVERY_V041.md"]
++)
++
++
++def test_parser_exposes_canonical_option_set():
++    """Sanity: the option set extracted from the parser is the expected
++    canonical interface (guards the extraction itself)."""
++    options = _parser_options()
++    expected = {
++        "--start", "--stop", "--restart", "--status", "--check", "--dry-run",
++        "--rollback", "--repair", "--port", "--dashboard-port",
++        "--dashboard-bind", "--domain", "--public-ip", "--cert", "--key",
++        "--self-signed", "--data-dir", "--config-dir", "--install-dir",
++        "--no-service", "--open-firewall", "--yes", "--version", "--help",
++    }
++    assert expected <= options, f"missing: {expected - options}"
++    assert "--tls-mode" not in options
++    assert "--cert-file" not in options
++    assert "--key-file" not in options
++
++
++def test_live_docs_use_only_real_installer_flags():
++    """Every install.sh flag invoked in the live operator documentation
++    must exist in the parser — the doc/CLI mismatch that caused this
++    incident can no longer regress silently."""
++    options = _parser_options()
++    for doc in LIVE_DOCS:
++        assert doc.is_file(), doc
++        used = _flags_on_install_sh_lines(_bash_blocks(doc.read_text(encoding="utf-8")))
++        unknown = used - options
++        assert not unknown, f"{doc.name} invokes unknown installer flags: {sorted(unknown)}"
++
++
++def test_recovery_runbook_never_invokes_ghost_flags():
++    """The runbook must not invoke --tls-mode/--cert-file/--key-file in any
++    executable code block (they may appear in prose explaining the errata)."""
++    runbook = (REPO / "report" / "PRODUCTION_RECOVERY_V041.md").read_text(encoding="utf-8")
++    for ghost in GHOST_FLAGS:
++        for line in _bash_blocks(runbook):
++            assert ghost not in line, f"runbook code block invokes {ghost}: {line!r}"
++
++
++def test_recovery_runbook_documents_canonical_invocation():
++    """The corrected repair command (canonical flags) is present verbatim."""
++    runbook = (REPO / "report" / "PRODUCTION_RECOVERY_V041.md").read_text(encoding="utf-8")
++    assert "bash install.sh --repair" in runbook
++    assert "--cert /etc/letsencrypt/live/host.zerotier.my.id/fullchain.pem" in runbook
++    assert "--key  /etc/letsencrypt/live/host.zerotier.my.id/privkey.pem" in runbook
++
++
++def test_recovery_runbook_manual_alternative_orders_bind_last():
++    """D4 regression lock: the `uaeg config set` sequence must set
++    dashboard.bind LAST (each set validates the whole config)."""
++    runbook = (REPO / "report" / "PRODUCTION_RECOVERY_V041.md").read_text(encoding="utf-8")
++    seq = [
++        m.group(1)
++        for m in re.finditer(
++            r"uaeg config set (dashboard\.\w+)", runbook
++        )
++    ]
++    assert seq, "runbook must document the uaeg config set alternative"
++    assert seq.index("dashboard.bind") == len(seq) - 1, (
++        f"dashboard.bind must be set LAST (got order {seq})"
++    )
++
++
++# ----------------------------------------------------------------------
++# upgrade.sh CLI contract (audit round 2, 2026-11-09)
++#
++# install.sh's downgrade-refusal messages direct operators to
++# ``sudo bash upgrade.sh --version X.Y.Z --allow-downgrade``, and
++# docs/INSTALL.md / docs/TROUBLESHOOTING.md document ``--version X.Y.Z``
++# and ``--source DIR``. A missing value used to kill the script with
++# bash's raw ``unbound variable`` (the D6 class round 1 fixed in
++# install.sh; defect D11 in round 2's numbering). It was always a SAFE,
++# pre-mutation failure - but not an actionable one.
++# ----------------------------------------------------------------------
++UPGRADE_SH = REPO / "upgrade.sh"
++
++
++def run_upgrade_sh(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
++    """Run the real upgrade.sh. Value errors die at parse time - before
++    the root check, before any file write and before any network use."""
++    return subprocess.run(
++        ["bash", str(UPGRADE_SH), *args],
++        capture_output=True,
++        text=True,
++        timeout=60,
++        cwd=str(cwd or REPO),
++    )
++
++
++@pytest.fixture(scope="module")
++def patched_upgrade_sh(tmp_path_factory) -> Path:
++    """Root-check-disabled copy of upgrade.sh (the same sed patch the CI
++    installer job applies to install.sh), used ONLY to prove a COMPLETE
++    ``--version X.Y.Z`` passes the parser: --bootstrap-info exits before
++    any network or updater activity, so the positive path is provable
++    without side effects."""
++    base = tmp_path_factory.mktemp("upgrade-cli")
++    patched = base / "upgrade-test.sh"
++    sed = subprocess.run(
++        [
++            "sed",
++            "-e", r"s|^if \[\[ \$EUID -ne 0 \]\]; then|if false; then|",
++            "-e", r's|^  die "this script must run as root.*|  :|',
++            str(UPGRADE_SH),
++        ],
++        capture_output=True,
++        text=True,
++        check=True,
++    )
++    patched.write_text(sed.stdout)
++    return patched
++
++
++@pytest.mark.parametrize("option", ["--version", "--source"])
++def test_upgrade_sh_missing_value_rejected_with_actionable_error(tmp_path, option):
++    proc = run_upgrade_sh(option, cwd=tmp_path)
++    assert proc.returncode != 0
++    assert f"option {option} requires a value" in proc.stderr
++    # Not bash's raw failure, and the death happened at parse time: the
++    # root gate was never reached and nothing was created or fetched.
++    assert "unbound variable" not in proc.stderr
++    assert "must run as root" not in proc.stderr
++    assert list(tmp_path.iterdir()) == []
++
++
++@pytest.mark.parametrize("option", ["--version", "--source"])
++def test_upgrade_sh_option_like_value_rejected(tmp_path, option):
++    proc = run_upgrade_sh(option, "--check", cwd=tmp_path)
++    assert proc.returncode != 0
++    assert f"option {option} requires a value" in proc.stderr
++    assert "unbound variable" not in proc.stderr
++    assert "must run as root" not in proc.stderr
++
++
++def test_upgrade_sh_complete_version_pair_passes_the_parser(patched_upgrade_sh):
++    """A complete `--version X.Y.Z` gets PAST the parser: with the root
++    gate disabled, --bootstrap-info prints its info block and exits 0
++    BEFORE any network or updater activity - proving the guard fires only
++    on genuinely missing values, never on valid invocations."""
++    proc = subprocess.run(
++        ["bash", str(patched_upgrade_sh), "--version", "0.4.1", "--bootstrap-info"],
++        capture_output=True,
++        text=True,
++        timeout=60,
++        cwd=str(REPO),
++    )
++    assert proc.returncode == 0, proc.stderr
++    assert "requires a value" not in proc.stderr
++    assert "unbound variable" not in proc.stderr
++    assert "UAEG upgrade bootstrap" in proc.stdout
++
++
++if __name__ == "__main__":  # pragma: no cover
++    sys.exit(pytest.main([__file__, "-v"]))
+diff -ruN '--exclude=__pycache__' '--exclude=.git' '--exclude=.venv' '--exclude=.venv-audit' '--exclude=report' '--exclude=docs' /tmp/uaeg-audit/v041/tests/test_unit_regression_configset_pass.py /opt/uaeg/tests/test_unit_regression_configset_pass.py
+--- /tmp/uaeg-audit/v041/tests/test_unit_regression_configset_pass.py	1970-01-01 07:00:00.000000000 +0700
++++ /opt/uaeg/tests/test_unit_regression_configset_pass.py	2026-11-10 04:17:20.000000000 +0700
+@@ -0,0 +1,227 @@
++"""Unit regression tests for the 2026-11-09 installer-contract audit.
++
++Locks two verified operator-path defects at the unit level:
++
++1. **`uaeg config set` ordering contract** (runbook revision 1 defect):
++   every ``config set`` re-validates the WHOLE configuration, so the
++   wildcard dashboard bind must be set LAST.  Setting ``dashboard.bind
++   0.0.0.0`` first is rejected and NOT saved — following the runbook's
++   old order silently left the dashboard on 127.0.0.1.
++
++2. **`uaeg pass` rotation semantics**: rotation revokes dashboard sessions
++   (generation bump) while MCP agent keys and the database stay untouched
++   (separate credential domains).
++"""
++
++from __future__ import annotations
++
++import json
++import os
++import sqlite3
++import subprocess
++import sys
++
++import pytest
++
++from conftest import make_key, write_test_config
++
++PASSWORD_1 = "correct-horse-battery-staple-one"
++PASSWORD_2 = "correct-horse-battery-staple-two"
++
++
++def run_cli(env, *args: str, stdin: bytes = b"") -> subprocess.CompletedProcess:
++    """Run the uaeg CLI (real subprocess) against the isolated env."""
++    proc = subprocess.run(
++        [sys.executable, "-m", "uaeg", *args],
++        input=stdin,
++        capture_output=True,
++        env={**os.environ},
++        start_new_session=True,  # no controlling tty: getpass reads stdin
++        timeout=60,
++    )
++    proc.stdout = proc.stdout.decode("utf-8", errors="replace")
++    proc.stderr = proc.stderr.decode("utf-8", errors="replace")
++    return proc
++
++
++# ----------------------------------------------------------------------
++# 1. `uaeg config set` ordering contract (wildcard bind LAST)
++# ----------------------------------------------------------------------
++def test_config_set_wildcard_bind_first_is_rejected_and_not_saved(env):
++    write_test_config(env)
++    proc = run_cli(env, "config", "set", "dashboard.bind", "0.0.0.0")
++    assert proc.returncode == 1
++    assert "Refusing to bind the dashboard" in proc.stderr + proc.stdout
++    # The rejected value must NOT be persisted.
++    proc = run_cli(env, "config", "get", "dashboard.bind")
++    assert proc.returncode == 0
++    assert proc.stdout.strip() == "127.0.0.1"
++
++
++def test_config_set_public_dashboard_sequence_bind_last_succeeds(env):
++    """The corrected runbook order: allow_public -> tls -> bind (LAST)."""
++    write_test_config(env)
++    assert run_cli(env, "config", "set", "dashboard.allow_public", "true").returncode == 0
++    assert run_cli(env, "config", "set", "dashboard.tls", "true").returncode == 0
++    proc = run_cli(env, "config", "set", "dashboard.bind", "0.0.0.0")
++    assert proc.returncode == 0
++
++    data = json.loads(env["config"].read_text(encoding="utf-8"))
++    assert data["dashboard"]["bind"] == "0.0.0.0"
++    assert data["dashboard"]["allow_public"] is True
++    assert data["dashboard"]["tls"] is True
++    # Ports and unrelated settings survive every rewrite.
++    assert data["mcp"]["port"] == json.loads(
++        run_cli(env, "config", "get", "mcp.port").stdout
++    )
++
++
++def test_config_set_manual_tls_validates_files(env, tmp_path):
++    """Manual TLS is only accepted once a real cert+key pair exists."""
++    write_test_config(env)
++
++    # mode=manual without cert/key: rejected, not saved.
++    assert run_cli(env, "config", "set", "tls.mode", "manual").returncode == 1
++    assert run_cli(env, "config", "get", "tls.mode").stdout.strip() == "self-signed"
++
++    # Paths to files that do not exist: still rejected once mode goes manual.
++    run_cli(env, "config", "set", "tls.cert", str(tmp_path / "nope.crt"))
++    run_cli(env, "config", "set", "tls.key", str(tmp_path / "nope.key"))
++    assert run_cli(env, "config", "set", "tls.mode", "manual").returncode == 1
++    assert run_cli(env, "config", "get", "tls.mode").stdout.strip() == "self-signed"
++
++    # A real pair: accepted (fail-open only for genuinely valid material).
++    import subprocess as _sp
++
++    cert, key = tmp_path / "ok.crt", tmp_path / "ok.key"
++    _sp.run(
++        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-sha256", "-days", "2",
++         "-nodes", "-subj", "/CN=host.zerotier.my.id", "-keyout", str(key),
++         "-out", str(cert)],
++        check=True, capture_output=True,
++    )
++    run_cli(env, "config", "set", "tls.cert", str(cert))
++    run_cli(env, "config", "set", "tls.key", str(key))
++    assert run_cli(env, "config", "set", "tls.mode", "manual").returncode == 0
++    assert run_cli(env, "config", "get", "tls.mode").stdout.strip() == "manual"
++
++
++# ----------------------------------------------------------------------
++# 2. `uaeg pass` rotation: sessions revoked, MCP keys untouched
++# ----------------------------------------------------------------------
++def _password_record(env):
++    from uaeg import dashauth
++
++    dashauth.paths  # ensure import side effects
++    old = os.environ.get("UAEG_DATA_DIR")
++    try:
++        os.environ["UAEG_DATA_DIR"] = str(env["data"])
++        rec = dashauth.load_password()
++    finally:
++        if old is None:
++            os.environ.pop("UAEG_DATA_DIR", None)
++        else:
++            os.environ["UAEG_DATA_DIR"] = old
++    return rec
++
++
++def test_uaeg_pass_setup_and_rotation_revokes_sessions_keeps_keys(env):
++    write_test_config(env)
++    from uaeg import dashauth
++
++    # -- setup (interactive, hidden, twice) --
++    proc = run_cli(env, "pass", stdin=(f"{PASSWORD_1}\n{PASSWORD_1}\n").encode())
++    assert proc.returncode == 0, proc.stderr
++    assert "Password updated successfully" in proc.stdout
++    assert PASSWORD_1 not in proc.stdout  # never echoed
++    rec1 = _password_record(env)
++    assert rec1 is not None
++    assert dashauth.verify_password(PASSWORD_1, rec1)
++
++    # -- an MCP agent key exists --
++    key_id, secret = make_key(env, "audit-key")
++
++    # -- an active dashboard session under generation 1 --
++    sessions = dashauth.SessionStore(idle_timeout_s=60, absolute_timeout_s=3600)
++    session = sessions.create(rec1.generation)
++    assert sessions.get_valid(session.token, rec1.generation) is not None
++
++    # -- rotate the password --
++    proc = run_cli(env, "pass", stdin=(f"{PASSWORD_2}\n{PASSWORD_2}\n").encode())
++    assert proc.returncode == 0, proc.stderr
++    rec2 = _password_record(env)
++    assert rec2.generation != rec1.generation          # rotation => revocation
++    assert not dashauth.verify_password(PASSWORD_1, rec2)
++    assert dashauth.verify_password(PASSWORD_2, rec2)
++    # The pre-rotation session is dead under the new generation.
++    assert sessions.get_valid(session.token, rec2.generation) is None
++
++    # -- MCP key domain is UNTOUCHED by the rotation --
++    from uaeg.db import Store
++    from uaeg import paths
++
++    os.environ["UAEG_DATA_DIR"] = str(env["data"])
++    try:
++        store = Store(paths.database_path())
++        rows = store.list_keys()
++        assert len(rows) == 1
++        assert rows[0]["key_id"] == key_id
++        assert rows[0]["name"] == "audit-key"
++        store.close()
++    finally:
++        pass
++    # The stored secret still authenticates (key material unchanged).
++    from uaeg.auth import resolve_key
++    from uaeg.db import Store as _Store
++    from uaeg import paths as _paths
++
++    st = _Store(_paths.database_path())
++    try:
++        assert resolve_key(secret, st) is not None
++    finally:
++        st.close()
++
++
++def test_uaeg_pass_mismatch_then_success_and_length_rules(env):
++    write_test_config(env)
++    # mismatch -> retry loop; short -> rejected; then a valid pair.
++    stdin = (
++        f"{PASSWORD_1}\n{PASSWORD_2}\n"       # mismatch: retry
++        "short\nshort\n"                      # too short: retry
++        f"{PASSWORD_1}\n{PASSWORD_1}\n"       # accepted
++    ).encode()
++    proc = run_cli(env, "pass", stdin=stdin)
++    assert proc.returncode == 0, proc.stderr
++    assert "passwords do not match" in proc.stdout
++    assert "at least" in proc.stdout
++    assert "Password updated successfully" in proc.stdout
++
++
++def test_password_file_untouched_by_service_restart_cycle(env):
++    """The stored credential is byte-identical across a config rewrite
++    (installer/config flows must never reset the password)."""
++    write_test_config(env)
++    run_cli(env, "pass", stdin=(f"{PASSWORD_1}\n{PASSWORD_1}\n").encode())
++    before = (env["data"] / "dashboard-pass.json").read_bytes()
++    # a config mutation (as the installer/repair does)
++    run_cli(env, "config", "set", "dashboard.allow_public", "true")
++    run_cli(env, "config", "set", "dashboard.tls", "true")
++    run_cli(env, "config", "set", "dashboard.bind", "0.0.0.0")
++    after = (env["data"] / "dashboard-pass.json").read_bytes()
++    assert before == after
++
++
++def test_database_quick_check_after_auth_cycle(env):
++    write_test_config(env)
++    run_cli(env, "pass", stdin=(f"{PASSWORD_1}\n{PASSWORD_1}\n").encode())
++    make_key(env, "k1")
++    con = sqlite3.connect(str(env["data"] / "uaeg.db"))
++    try:
++        assert con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
++        assert con.execute("SELECT COUNT(*) FROM keys").fetchone()[0] == 1
++    finally:
++        con.close()
++
++
++if __name__ == "__main__":  # pragma: no cover
++    raise SystemExit(pytest.main([__file__, "-v"]))
+diff -ruN '--exclude=__pycache__' '--exclude=.git' '--exclude=.venv' '--exclude=.venv-audit' '--exclude=report' '--exclude=docs' /tmp/uaeg-audit/v041/tests/test_unit_regression_v042.py /opt/uaeg/tests/test_unit_regression_v042.py
+--- /tmp/uaeg-audit/v041/tests/test_unit_regression_v042.py	1970-01-01 07:00:00.000000000 +0700
++++ /opt/uaeg/tests/test_unit_regression_v042.py	2026-11-10 04:17:20.000000000 +0700
+@@ -0,0 +1,556 @@
++"""Regression tests for the 2026-11-10 live bridge audit (v0.4.2 patch set).
++
++Findings covered (see report/UAEG_LIVE_FINDINGS_AND_FIXES.md):
++
++  F1  MCP tools failed OPEN to operator-level job/session visibility when the
++      calling agent key could not be resolved (owner_key_id=None). The tool
++      layer now denies such calls (fail closed).
++  F2  ``uaeg doctor`` displayed the loopback probe address (127.0.0.1) for
++      wildcard-bound MCP listeners, hiding that the root-execution endpoint
++      is publicly bound. It now shows the configured bind + a warning.
++  F4  updater.sh / install.sh had no protection when started from INSIDE the
++      UAEG service cgroup: ``systemctl stop uaeg`` (KillMode=control-group)
++      would kill the updater mid-upgrade. Mutating modes now re-exec into a
++      transient systemd scope (or refuse loudly).
++  F5  Background jobs died together with the service under systemd despite
++      the documented "jobs survive service restarts" contract: setsid does
++      NOT escape the unit cgroup. Jobs are now spawned in transient systemd
++      scopes when the host supports them (probe + fallback).
++  F6  Every MCP client disconnect logged an ERROR traceback
++      (mcp.server.streamable_http "Error in standalone SSE writer") -
++      journal noise that hid real errors. Now filtered narrowly.
++"""
++
++from __future__ import annotations
++
++import argparse
++import asyncio
++import logging
++import os
++import stat
++import subprocess
++import sys
++import textwrap
++from pathlib import Path
++
++import pytest
++
++REPO = Path(__file__).resolve().parent.parent
++
++
++# ======================================================================
++# helpers
++# ======================================================================
++def _build_runtime(env):
++    from uaeg.config import Config
++    from uaeg.db import Store
++    from uaeg.runtime import Runtime
++    from uaeg import paths
++
++    cfg = Config()
++    cfg.public_host = "localhost"
++    cfg.mcp.bind = "127.0.0.1"
++    cfg.dashboard.bind = "127.0.0.1"
++    cfg.tls.mode = "self-signed"
++    store = Store(paths.database_path())
++    return Runtime(cfg, store), store
++
++
++def _tool(mcp, name):
++    return mcp._tool_manager._tools[name].fn
++
++
++def _register(runtime):
++    from mcp.server.fastmcp import FastMCP
++    from uaeg.mcp_tools import register_tools
++
++    mcp = FastMCP("test")
++    register_tools(mcp, runtime)
++    return mcp
++
++
++# ======================================================================
++# F1 — fail closed when the calling agent key cannot be resolved
++# ======================================================================
++async def test_f1_shell_exec_denies_unresolvable_identity(env):
++    runtime, store = _build_runtime(env)
++    try:
++        fn = _tool(_register(runtime), "shell_exec")
++        res = await fn(command="echo should-not-run", ctx=None)
++        assert res["ok"] is False
++        assert "could not be resolved" in res["error"]
++        # the command must NOT have executed: no successful/failed execution
++        # row exists for it. (A status="denied" audit row IS expected - the
++        # denial itself is part of the audit trail.)
++        rows = store.list_logs(limit=10)
++        exec_rows = [
++            r for r in rows
++            if r.get("tool") == "shell_exec" and r.get("status") in ("ok", "error", "timeout")
++            and "should-not-run" in (r.get("meta") or {}).get("command", "")
++        ]
++        assert exec_rows == [], "denied command must not have executed"
++        denied_rows = [
++            r for r in rows
++            if r.get("tool") == "shell_exec" and r.get("status") == "denied"
++            and "should-not-run" in (r.get("meta") or {}).get("command", "")
++        ]
++        assert denied_rows, "the denial itself must be audited"
++    finally:
++        store.close()
++
++
++async def test_f1_job_and_session_tools_deny_unresolvable_identity(env):
++    runtime, store = _build_runtime(env)
++    try:
++        mcp = _register(runtime)
++        for name, kwargs in (
++            ("job_status", {"job_id": "job-doesnotmatter"}),
++            ("job_output", {"job_id": "job-doesnotmatter"}),
++            ("job_wait", {"job_id": "job-doesnotmatter"}),
++            ("job_cancel", {"job_id": "job-doesnotmatter"}),
++            ("job_list", {}),
++            ("shell_sessions", {}),
++            ("shell_input", {"session_id": "s", "data": "x"}),
++            ("shell_output", {"session_id": "s"}),
++            ("shell_resize", {"session_id": "s", "cols": 80, "rows": 24}),
++            ("shell_close", {"session_id": "s"}),
++        ):
++            res = await _tool(mcp, name)(ctx=None, **kwargs)
++            assert res.get("ok") is False, (name, res)
++            assert "could not be resolved" in res.get("error", ""), (name, res)
++    finally:
++        store.close()
++
++
++async def test_f1_background_spawn_denies_unresolvable_identity(env):
++    runtime, store = _build_runtime(env)
++    try:
++        fn = _tool(_register(runtime), "shell_exec")
++        res = await fn(command="echo bg", background=True, ctx=None)
++        assert res["ok"] is False
++        assert "could not be resolved" in res["error"]
++        assert store.list_jobs(limit=10) == [], "no job row may be created"
++    finally:
++        store.close()
++
++
++async def test_f1_documented_operator_level_none_still_exists(env):
++    """The MANAGERS keep owner_key_id=None as operator level (dashboard/CLI).
++
++    That is intentional and is exactly why the MCP tool layer must never
++    forward an unresolved identity as None (the tool-layer deny of F1 is
++    the boundary, not the manager).
++    """
++    runtime, store = _build_runtime(env)
++    try:
++        job = runtime.jobs.spawn("echo x", key_id="key-a", key_name="A")
++        # operator (dashboard/CLI) passes None and sees everything:
++        assert runtime.jobs.status(job["job_id"], owner_key_id=None) is not None
++        # another key must NOT see it:
++        from uaeg.executor.jobs import JobError
++
++        with pytest.raises(JobError):
++            runtime.jobs.status(job["job_id"], owner_key_id="key-b")
++    finally:
++        store.close()
++
++
++# ======================================================================
++# F5 — transient systemd scopes for background jobs
++# ======================================================================
++def _write_fake_systemd_run(path: Path, record_file: Path, fail: bool = False):
++    """A fake systemd-run: records its args, then execs the real command."""
++    body = textwrap.dedent(
++        f"""\
++        #!/bin/sh
++        printf '%s\\n' "$*" >> {record_file}
++        if [ "{"fail" if fail else "ok"}" = "fail" ]; then
++          echo "fake systemd-run: refusing" >&2
++          exit 1
++        fi
++        while [ "$#" -gt 0 ]; do
++          case "$1" in
++            -*) shift ;;
++            *) break ;;
++          esac
++        done
++        exec "$@"
++        """
++    )
++    path.write_text(body)
++    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
++
++
++def test_f5_in_systemd_service_detection(tmp_path, monkeypatch):
++    from uaeg.executor import jobs as jobs_mod
++
++    inside = tmp_path / "inside.cgroup"
++    inside.write_text("0::/system.slice/uaeg.service\n")
++    outside = tmp_path / "outside.cgroup"
++    outside.write_text("0::/system.slice/uaeg-job-abc.scope\n")
++    legacy = tmp_path / "legacy.cgroup"
++    legacy.write_text("12:devices:/user.slice\n")
++
++    monkeypatch.setattr(jobs_mod, "_CGROUP_FILE", str(inside))
++    assert jobs_mod._in_systemd_service() is True
++    monkeypatch.setattr(jobs_mod, "_CGROUP_FILE", str(outside))
++    assert jobs_mod._in_systemd_service() is False  # scope != service
++    monkeypatch.setattr(jobs_mod, "_CGROUP_FILE", str(legacy))
++    assert jobs_mod._in_systemd_service() is False
++    monkeypatch.setattr(jobs_mod, "_CGROUP_FILE", str(tmp_path / "missing"))
++    assert jobs_mod._in_systemd_service() is False
++
++
++async def test_f5_scope_supported_requires_service_cgroup(tmp_path, monkeypatch, env):
++    from uaeg.executor import jobs as jobs_mod
++    from uaeg.db import Store
++    from uaeg import paths
++
++    outside = tmp_path / "outside.cgroup"
++    outside.write_text("0::/system.slice/other.scope\n")
++    monkeypatch.setattr(jobs_mod, "_CGROUP_FILE", str(outside))
++    fake = tmp_path / "systemd-run"
++    _write_fake_systemd_run(fake, tmp_path / "args.log")
++    monkeypatch.setattr(jobs_mod, "_SYSTEMD_RUN", str(fake))
++
++    store = Store(paths.database_path())
++    try:
++        jm = jobs_mod.JobManager(store)
++        assert jm._scope_supported() is False  # not inside a service cgroup
++    finally:
++        store.close()
++
++
++async def test_f5_probe_failure_disables_scopes(tmp_path, monkeypatch, env):
++    from uaeg.executor import jobs as jobs_mod
++    from uaeg.db import Store
++    from uaeg import paths
++
++    inside = tmp_path / "inside.cgroup"
++    inside.write_text("0::/system.slice/uaeg.service\n")
++    monkeypatch.setattr(jobs_mod, "_CGROUP_FILE", str(inside))
++    fake = tmp_path / "systemd-run"
++    _write_fake_systemd_run(fake, tmp_path / "args.log", fail=True)
++    monkeypatch.setattr(jobs_mod, "_SYSTEMD_RUN", str(fake))
++
++    store = Store(paths.database_path())
++    try:
++        jm = jobs_mod.JobManager(store)
++        assert jm._scope_supported() is False
++        # and a job still spawns (legacy direct path):
++        job = jm.spawn("echo legacy-fallback", key_id="k", key_name="n")
++        await asyncio.sleep(1.5)
++        st = jm.status(job["job_id"])
++        assert st["status"] == "completed", st
++    finally:
++        store.close()
++
++
++async def test_f5_jobs_spawn_in_scope_and_complete(tmp_path, monkeypatch, env):
++    """Full functional path: scope probe OK -> job spawned via systemd-run
++    (fake execs the real shim) -> output + exit code recorded correctly."""
++    from uaeg.executor import jobs as jobs_mod
++    from uaeg.db import Store
++    from uaeg import paths
++
++    inside = tmp_path / "inside.cgroup"
++    inside.write_text("0::/system.slice/uaeg.service\n")
++    monkeypatch.setattr(jobs_mod, "_CGROUP_FILE", str(inside))
++    record = tmp_path / "args.log"
++    fake = tmp_path / "systemd-run"
++    _write_fake_systemd_run(fake, record)
++    monkeypatch.setattr(jobs_mod, "_SYSTEMD_RUN", str(fake))
++
++    store = Store(paths.database_path())
++    try:
++        jm = jobs_mod.JobManager(store)
++        assert jm._scope_supported() is True
++        job = jm.spawn("echo scope-job-ok", key_id="k", key_name="n")
++        job_id = job["job_id"]
++        # the job really ran and produced honest output:
++        for _ in range(40):
++            st = jm.status(job_id)
++            if st["status"] in jobs_mod.FINAL_STATES:
++                break
++            await asyncio.sleep(0.25)
++        assert st["status"] == "completed", st
++        out = jm.output(job_id)
++        assert out["data"].strip() == "scope-job-ok"
++        assert out["exit_code"] == 0
++        # the probe AND the job spawn both went through the fake (assert
++        # AFTER completion: the fake's append races with spawn()'s return):
++        args_text = record.read_text()
++        assert "--scope" in args_text
++        assert f"--unit=uaeg-{job_id}" in args_text, args_text
++    finally:
++        store.close()
++
++
++# ======================================================================
++# F2 — doctor shows the real MCP bind
++# ======================================================================
++def test_f2_doctor_shows_wildcard_mcp_bind(env, monkeypatch, capsys):
++    from uaeg import cli
++    from uaeg.config import Config
++    from uaeg.db import Store
++    from uaeg import paths
++    from tests.conftest import free_port, write_test_config
++
++    write_test_config(env, **{"mcp.bind": "0.0.0.0"})
++    store = Store(paths.database_path())
++    store.close()
++    import json as _json
++
++    mcp_port = _json.loads(env["config"].read_text())["mcp"]["port"]
++
++    monkeypatch.setattr(cli, "_service_state", lambda: "active")
++    monkeypatch.setattr(cli, "_port_listening", lambda host, port: True)
++    monkeypatch.setattr(cli, "_http_get_json", lambda url, **kw: {"status": "ok"})
++
++    rc = cli.cmd_doctor(argparse.Namespace())
++    out = capsys.readouterr().out
++    # the CONFIGURED bind is displayed, not the loopback probe address:
++    assert f"0.0.0.0:{mcp_port}" in out
++    assert "probed via 127.0.0.1" in out
++    assert "ALL interfaces" in out
++    assert rc in (0, 1)  # other checks (missing cert etc.) may fail in tmp env
++
++
++def test_f2_doctor_shows_private_mcp_bind(env, monkeypatch, capsys):
++    from uaeg import cli
++    from uaeg.db import Store
++    from uaeg import paths
++    from tests.conftest import write_test_config
++
++    write_test_config(env)  # 127.0.0.1 default from helper
++    store = Store(paths.database_path())
++    store.close()
++
++    monkeypatch.setattr(cli, "_service_state", lambda: "active")
++    monkeypatch.setattr(cli, "_port_listening", lambda host, port: True)
++    monkeypatch.setattr(cli, "_http_get_json", lambda url, **kw: {"status": "ok"})
++
++    cli.cmd_doctor(argparse.Namespace())
++    out = capsys.readouterr().out
++    assert "probed via" not in out  # private bind displayed as-is
++    assert "127.0.0.1:" in out
++
++
++# ======================================================================
++# F4 — self-update guard in updater.sh / install.sh (extracted verbatim)
++# ======================================================================
++def _extract_guard(script: Path) -> str:
++    out = subprocess.run(
++        ["sed", "-n", "/^selfupdate_guard() {/,/^}/p", str(script)],
++        capture_output=True, text=True, check=True,
++    )
++    assert "selfupdate_guard() {" in out.stdout and out.stdout.rstrip().endswith("}")
++    return out.stdout
++
++
++def _guard_harness(script: Path, workdir: Path, mode_env: dict) -> str:
++    """Build a runnable harness around the extracted guard function."""
++    harness = textwrap.dedent(
++        f"""\
++        #!/bin/bash
++        MODE="upgrade"
++        MODE_CMD=""
++        NO_SERVICE=0
++        SERVICE_NAME="uaeg"
++        UPDATER_SELF="{script}"
++        SELF_FILE="{script}"
++        say() {{ printf '==> %s\\n' "$*"; }}
++        die() {{ printf 'FATAL: %s\\n' "$*" >&2; exit 9; }}
++        {_extract_guard(script)}
++        selfupdate_guard "$@"
++        echo GUARD-PASSED-THROUGH
++        """
++    )
++    for k, v in mode_env.items():
++        harness = harness.replace(f'{k}="upgrade"' if k == "MODE" else f'{k}=""', f'{k}="{v}"', 1)
++    path = workdir / "harness.sh"
++    path.write_text(harness)
++    path.chmod(path.stat().st_mode | stat.S_IXUSR)
++    return str(path)
++
++
++def test_f4_updater_guard_reexecs_into_scope(tmp_path):
++    """Inside the uaeg.service cgroup + systemd-run available + real file ->
++    the guard must exec systemd-run (the fake exits 42 and records args)."""
++    script = tmp_path / "updater.sh"
++    script.write_text(REPO.joinpath("updater.sh").read_text())
++    cg = tmp_path / "cg"
++    cg.write_text("0::/system.slice/uaeg.service\n")
++    record = tmp_path / "args.log"
++    fake_sd = tmp_path / "systemd-run"
++    fake_sd.write_text(
++        f'#!/bin/sh\nprintf \'%s\\n\' "$*" >> {record}\nexit 42\n'
++    )
++    fake_sd.chmod(fake_sd.stat().st_mode | stat.S_IXUSR)
++    bindir = tmp_path / "bin"
++    bindir.mkdir()
++    os.symlink(fake_sd, bindir / "systemd-run")
++
++    harness = _guard_harness(script, tmp_path, {"MODE": "upgrade"})
++    proc = subprocess.run(
++        ["bash", harness, "--yes"],
++        capture_output=True, text=True,
++        env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
++             "UAEG_CGROUP_FILE": str(cg)},
++        timeout=30,
++    )
++    assert proc.returncode == 42, proc.stderr  # the fake systemd-run ran
++    args = record.read_text()
++    assert "--scope" in args and "--unit=uaeg-selfupdate-" in args
++    assert str(script) in args and "--yes" in args
++    assert "GUARD-PASSED-THROUGH" not in proc.stdout  # exec replaced the flow
++
++
++def test_f4_updater_guard_refuses_without_systemd_run(tmp_path):
++    script = tmp_path / "updater.sh"
++    script.write_text(REPO.joinpath("updater.sh").read_text())
++    cg = tmp_path / "cg"
++    cg.write_text("0::/system.slice/uaeg.service\n")
++    # A PATH with ONLY the essentials: no systemd-run anywhere reachable.
++    minimal_bin = tmp_path / "minbin"
++    minimal_bin.mkdir()
++    for tool in ("cat", "readlink", "dirname", "pwd"):
++        try:
++            os.symlink(f"/usr/bin/{tool}", minimal_bin / tool)
++        except FileExistsError:
++            pass
++
++    harness = _guard_harness(script, tmp_path, {"MODE": "upgrade"})
++    proc = subprocess.run(
++        ["/bin/bash", harness],
++        capture_output=True, text=True,
++        env={"PATH": str(minimal_bin), "UAEG_CGROUP_FILE": str(cg), "HOME": str(tmp_path)},
++        timeout=30,
++    )
++    assert proc.returncode == 9
++    assert "refusing to run a mutating upgrade" in proc.stderr
++
++
++def test_f4_updater_guard_skips_readonly_modes(tmp_path):
++    script = tmp_path / "updater.sh"
++    script.write_text(REPO.joinpath("updater.sh").read_text())
++    cg = tmp_path / "cg"
++    cg.write_text("0::/system.slice/uaeg.service\n")
++
++    harness = _guard_harness(script, tmp_path, {"MODE": "check"})
++    proc = subprocess.run(
++        ["bash", harness],
++        capture_output=True, text=True,
++        env={**os.environ, "UAEG_CGROUP_FILE": str(cg)},
++        timeout=30,
++    )
++    assert proc.returncode == 0
++    assert "GUARD-PASSED-THROUGH" in proc.stdout
++
++
++def test_f4_updater_guard_noop_outside_service_cgroup(tmp_path):
++    script = tmp_path / "updater.sh"
++    script.write_text(REPO.joinpath("updater.sh").read_text())
++    cg = tmp_path / "cg"
++    cg.write_text("0::/system.slice/uaeg-job-123.scope\n")
++
++    harness = _guard_harness(script, tmp_path, {"MODE": "upgrade"})
++    proc = subprocess.run(
++        ["bash", harness],
++        capture_output=True, text=True,
++        env={**os.environ, "UAEG_CGROUP_FILE": str(cg)},
++        timeout=30,
++    )
++    assert proc.returncode == 0
++    assert "GUARD-PASSED-THROUGH" in proc.stdout
++
++
++def test_f4_install_guard_modes(tmp_path):
++    """install.sh guard: mutating modes re-exec; read-only modes pass."""
++    script = tmp_path / "install.sh"
++    script.write_text(REPO.joinpath("install.sh").read_text())
++    cg = tmp_path / "cg"
++    cg.write_text("0::/system.slice/uaeg.service\n")
++    record = tmp_path / "args.log"
++    fake_sd = tmp_path / "systemd-run"
++    fake_sd.write_text(f'#!/bin/sh\nprintf \'%s\\n\' "$*" >> {record}\nexit 42\n')
++    fake_sd.chmod(fake_sd.stat().st_mode | stat.S_IXUSR)
++    bindir = tmp_path / "bin"
++    bindir.mkdir()
++    os.symlink(fake_sd, bindir / "systemd-run")
++
++    # default MODE_CMD="" (install/upgrade/repair flow) -> re-exec
++    harness = _guard_harness(script, tmp_path, {})
++    proc = subprocess.run(
++        ["bash", harness],
++        capture_output=True, text=True,
++        env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
++             "UAEG_CGROUP_FILE": str(cg)},
++        timeout=30,
++    )
++    assert proc.returncode == 42
++    assert "--scope" in record.read_text()
++
++    # read-only status mode -> passes through
++    harness_ro = _guard_harness(script, tmp_path, {"MODE_CMD": "status"})
++    proc_ro = subprocess.run(
++        ["bash", harness_ro],
++        capture_output=True, text=True,
++        env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
++             "UAEG_CGROUP_FILE": str(cg)},
++        timeout=30,
++    )
++    assert proc_ro.returncode == 0
++    assert "GUARD-PASSED-THROUGH" in proc_ro.stdout
++
++
++def test_f4_shell_scripts_remain_syntax_valid():
++    for name in ("install.sh", "updater.sh", "upgrade.sh", "uninstall.sh"):
++        proc = subprocess.run(["bash", "-n", str(REPO / name)], capture_output=True, text=True)
++        assert proc.returncode == 0, (name, proc.stderr)
++
++
++# ======================================================================
++# F6 — MCP client-disconnect noise filter
++# ======================================================================
++def test_f6_disconnect_noise_filtered():
++    from uaeg.logging_util import _McpDisconnectNoiseFilter
++
++    f = _McpDisconnectNoiseFilter()
++
++    def record(msg, exc=None):
++        try:
++            if exc is not None:
++                raise exc
++        except Exception as e:  # noqa: BLE001
++            exc_info = sys.exc_info()
++        else:
++            exc_info = None
++        return logging.LogRecord(
++            "mcp.server.streamable_http", logging.ERROR, __file__, 1, msg, None, exc_info
++        )
++
++    import anyio
++
++    # the known benign disconnect traceback is dropped:
++    assert f.filter(record("Error in standalone SSE writer", anyio.ClosedResourceError())) is False
++    # a different error in that writer still logs:
++    assert f.filter(record("Error in standalone SSE writer", RuntimeError("boom"))) is True
++    # unrelated messages are untouched:
++    assert f.filter(record("some other error", anyio.ClosedResourceError())) is True
++    # CRITICAL records are never dropped:
++    crit = logging.LogRecord(
++        "mcp.server.streamable_http", logging.CRITICAL, __file__, 1,
++        "Error in standalone SSE writer", None, None,
++    )
++    assert f.filter(crit) is True
++
++
++def test_f6_filter_installed_by_setup_logging():
++    import logging as _logging
++
++    from uaeg.logging_util import setup_logging, _McpDisconnectNoiseFilter
++
++    setup_logging()
++    logger = _logging.getLogger("mcp.server.streamable_http")
++    assert any(isinstance(flt, _McpDisconnectNoiseFilter) for flt in logger.filters)
+diff -ruN '--exclude=__pycache__' '--exclude=.git' '--exclude=.venv' '--exclude=.venv-audit' '--exclude=report' '--exclude=docs' /tmp/uaeg-audit/v041/updater.sh /opt/uaeg/updater.sh
+--- /tmp/uaeg-audit/v041/updater.sh	2026-11-10 05:45:45.560090716 +0700
++++ /opt/uaeg/updater.sh	2026-11-10 04:17:20.000000000 +0700
+@@ -259,6 +259,45 @@
+ command -v python3 >/dev/null 2>&1 || die "python3 not found (required for verification)"
+ 
+ # ----------------------------------------------------------------------
++# Self-update protection (audit 2026-11-10, finding F4)
++# ----------------------------------------------------------------------
++# When this updater is started from INSIDE the UAEG service itself (an agent
++# ran it via shell_exec / a background job), we are inside the unit's systemd
++# cgroup. `systemctl stop uaeg` below would then kill THIS updater too
++# (KillMode=control-group kills every process in the cgroup; setsid /
++# start_new_session does NOT change cgroup membership): the upgrade would die
++# mid-flight and the service would stay down. Re-exec into a transient
++# systemd scope first - a separate cgroup that survives the service stop -
++# or refuse loudly when that is impossible. Read-only modes (check, dry-run)
++# never stop the service and skip the guard.
++selfupdate_guard() {
++  [[ $NO_SERVICE -eq 1 ]] && return 0
++  case "$MODE" in check|dry-run) return 0 ;; esac
++  local cg=""
++  cg="$(cat "${UAEG_CGROUP_FILE:-/proc/self/cgroup}" 2>/dev/null)" || return 0
++  case "$cg" in
++    *"/${SERVICE_NAME}.service"*)
++      # Re-exec needs a REAL script file (UAEG_UPDATER or the resolved
++      # BASH_SOURCE); a stdin/eval invocation cannot be re-executed safely.
++      if command -v systemd-run >/dev/null 2>&1 \
++         && [[ -n "${UAEG_UPDATER:-}" || -f "$UPDATER_SELF" ]]; then
++        say "self-update: running inside the ${SERVICE_NAME}.service cgroup;"
++        say "self-update: re-executing in a transient systemd scope so the upgrade survives the service stop"
++        exec systemd-run --scope --quiet --unit="uaeg-selfupdate-$$" bash "$UPDATER_SELF" "$@"
++      fi
++      die "refusing to run a mutating upgrade from inside the ${SERVICE_NAME}.service
++cgroup: stopping the service would kill this updater mid-flight (systemd
++KillMode=control-group; setsid does not escape the cgroup) and it cannot be
++re-executed into a detached scope (no systemd-run, or the script is not
++running from a file). Run the upgrade from an operator shell (SSH/console)
++instead:  sudo bash install.sh    (nothing was changed)"
++      ;;
++  esac
++  return 0
++}
++selfupdate_guard "$@"
++
++# ----------------------------------------------------------------------
+ # systemd helpers (tolerant of hosts without systemd)
+ # ----------------------------------------------------------------------
+ svc_active() {
+diff -ruN '--exclude=__pycache__' '--exclude=.git' '--exclude=.venv' '--exclude=.venv-audit' '--exclude=report' '--exclude=docs' /tmp/uaeg-audit/v041/upgrade.sh /opt/uaeg/upgrade.sh
+--- /tmp/uaeg-audit/v041/upgrade.sh	2026-11-10 05:45:45.560090716 +0700
++++ /opt/uaeg/upgrade.sh	2026-11-10 04:17:20.000000000 +0700
+@@ -144,14 +144,26 @@
+ OPT_SOURCE=""
+ FORWARD_ARGS=()
+ 
++need_value() {  # $1=option name, $2=remaining argc (incl. the option), $3=candidate
++  # Audit round 2 (2026-11-09): same guard class as install.sh (round 1,
++  # defect D6 there). A value-taking option that is last on the command
++  # line, or whose candidate looks like an option ("--version --check"),
++  # must fail with an actionable message instead of bash's raw "unbound
++  # variable". Runs at parse time - before the root check, before any
++  # file write and before any network activity.
++  if [[ "$2" -lt 2 || -z "${3:-}" || "$3" == -* ]]; then
++    die "option $1 requires a value (see --help)"
++  fi
++}
++
+ while [[ $# -gt 0 ]]; do
+   case "$1" in
+     --check)          BOOT_MODE="check"; shift ;;
+     --dry-run)        BOOT_MODE="dry-run"; shift ;;
+     --rollback)       BOOT_MODE="rollback"; FORWARD_ARGS+=("$1"); shift ;;
+-    --version)        OPT_VERSION="${2#v}"; FORWARD_ARGS+=("$1" "$2"); shift 2 ;;
++    --version)        need_value "$1" "$#" "${2:-}"; OPT_VERSION="${2#v}"; FORWARD_ARGS+=("$1" "$2"); shift 2 ;;
+     --main)           OPT_MAIN=1; FORWARD_ARGS+=("$1"); shift ;;
+-    --source)         OPT_SOURCE="$2"; FORWARD_ARGS+=("$1" "$2"); shift 2 ;;
++    --source)         need_value "$1" "$#" "${2:-}"; OPT_SOURCE="$2"; FORWARD_ARGS+=("$1" "$2"); shift 2 ;;
+     --bootstrap-info) BOOT_MODE="info"; shift ;;
+     -h|--help)        usage; exit 0 ;;
+     *)                FORWARD_ARGS+=("$1"); shift ;;

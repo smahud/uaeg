@@ -1,0 +1,654 @@
+==============================================================
+ UAEG safe-upgrade contract test suite
+ repo: /home/z/my-project/uaeg-work/main-verify (v0.4.1)   base: /tmp/uaeg-upgtest.DoyW4L
+==============================================================
+
+[1;36m[22:56:15][0m T-01: fresh install via (patched) install.sh — isolated dirs
+  [1;32mPASS[0m T-01 installer selesai (rc)
+  [1;32mPASS[0m T-01 marker instalasi ada
+  [1;32mPASS[0m T-01 versi terpasang == 0.4.1
+
+[1;36m[22:56:22][0m T-02: dua agent key + perubahan config oleh operator
+  [1;32mPASS[0m T-02 ada 2 kunci agent
+  [1;32mPASS[0m T-02 operator mengubah dashboard.port -> 3954
+
+[1;36m[22:56:23][0m T-03: upgrade.sh --check mendeteksi instalasi (U-2, U-10)
+  [1;32mPASS[0m T-03 --check rc=0
+  [1;32mPASS[0m T-03 menampilkan install dir
+  [1;32mPASS[0m T-03 menampilkan versi terpasang
+  [1;32mPASS[0m T-03 menampilkan data dir
+  [1;32mPASS[0m T-03 status terdeteksi
+
+[1;36m[22:56:24][0m T-04: --dry-run menampilkan rencana tanpa perubahan (U-11)
+  [1;32mPASS[0m T-04 dry-run rc=0
+  [1;32mPASS[0m T-04 menampilkan rencana
+  [1;32mPASS[0m T-04 menyatakan tidak ada perubahan
+  [1;32mPASS[0m T-04 tidak membuat backup
+
+[1;36m[22:56:24][0m T-GUARD: dashboard publik tanpa password -> upgrade ditolak (U-8)
+  [1;32mPASS[0m T-GUARD rc=1 (ditolak)
+  [1;32mPASS[0m T-GUARD pesan mengarah ke 'sudo uaeg pass'
+  [1;32mPASS[0m T-GUARD tidak membuat backup (belum ada yang berubah)
+  [1;32mPASS[0m T-GUARD versi tidak berubah
+
+[1;36m[22:56:24][0m T-13: remote upgrade ke tag terbaru (7.7.7) via staging terisolasi (U-1, U-2, U-12)
+Note: switching to '705c7921389da9f2a29ebd008978ff371b4d52bf'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+  [1;32mPASS[0m T-13 remote upgrade rc=0
+  [1;32mPASS[0m T-13 versi sekarang 7.7.7
+  [1;32mPASS[0m T-13 clone operator TIDAK diubah (HEAD identik)
+  [1;32mPASS[0m T-13 clone operator tetap di branch main (bukan detached)
+  [1;32mPASS[0m T-13 status clone operator identik (tidak ada perubahan baru)
+  [1;32mPASS[0m T-13 sumber dari staging terisolasi
+  [1;32mPASS[0m T-13 script menyatakan clone operator tidak disentuh
+  [1;32mPASS[0m T-13 kunci agent identik
+  [1;32mPASS[0m T-13 RECORD to_version=7.7.7
+  [1;32mPASS[0m T-13 RECORD result=success
+  [1;32mPASS[0m T-13 RECORD contract_version=3
+
+[1;36m[22:56:30][0m T-14: git tree kotor -> TETAP aman; tree dipertahankan (U-12 kontrak v2)
+  [1;32mPASS[0m T-14 rc=0 (tree kotor tidak lagi menghalangi)
+  [1;32mPASS[0m T-14 versi tetap 7.7.7 (re-install/repair)
+  [1;32mPASS[0m T-14 perubahan lokal operator dipertahankan
+  [1;32mPASS[0m T-14 kunci agent identik
+
+[1;36m[22:56:36][0m T-05: upgrade --source 9.9.9 — zero data loss + bukti (U-1, U-3, U-4, U-8)
+  [1;32mPASS[0m T-05 upgrade rc=0
+  [1;32mPASS[0m T-05 versi sekarang 9.9.9
+  [1;32mPASS[0m T-05 kunci agent identik (key_id+status)
+  [1;32mPASS[0m T-05 integritas DB ok
+  [1;32mPASS[0m T-05 config operator dipertahankan (port 3954)
+  [1;32mPASS[0m T-05 RECORD.json ada
+  [1;32mPASS[0m T-05 before-state.json ada (bukti audit)
+  [1;32mPASS[0m T-05 after-state.json ada (bukti audit)
+  [1;32mPASS[0m T-05 install.log ada
+  [1;32mPASS[0m T-05 backup DB konsisten ada
+  [1;32mPASS[0m T-05 backup app/ dihapus setelah sukses terverifikasi
+  [1;32mPASS[0m T-05 RECORD from_version=7.7.7
+  [1;32mPASS[0m T-05 RECORD to_version=9.9.9
+  [1;32mPASS[0m T-05 RECORD result=success
+  [1;32mPASS[0m T-05 RECORD verification=all-checks-passed
+
+[1;36m[22:56:42][0m T-06: idempoten — jalankan ulang, aman (U-7)
+  [1;32mPASS[0m T-06 re-run rc=0
+  [1;32mPASS[0m T-06 versi tetap 9.9.9
+  [1;32mPASS[0m T-06 kunci tetap identik
+  [1;32mPASS[0m T-06 backup keempat dibuat (T-13+T-14+T-05+T-06 = 4 direktori)
+
+[1;36m[22:56:48][0m T-07: bukti smoke test / healthz tercatat (U-4)
+  [1;32mPASS[0m T-07 smoke-serve.log ada
+  [1;32mPASS[0m T-07 output menyebut smoke test
+
+[1;36m[22:56:48][0m T-08: release rusak -> rollback OTOMATIS, exit 2 (U-5)
+  [1;32mPASS[0m T-08 rc=2 (gagal -> sudah di-rollback)
+  [1;32mPASS[0m T-08 aplikasi kembali ke 9.9.9 (berfungsi)
+  [1;32mPASS[0m T-08 kunci agent tetap utuh
+  [1;32mPASS[0m T-08 integritas DB ok
+  [1;32mPASS[0m T-08 config tetap 3954
+  [1;32mPASS[0m T-08 RECORD result=rolled-back
+  [1;32mPASS[0m T-08 rollback diverifikasi ulang (app lama hidup)
+  [1;32mPASS[0m T-08 backup app/ dipertahankan untuk pemulihan manual
+
+[1;36m[22:57:19][0m T-09: rollback manual memulihkan data pra-upgrade (U-6)
+  [1;32mPASS[0m T-09 kunci ketiga dibuat (3 kunci)
+  [1;32mPASS[0m T-09 --rollback rc=0
+  [1;32mPASS[0m T-09 data kembali ke 2 kunci pra-backup
+  [1;32mPASS[0m T-09 config tetap konsisten
+  [1;32mPASS[0m T-09 event manual-rollback tercatat di RECORD
+
+[1;36m[22:57:20][0m T-10: tanpa instalasi -> menolak, exit 3 (U-2)
+  [1;32mPASS[0m T-10 rc=3 (tidak terinstal)
+
+[1;36m[22:57:20][0m T-11: rahasia tidak pernah bocor ke log/record (U-9)
+  [1;32mPASS[0m T-11 secret key tidak muncul di log/RECORD manapun
+  [1;32mPASS[0m T-11 state JSON tidak memuat verifier
+
+[1;36m[22:57:20][0m T-12: retensi backup --keep-backups (U-7)
+  [1;32mPASS[0m T-12 upgrade dengan keep=1 rc=0
+  [1;32mPASS[0m T-12 hanya 1 backup tersisa
+
+[1;36m[22:57:26][0m T-16: downgrade diam-diam -> ditolak exit 5 (U-12)
+  [1;32mPASS[0m T-16 rc=5 (downgrade ditolak)
+  [1;32mPASS[0m T-16 pesan downgrade
+  [1;32mPASS[0m T-16 versi tidak berubah
+  [1;32mPASS[0m T-16 tidak ada backup baru
+
+[1;36m[22:57:26][0m T-15: skrip standalone (tanpa repo) — dry-run menemukan target (U-2, U-11)
+  [1;32mPASS[0m T-15 standalone dry-run rc=0
+  [1;32mPASS[0m T-15 menemukan target v7.7.7 via ls-remote
+  [1;32mPASS[0m T-15 tidak membuat backup
+
+[1;36m[22:57:27][0m T-17: INSIDEN v0.3.1 — upgrade.sh terunduh DI DALAM clone operator (regresi)
+Note: switching to '705c7921389da9f2a29ebd008978ff371b4d52bf'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+Note: switching to '705c7921389da9f2a29ebd008978ff371b4d52bf'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+  [1;32mPASS[0m T-17 checksum asset terverifikasi
+  [1;32mPASS[0m T-17 rc=0 (insiden v0.3.1 tidak terulang)
+  [1;32mPASS[0m T-17 versi sekarang 10.0.0
+  [1;32mPASS[0m T-17 clone operator tidak berubah (HEAD identik)
+  [1;32mPASS[0m T-17 file terunduh tetap ada, tidak ada perubahan lain
+  [1;32mPASS[0m T-17 kunci agent identik
+  [1;32mPASS[0m T-17 script menyatakan clone operator tidak disentuh
+
+[1;36m[22:57:33][0m T-18: tag tidak ada -> pesan akurat, bukan misreporting (U-2, U-10)
+  [1;32mPASS[0m T-18 rc=1 (tag tidak ada -> ditolak)
+  [1;32mPASS[0m T-18 pesan menyebut tag tidak ada di remote
+  [1;32mPASS[0m T-18 pesan misleading lama (v0.3.1) tidak muncul
+  [1;32mPASS[0m T-18 versi tidak berubah
+  [1;32mPASS[0m T-18 tidak membuat backup (belum ada yang berubah)
+
+[1;36m[22:57:33][0m T-19: skrip standalone (tanpa repo lokal) — upgrade PENUH dari remote (U-1, U-2)
+  [1;32mPASS[0m T-19 standalone upgrade rc=0
+  [1;32mPASS[0m T-19 versi 10.0.0 (re-install dari standalone)
+  [1;32mPASS[0m T-19 kunci agent identik
+  [1;32mPASS[0m T-19 sumber dari staging terisolasi
+
+[1;36m[22:57:39][0m T-20: setup — test signing key, release server, operator bootstrap
+  [1;32mPASS[0m T-20 kunci uji dibuat
+  [1;32mPASS[0m T-20 release server hidup (port 60259)
+  [1;32mPASS[0m T-20 bootstrap operator dibuat (sha 883e54a893e7…)
+  [1;32mPASS[0m T-20 --bootstrap-info rc=0
+  [1;32mPASS[0m T-20 info menampilkan interface
+  [1;32mPASS[0m T-20 info menampilkan trusted key
+  [1;32mPASS[0m T-20 keyring bootstrap == kunci uji (fingerprint cocok)
+Note: switching to '705c7921389da9f2a29ebd008978ff371b4d52bf'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+
+[1;36m[22:57:40][0m T-21: bootstrap upgrade #1 -> release A (v11.0.0) — signature-verified
+  [1;32mPASS[0m T-21 bootstrap upgrade ke 11.0.0 rc=0
+  [1;32mPASS[0m T-21 versi sekarang 11.0.0
+  [1;32mPASS[0m T-21 manifest signature diverifikasi
+  [1;32mPASS[0m T-21 integritas updater diverifikasi
+  [1;32mPASS[0m T-21 kunci agent identik
+  [1;32mPASS[0m T-21 config operator dipertahankan
+  [1;32mPASS[0m T-21 RECORD bootstrap_invoked=true
+  [1;32mPASS[0m T-21 RECORD contract_version=3
+
+[1;36m[22:57:46][0m T-22: bootstrap file TIDAK berubah + cache updater + system copy (kontrak inti)
+  [1;32mPASS[0m T-22 SHA-256 bootstrap operator identik (file tidak pernah ditimpa)
+  [1;32mPASS[0m T-22 updater ter-cache (rollback offline)
+  [1;32mPASS[0m T-22 manifest ter-cache
+  [1;32mPASS[0m T-22 system bootstrap copy terpasang (/usr/local/sbin/uaeg-upgrade)
+  [1;32mPASS[0m T-22 updater menyatakan bootstrap operator tidak diubah
+
+[1;36m[22:57:46][0m T-23: RELEASE B dengan UPDATER IMPLEMENTATION BERUBAH — bootstrap yang sama
+Note: switching to '705c7921389da9f2a29ebd008978ff371b4d52bf'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+Note: switching to '705c7921389da9f2a29ebd008978ff371b4d52bf'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+  [1;32mPASS[0m T-23 bootstrap (file yang sama) upgrade ke 12.0.0 rc=0
+  [1;32mPASS[0m T-23 versi sekarang 12.0.0 (updater impl B)
+  [1;32mPASS[0m T-23 updater implementation B benar-benar dijalankan
+  [1;32mPASS[0m T-23 SHA-256 bootstrap operator MASIH identik (lintas rilis + lintas implementasi updater)
+  [1;32mPASS[0m T-23 kunci agent identik
+  [1;32mPASS[0m T-23 clone operator tidak berubah (HEAD)
+  [1;32mPASS[0m T-23 file untracked operator tetap utuh
+
+[1;36m[22:57:53][0m T-24: manifest yang di-tamper -> DITOLAK (autentisitas publisher)
+  [1;32mPASS[0m T-24 rc=1 (manifest tampered -> ditolak)
+  [1;32mPASS[0m T-24 pesan signature invalid
+  [1;32mPASS[0m T-24 versi tidak berubah (12.0.0)
+  [1;32mPASS[0m T-24 tidak ada backup baru (tidak ada yang dieksekusi)
+
+[1;36m[22:57:53][0m T-25: updater yang di-tamper (sha mismatch) -> DITOLAK (integritas artifact)
+  [1;32mPASS[0m T-25 rc=1 (updater sha mismatch -> ditolak)
+  [1;32mPASS[0m T-25 pesan sha mismatch
+  [1;32mPASS[0m T-25 versi tidak berubah
+
+[1;36m[22:57:53][0m T-26: manifest ditandatangani kunci asing -> DITOLAK (publisher asing)
+  [1;32mPASS[0m T-26 rc=1 (publisher asing -> ditolak)
+  [1;32mPASS[0m T-26 pesan publisher tidak dipercaya (ditolak)
+  [1;32mPASS[0m T-26 versi tidak berubah
+
+[1;36m[22:57:53][0m T-27: updater interface terlalu baru -> bootstrap menolak dengan instruksi refresh
+  [1;32mPASS[0m T-27 rc=1 (interface baru -> tolak)
+  [1;32mPASS[0m T-27 pesan menyebut interface
+  [1;32mPASS[0m T-27 pesan menjelaskan refresh bootstrap (prosedur istimewa)
+  [1;32mPASS[0m T-27 versi tidak berubah
+
+[1;36m[22:57:53][0m T-28: release tanpa manifest -> pesan jelas, tidak ada yang berubah
+  [1;32mPASS[0m T-28 rc=1 (manifest hilang -> ditolak)
+  [1;32mPASS[0m T-28 pesan manifest hilang
+  [1;32mPASS[0m T-28 versi tidak berubah
+
+[1;36m[22:57:53][0m T-29: bootstrap --check dan --dry-run melalui kanal rilis (U-10, U-11)
+  [1;32mPASS[0m T-29 --check rc=0
+  [1;32mPASS[0m T-29 --check menampilkan versi
+  [1;32mPASS[0m T-29 --dry-run rc=0
+  [1;32mPASS[0m T-29 --dry-run menampilkan rencana
+  [1;32mPASS[0m T-29 --check/--dry-run tidak membuat backup
+
+[1;36m[22:57:54][0m T-30: release rusak -> rollback OTOMATIS via bootstrap; RETRY dengan bootstrap yang sama
+Note: switching to '705c7921389da9f2a29ebd008978ff371b4d52bf'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+  [1;32mPASS[0m T-30 rc=2 (release rusak -> rollback otomatis via bootstrap)
+  [1;32mPASS[0m T-30 aplikasi kembali ke 12.0.0
+  [1;32mPASS[0m T-30 kunci agent tetap utuh
+Note: switching to '705c7921389da9f2a29ebd008978ff371b4d52bf'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+  [1;32mPASS[0m T-30 retry dengan bootstrap yang sama -> 14.0.0 rc=0
+  [1;32mPASS[0m T-30 versi sekarang 14.0.0
+  [1;32mPASS[0m T-30 SHA-256 bootstrap operator MASIH identik setelah gagal+retry
+  [1;32mPASS[0m T-30 kunci agent identik setelah retry
+
+[1;36m[22:58:32][0m T-31: rollback OFFLINE (server rilis mati) via updater ter-cache
+  [1;32mPASS[0m T-31 rollback offline rc=0 (cached updater)
+  [1;32mPASS[0m T-31 menggunakan updater ter-cache
+  [1;32mPASS[0m T-31 app tetap 14.0.0 (backup sukses tidak menyimpan app — kontrak U-7)
+  [1;32mPASS[0m T-31 data pra-upgrade dipulihkan (kunci identik)
+
+[1;36m[22:58:33][0m T-32: INSIDEN v0.3.4 — jawab 'y' di terminal saat stdin terputus -> upgrade HARUS berjalan
+  [1;32mPASS[0m T-32 rc=0 (jawaban y dibaca dari terminal, bukan stdin)
+  [1;32mPASS[0m T-32 versi sekarang 15.0.0
+  [1;32mPASS[0m T-32 prompt konfirmasi TAMPIL di terminal
+  [1;32mPASS[0m T-32 tidak ada false 'cancelled by the operator'
+  [1;32mPASS[0m T-32 kunci agent identik (zero data loss)
+  [1;32mPASS[0m T-32 RECORD result=success
+
+[1;36m[22:58:39][0m T-33: INSIDEN v0.3.4 — skrip dieksekusi via stdin (curl|bash) + 'y' di terminal -> HARUS berjalan
+  [1;32mPASS[0m T-33 rc=0 (bash -s tanpa crash BASH_SOURCE; jawaban dari /dev/tty)
+  [1;32mPASS[0m T-33 versi sekarang 16.0.0
+  [1;32mPASS[0m T-33 kunci agent identik
+  [1;32mPASS[0m T-33 tidak ada crash BASH_SOURCE
+
+[1;36m[22:58:45][0m T-34: jawab 'n' di terminal -> penolakan bersih dan akurat
+  [1;32mPASS[0m T-34 rc=1 (penolakan eksplisit oleh operator)
+  [1;32mPASS[0m T-34 pesan penolakan akurat untuk jawaban n
+  [1;32mPASS[0m T-34 versi tidak berubah
+  [1;32mPASS[0m T-34 tidak ada backup baru
+
+[1;36m[22:58:46][0m T-35: tanpa terminal + tanpa jawaban -> penolakan dengan alasan BENAR (bukan 'cancelled')
+  [1;32mPASS[0m T-35 rc=1 (ditolak, bukan lanjut diam-diam)
+  [1;32mPASS[0m T-35 pesan menyatakan jawaban tidak dapat dibaca
+  [1;32mPASS[0m T-35 pesan mengarah ke --yes untuk unattended
+  [1;32mPASS[0m T-35 tidak salah lapor 'cancelled by the operator'
+  [1;32mPASS[0m T-35 versi tidak berubah
+  [1;32mPASS[0m T-35 tidak ada backup baru
+
+[1;36m[22:58:46][0m T-36: otomasi tanpa terminal — 'y' lewat pipe tetap diterima
+  [1;32mPASS[0m T-36 rc=0 (jawaban terpipah diterima — jalur otomasi terjaga)
+  [1;32mPASS[0m T-36 versi sekarang 17.0.0
+  [1;32mPASS[0m T-36 kunci agent identik
+
+[1;36m[22:58:52][0m T-37: konfirmasi rollback — 'n' -> aborted; 'y' via terminal saat stdin terputus -> rollback berjalan
+  [1;32mPASS[0m T-37 rc=1 ('n' pada rollback -> aborted)
+  [1;32mPASS[0m T-37 pesan aborted
+  [1;32mPASS[0m T-37 rc=0 (jawaban y via terminal -> rollback berjalan)
+  [1;32mPASS[0m T-37 prompt rollback tampil
+  [1;32mPASS[0m T-37 data pra-upgrade dipulihkan (kunci identik)
+
+[1;36m[22:58:53][0m T-38: helper confirm_ask (diekstrak byte-exact dari install.sh & updater.sh)
+  [1;32mPASS[0m T-38 updater: 'y' terpipah -> ya (0)
+  [1;32mPASS[0m T-38 updater: 'n' terpipah -> tidak (1)
+  [1;32mPASS[0m T-38 updater: EOF tanpa terminal -> tidak ada jawaban (2)
+  [1;32mPASS[0m T-38 updater: stdin terputus + tty -> 'y' terbaca (0)
+  [1;32mPASS[0m T-38 install: 'y' terpipah -> ya (0)
+  [1;32mPASS[0m T-38 install: 'n' terpipah -> tidak (1)
+  [1;32mPASS[0m T-38 install: EOF tanpa terminal -> tidak ada jawaban (2)
+  [1;32mPASS[0m T-38 install: stdin terputus + tty -> 'y' terbaca (0)
+
+[1;36m[22:58:53][0m T-39: setup — rilis server (hidup lagi), install.sh terpadu operator, rilis E
+  [1;32mPASS[0m T-39 release server hidup lagi (port 49597)
+  [1;32mPASS[0m T-39 install.sh terpadu operator dibuat (sha f2cfd5ea9d6d…)
+Note: switching to '705c7921389da9f2a29ebd008978ff371b4d52bf'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+  [1;32mPASS[0m T-39 --help rc=0
+  [1;32mPASS[0m T-39 help memuat --check
+  [1;32mPASS[0m T-39 help memuat --rollback
+  [1;32mPASS[0m T-39 help memuat --repair
+  [1;32mPASS[0m T-39 help memuat --start
+  [1;32mPASS[0m T-39 --version (tanpa argumen) rc=0
+  [1;32mPASS[0m T-39 --version mencetak versi installer (v0.4.1)
+
+[1;36m[22:58:55][0m T-40: BARE install.sh pada instalasi ada -> SAFE UPGRADE terverifikasi (U-16)
+  [1;32mPASS[0m T-40 bare install.sh upgrade ke 18.0.0 rc=0 (dari 17.0.0)
+  [1;32mPASS[0m T-40 versi sekarang 18.0.0
+  [1;32mPASS[0m T-40 manifest signature diverifikasi (bootstrap ter-embed)
+  [1;32mPASS[0m T-40 integritas updater diverifikasi
+  [1;32mPASS[0m T-40 kunci agent identik
+  [1;32mPASS[0m T-40 config operator dipertahankan
+  [1;32mPASS[0m T-40 SHA-256 install.sh operator TIDAK berubah
+  [1;32mPASS[0m T-40 RECORD bootstrap_invoked=true
+  [1;32mPASS[0m T-40 RECORD bootstrap_file == install.sh operator
+  [1;32mPASS[0m T-40 RECORD to_version=18.0.0
+
+[1;36m[22:59:01][0m T-41: MULTI-RELEASE — file install.sh yang sama, rilis F dengan UPDATER BERUBAH
+Note: switching to '705c7921389da9f2a29ebd008978ff371b4d52bf'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+  [1;32mPASS[0m T-41 file yang sama upgrade ke 19.0.0 rc=0
+  [1;32mPASS[0m T-41 versi sekarang 19.0.0
+  [1;32mPASS[0m T-41 updater implementasi F benar-benar dijalankan
+  [1;32mPASS[0m T-41 SHA-256 install.sh operator MASIH identik (reuse multi-rilis)
+  [1;32mPASS[0m T-41 kunci agent identik
+
+[1;36m[22:59:08][0m T-42: install.sh --version X.Y.Z pada instalasi ada -> upgrade PINNED
+Note: switching to '705c7921389da9f2a29ebd008978ff371b4d52bf'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+  [1;32mPASS[0m T-42 --version 20.0.0 rc=0
+  [1;32mPASS[0m T-42 versi sekarang 20.0.0 (pin terverifikasi)
+  [1;32mPASS[0m T-42 kunci agent identik
+
+[1;36m[22:59:15][0m T-43: manifest di-tamper -> install.sh bare MENOLAK (U-14 via installer)
+  [1;32mPASS[0m T-43 rc=1 (manifest tampered -> ditolak oleh installer terpadu)
+  [1;32mPASS[0m T-43 pesan signature invalid
+  [1;32mPASS[0m T-43 versi tidak berubah
+  [1;32mPASS[0m T-43 tidak ada backup baru
+
+[1;36m[22:59:15][0m T-44: manifest kunci asing -> install.sh bare MENOLAK
+  [1;32mPASS[0m T-44 rc=1 (publisher asing -> ditolak)
+  [1;32mPASS[0m T-44 pesan publisher tidak dipercaya
+  [1;32mPASS[0m T-44 versi tidak berubah
+
+[1;36m[22:59:15][0m T-45: updater di-tamper (sha mismatch) -> install.sh bare MENOLAK
+  [1;32mPASS[0m T-45 rc=1 (updater sha mismatch -> ditolak)
+  [1;32mPASS[0m T-45 pesan sha mismatch
+  [1;32mPASS[0m T-45 versi tidak berubah
+
+[1;36m[22:59:15][0m T-46: updater interface terlalu baru -> install.sh menolak + instruksi refresh
+  [1;32mPASS[0m T-46 rc=1 (interface baru -> tolak)
+  [1;32mPASS[0m T-46 pesan menyebut interface
+  [1;32mPASS[0m T-46 instruksi refresh mengarah ke install.sh
+  [1;32mPASS[0m T-46 versi tidak berubah
+
+[1;36m[22:59:15][0m T-47: install.sh --check dan --dry-run melalui kanal rilis (U-10, U-11)
+Note: switching to '705c7921389da9f2a29ebd008978ff371b4d52bf'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+  [1;32mPASS[0m T-47 --check rc=0
+  [1;32mPASS[0m T-47 --check menampilkan versi terpasang
+  [1;32mPASS[0m T-47 --check menandai pembaruan tersedia
+  [1;32mPASS[0m T-47 --dry-run rc=0
+  [1;32mPASS[0m T-47 --dry-run menampilkan rencana upgrade
+  [1;32mPASS[0m T-47 --check/--dry-run tidak membuat backup
+
+[1;36m[22:59:16][0m T-48: rilis rusak via install.sh bare -> ROLLBACK OTOMATIS (rc 2)
+Note: switching to '705c7921389da9f2a29ebd008978ff371b4d52bf'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+  [1;32mPASS[0m T-48 rc=2 (rilis rusak -> rollback otomatis via installer terpadu)
+  [1;32mPASS[0m T-48 aplikasi kembali ke 20.0.0
+  [1;32mPASS[0m T-48 kunci agent tetap utuh
+
+[1;36m[22:59:48][0m T-49: install.sh --rollback (updater ter-cache, manual)
+  [1;32mPASS[0m T-49 --rollback rc=0
+  [1;32mPASS[0m T-49 menggunakan updater ter-cache
+  [1;32mPASS[0m T-49 data pra-upgrade dipulihkan (kunci identik)
+
+[1;36m[22:59:49][0m T-50: perintah service tanpa systemd/unit -> penolakan bersih (rc 1)
+  [1;32mPASS[0m T-50 --start -> rc=1 + pesan systemd yang jelas
+  [1;32mPASS[0m T-50 --stop -> rc=1 + pesan systemd yang jelas
+  [1;32mPASS[0m T-50 --restart -> rc=1 + pesan systemd yang jelas
+  [1;32mPASS[0m T-50 --status -> rc=1 + pesan systemd yang jelas
+
+[1;36m[22:59:49][0m T-51: --repair mempertahankan data + menerapkan flag config (in-place)
+  [1;32mPASS[0m T-51 --repair rc=0
+  [1;32mPASS[0m T-51 versi sekarang 23.0.0 (sumber lokal)
+  [1;32mPASS[0m T-51 kunci agent identik (data dipertahankan)
+  [1;32mPASS[0m T-51 flag config diterapkan (3954 -> 3956)
+
+[1;36m[22:59:52][0m T-52: UPGRADE DARI BASELINE v0.3.5 -> installer terpadu (kompatibilitas)
+  [1;32mPASS[0m T-52 fresh install dari tag v0.3.5 rc=0
+  [1;32mPASS[0m T-52 baseline terpasang: 0.3.5
+Note: switching to '705c7921389da9f2a29ebd008978ff371b4d52bf'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+  [1;32mPASS[0m T-52 upgrade v0.3.5 -> 24.0.0 via install.sh bare rc=0
+  [1;32mPASS[0m T-52 versi sekarang 24.0.0
+  [1;32mPASS[0m T-52 kunci agent dari baseline 0.3.5 identik
+  [1;32mPASS[0m T-52 SHA-256 install.sh operator MASIH identik (lintas baseline)
+
+[1;36m[23:00:05][0m T-53: INSIDEN 2026-11-08 — --repair dari sumber LAMA atas instalasi BARU -> tolak exit 5 SEBELUM mutasi
+  [1;32mPASS[0m T-53 rc=5 (downgrade pre-mutation ditolak)
+  [1;32mPASS[0m T-53 pesan penolakan guard 1
+  [1;32mPASS[0m T-53 penolakan menyatakan tidak ada perubahan
+  [1;32mPASS[0m T-53 versi terpasang tidak berubah
+  [1;32mPASS[0m T-53 pohon aplikasi identik byte-per-byte
+  [1;32mPASS[0m T-53 konfigurasi identik
+  [1;32mPASS[0m T-53 kunci agent identik
+  [1;32mPASS[0m T-53 tidak ada backup baru
+  [1;32mPASS[0m T-53 tidak ada backup aplikasi baru (rollback-safety belum dibuat)
+
+[1;36m[23:00:05][0m T-54: INSIDEN (varian versi-sama) — skema lama menolak konfigurasi ada -> CONFIG_INCOMPATIBLE, nol mutasi
+  [1;32mPASS[0m T-54 setup: salinan sumber tanpa field tls (skema lama)
+  [1;32mPASS[0m T-54 konfigurasi ada memuat dashboard.tls
+  [1;32mPASS[0m T-54 rc=1 (inkompatibilitas skema ditolak)
+  [1;32mPASS[0m T-54 pesan CONFIG_INCOMPATIBLE
+  [1;32mPASS[0m T-54 penyebab persis insiden disebut
+  [1;32mPASS[0m T-54 penolakan pre-mutation
+  [1;32mPASS[0m T-54 versi tidak berubah
+  [1;32mPASS[0m T-54 pohon aplikasi identik
+  [1;32mPASS[0m T-54 konfigurasi identik
+
+[1;36m[23:00:06][0m T-55: installer STANDALONE ter-pin lama + instalasi lebih baru -> tolak SEBELUM unduh (exit 5)
+  [1;32mPASS[0m T-55 rc=5 (pin lama ditolak pre-download)
+  [1;32mPASS[0m T-55 pesan penolakan standalone
+  [1;32mPASS[0m T-55 tidak sempat menyentuh jaringan
+  [1;32mPASS[0m T-55 versi tidak berubah
+
+[1;36m[23:00:06][0m T-56: UAEG_ALLOW_DOWNGRADE=1 + sumber lama yang KOMPATIBEL skema -> repair berjalan (jalur resmi)
+  [1;32mPASS[0m T-56 rc=0 (downgrade tersurat selesai)
+  [1;32mPASS[0m T-56 peringatan persetujuan tampil
+  [1;32mPASS[0m T-56 probe skema lolos
+  [1;32mPASS[0m T-56 versi sekarang v0.4.1 (sumber lama)
+  [1;32mPASS[0m T-56 kunci agent identik
+  [1;32mPASS[0m T-56 konfigurasi operator dipertahankan
+
+[1;36m[23:00:08][0m T-57: PYTHONPATH busuk (paket uaeg LAMA) tidak bisa membayangi — sanitasi interpreter v0.4.1
+  [1;32mPASS[0m T-57 rc=0 (repair kebal PYTHONPATH busuk)
+  [1;32mPASS[0m T-57 probe memakai sumber ter-staging, bukan bayangan
+  [1;32mPASS[0m T-57 versi 0.4.1
+  [1;32mPASS[0m T-57 konfigurasi tetap membawa dashboard.tls (skema benar yang menulis)
+
+==============================================================
+ HASIL: [1;32m290 PASS[0m / [1;31m0 FAIL[0m
+==============================================================
+
+[suite selesai rc=0 | base=/tmp/uaeg-upgtest.DoyW4L]

@@ -1,0 +1,18 @@
+/home/z/my-project/uaeg-work/main-verify/.venv/lib/python3.12/site-packages/pytest_asyncio/plugin.py:300: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the "fixture" caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to "function" scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+........................................................................ [ 36%]
+........................................................................ [ 73%]
+.....................................................                    [100%]
+=============================== warnings summary ===============================
+tests/test_unit_regression_v033.py::test_whoami_legacy_mode_returns_payload
+  /home/z/my-project/uaeg-work/main-verify/.venv/lib/python3.12/site-packages/starlette/testclient.py:45: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+tests/test_unit_regression_v042.py::test_f1_shell_exec_denies_unresolvable_identity
+  /home/z/my-project/uaeg-work/main-verify/.venv/lib/python3.12/site-packages/pydantic_settings/sources/utils.py:51: IncompleteFieldDefinitionWarning: Field 'lifespan' has an incomplete definition: its annotation contains an unresolved forward reference, so settings sources may fail to correctly resolve its value. Call `model_rebuild()` on the model where the field is defined, once all the referenced types are defined.
+    warnings.warn(  # noqa: B028  (called from many sources at differing depths, so no stacklevel is correct)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+197 passed, 2 warnings in 44.42s
