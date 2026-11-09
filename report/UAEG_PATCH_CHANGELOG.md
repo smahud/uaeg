@@ -2,8 +2,10 @@
 
 Baseline: `main` @ `30d047d04729a3d703f00c8bcd3fc288ff7bb4f8` (= `v0.4.1-1`,
 docs-only commit after the release tag).
-Patch set: single commit on `main` (SHA recorded in §5 and in the delivery
-summary; verify with `git log --oneline -3`).
+Patch-set commit: **`b4284822adf2f3c46e82baaa90307e3938d3ed5e`**
+("fix(install): enforce TLS CLI contract pre-mutation; repair
+--dashboard-bind public; correct recovery runbook"), pushed to
+`origin/main` 2026-11-09 and verified via `git ls-remote`.
 
 All changes are minimal and defect-driven. No architecture change, no
 configuration-framework change, no new dependency, no data migration.
@@ -81,7 +83,11 @@ path — D10 fixed) until the maintainer cuts v0.4.2.
 ## 5. Commit
 
 - Baseline: `30d047d04729a3d703f00c8bcd3fc288ff7bb4f8`
-- **Patch-set commit (this changelog's subject): see `git log` — recorded
-  after the push in the delivery summary and in
-  `report/UAEG_PRODUCTION_ACCEPTANCE.md` §6** (a SHA cannot be embedded in
-  the commit it identifies).
+- **Patch-set commit: `b4284822adf2f3c46e82baaa90307e3938d3ed5e`** —
+  pushed to `origin/main`, verified via `git ls-remote`.
+- CI run for the patch set:
+  https://github.com/smahud/uaeg/actions/runs/42557757475
+  (result recorded in `report/UAEG_PRODUCTION_ACCEPTANCE.md` §6).
+- This report itself and its SHA-recording sibling were amended in a
+  follow-up docs commit on `main` (a SHA cannot be embedded in the commit
+  it identifies); final HEAD: see `git log -1`.

@@ -112,6 +112,9 @@ the operator executes §3 steps 2–5.
 ## 6. Delivery record
 
 - Baseline commit: `30d047d04729a3d703f00c8bcd3fc288ff7bb4f8`
-- Patch-set commit: **see `git log` on `main` (recorded in the delivery
-  summary; a SHA cannot be embedded in the commit it identifies)**
-- CI: status checked after the push and recorded in the delivery summary.
+- **Patch-set commit: `b4284822adf2f3c46e82baaa90307e3938d3ed5e`**
+  (pushed to `origin/main`, verified via `git ls-remote`)
+- CI run: https://github.com/smahud/uaeg/actions/runs/42557757475 —
+  sandbox re-ran the identical suites locally: **203 pytest + 290
+  upgrade-contract checks, 0 failures** (`UAEG_TEST_RESULTS.md`); the
+  GitHub Actions result for the push is tracked at the run URL above.
