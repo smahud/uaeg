@@ -1,0 +1,42 @@
+== PRODUCTION INCIDENT REPRODUCTION 2026-11-08 -> v0.4.1 FIX ==
+date: 2026-11-09T02:41:14Z
+scenario: v0.4.0 installed (config carries dashboard.tls) + stale checkout (v0.4.0-era install.sh, pre-v0.3.0 src) -> bash install.sh --repair
+
+---- [A] v0.4.0 installer: THE INCIDENT (rc=1, mutate-then-rollback) ----
+[1;32m==>[0m --repair: re-running the installer in place (persistent data preserved)
+[1;32m==>[0m UAEG installer starting
+[1;32m==>[0m installing system dependencies (python3-venv, openssl, curl)
+[1;32m==>[0m existing installation found at /tmp/uaeg-incident.CR5y5v/opt/uaeg - upgrading in place
+[1;32m==>[0m backing up the current application (rollback safety): /tmp/uaeg-incident.CR5y5v/opt/uaeg.upgrade-bak-20261109-024105
+[1;32m==>[0m installing application to /tmp/uaeg-incident.CR5y5v/opt/uaeg
+[1;32m==>[0m installing python dependencies (pinned: mcp/starlette/uvicorn)
+[1;32m==>[0m upgrade: keeping the existing public_host and TLS configuration
+[1;32m==>[0m existing configuration found - backing up to /tmp/uaeg-incident.CR5y5v/etc/uaeg/config.json.bak-20261109-024107
+[1;32m==>[0m writing configuration: /tmp/uaeg-incident.CR5y5v/etc/uaeg/config.json
+CONFIG_ERROR: existing configuration is invalid: configuration contains an unknown or mistyped field: DashboardConfig.__init__() got an unexpected keyword argument 'tls'. Remove fields that do not belong to this UAEG version.
+[1;31mERROR:[0m configuration could not be written - see the error above
+[1;33mWARNING:[0m installation failed - rolling back to the previous working state
+[1;32m==>[0m restored previous configuration from /tmp/uaeg-incident.CR5y5v/etc/uaeg/config.json.bak-20261109-024107
+[1;32m==>[0m restored previous application files
+
+---- [B] v0.4.1 installer: THE FIX (rc=5, zero mutation) ----
+[1;32m==>[0m --repair: re-running the installer in place (persistent data preserved)
+[1;32m==>[0m UAEG installer starting
+[1;31mERROR:[0m REFUSING to deploy OLDER source over the installed application.
+
+  installed application : v0.4.0  (/tmp/uaeg-incident.CR5y5v/opt/uaeg)
+  source to be deployed : v0.2.0  (/tmp/uaeg-incident.CR5y5v/src-mixed)
+
+This is exactly the mechanism of the 2026-11-08 production incident: an
+older schema rejected the existing configuration ('dashboard.tls') AFTER
+the application had already been replaced. NOTHING was changed.
+
+Recovery:
+  a) safe upgrade to a published release:  sudo bash install.sh [--version X.Y.Z]
+  b) repair the installed version: run this installer from a checkout of
+     v0.4.0:   git fetch --tags && git checkout v0.4.0
+  c) intentional downgrade:  sudo bash upgrade.sh --version 0.2.0 --allow-downgrade
+
+---- verification ----
+installed tree before/after: byte-identical
+config.json before/after: byte-identical

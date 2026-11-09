@@ -76,7 +76,7 @@ APP_BACKUP=""
 CONFIG_BACKUP=""
 # Release this installer belongs to (used for standalone bootstrap, FR-002).
 # Override the source version at runtime with: --version X.Y.Z or UAEG_VERSION=X.Y.Z
-UAEG_RELEASE_VERSION="0.4.0"
+UAEG_RELEASE_VERSION="0.4.1"
 FETCH_VERSION=""
 
 # ----------------------------------------------------------------------
@@ -106,6 +106,11 @@ SELF_SHA_BEFORE="$(sha256sum "$SELF_FILE" 2>/dev/null | awk '{print $1}' || echo
 # suite; signature verification applies UNCONDITIONALLY).
 RELEASE_API_BASE="${UAEG_RELEASE_API_BASE:-https://api.github.com/repos/smahud/uaeg}"
 RELEASE_DOWNLOAD_BASE="${UAEG_RELEASE_DOWNLOAD_BASE:-https://github.com/smahud/uaeg/releases/download}"
+# "latest" asset alias (docs/BOOTSTRAP.md): .../releases/latest/download/<asset>.
+# Derived from the download base so mirrors keep working; v0.4.1 fixes the
+# v0.4.0 recovery hints that pointed at the non-existent
+# .../releases/download/latest-mismatch/... path.
+RELEASE_LATEST_BASE="${RELEASE_DOWNLOAD_BASE%/download}/latest/download"
 
 # System paths (env-overridable so isolated tests can redirect them).
 SYSTEM_UAEG_BIN="${UAEG_SYSTEM_UAEG_BIN:-/usr/local/bin/uaeg}"
@@ -125,6 +130,9 @@ MCowBQYDK2VwAyEAS6XMyzmiARYxhkDoBsMZdNE1SXNtyGCNJV6R+Uvznq4=
 _TRUSTED_KEY_3="-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEABBIDBLITvWPB+YC0iDMYvVi3r/0gqdbaAGhy8CLuC/Q=
 -----END PUBLIC KEY-----"
+_TRUSTED_KEY_4="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEA2Ei9ZnJs97L3KzRQwjdASwGbp/ooWSr9retQyZj7qcU=
+-----END PUBLIC KEY-----"
 # ---- TRUSTED KEYRING END ----
 
 # ----------------------------------------------------------------------
@@ -132,7 +140,7 @@ MCowBQYDK2VwAyEABBIDBLITvWPB+YC0iDMYvVi3r/0gqdbaAGhy8CLuC/Q=
 # ----------------------------------------------------------------------
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mWARNING:\033[0m %s\n' "$*" >&2; }
-die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+die()  { local _rc="${2:-1}"; printf '\033[1;31mERROR:\033[0m %s\n' "$1" >&2; exit "$_rc"; }
 
 # confirm_ask <prompt> — read the operator's y/N answer.
 #
@@ -173,6 +181,27 @@ confirm_ask() {
   return 1
 }
 
+ver_gt() {  # true when $1 > $2 (semver-ish); equal is NOT greater
+  [[ "$1" != "$2" && "$(printf '%s\n' "$1" "$2" | sort -V | sed -n 2p)" == "$1" ]]
+}
+
+pyproject_version() {  # $1 = pyproject.toml path (prints version or nothing)
+  sed -n 's/^version[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$1" 2>/dev/null | head -1
+}
+
+installed_app_version() {  # version deployed at $INSTALL_DIR ("" if none/unknown)
+  [[ -f "$INSTALL_DIR/pyproject.toml" ]] || return 0
+  pyproject_version "$INSTALL_DIR/pyproject.toml"
+}
+
+app_python() {  # sanitized application interpreter (v0.4.1 invariant):
+  # the code that validates and writes the configuration MUST be the code
+  # deployed at $INSTALL_DIR - never a stale PYTHONPATH entry, a stray
+  # package in the working directory (-P keeps CWD out of sys.path) or an
+  # inherited environment surprise. UAEG_* overrides stay caller-controlled.
+  env -u PYTHONPATH "$VENV_DIR/bin/python" -P "$@"
+}
+
 usage() {
   cat <<'USAGE'
 UAEG unified installer & upgrade entrypoint (docs/INSTALL.md, docs/UPGRADE_CONTRACT.md)
@@ -195,7 +224,17 @@ Commands:
                          installation: redeploys the application, rebuilds the
                          venv, rewrites the systemd unit - persistent data
                          (keys, database, dashboard password, TLS material)
-                         and the existing configuration are preserved
+                         and the existing configuration are preserved.
+                         v0.4.1 safety: the source tree this script runs
+                         from must not be OLDER than the installed app
+                         (refused, exit 5) and its schema must accept the
+                         existing configuration (verified BEFORE the
+                         service is stopped or any file is replaced).
+                         v0.4.1 safety: the source tree this script runs
+                         from must not be OLDER than the installed app
+                         (refused, exit 5) and its schema must accept the
+                         existing configuration (verified BEFORE the
+                         service is stopped or any file is replaced)
   --start                start the UAEG systemd service
   --stop                 stop the UAEG systemd service
   --restart              restart the UAEG systemd service
@@ -230,11 +269,12 @@ Environment:
   UAEG_VERSION                                          default release for a
   standalone fresh install (same as --version X.Y.Z)
 
-Exit codes (safe-upgrade modes, propagated from the updater):
+Exit codes:
   0 success                 3 no existing installation found
   1 error (refused/failed)  4 reserved
-  2 failure -> rolled back  5 downgrade refused (use --allow-downgrade via
-  upgrade.sh, or re-run with --version <older> is refused the same way)
+  2 failure -> rolled back  5 downgrade refused - on EVERY path (safe
+  upgrade and the in-place/--repair flow alike, v0.4.1). Deliberate
+  downgrades go through: sudo bash upgrade.sh --version X.Y.Z --allow-downgrade
 USAGE
 }
 
@@ -426,8 +466,8 @@ The manifest is not signed by ANY trusted UAEG release key.
 Possible causes: release not published by the project, artifact tampering, or a
 key rotation (see docs/BOOTSTRAP.md - Recovery). NOTHING was executed or changed.
 Recovery (one-time bootstrap refresh):
-  curl -fsSLO $RELEASE_DOWNLOAD_BASE/latest-mismatch/install.sh
-  curl -fsSLO $RELEASE_DOWNLOAD_BASE/latest-mismatch/install.sh.sha256
+  curl -fsSLO $RELEASE_LATEST_BASE/install.sh
+  curl -fsSLO $RELEASE_LATEST_BASE/install.sh.sha256
   sha256sum -c install.sh.sha256"
   fi
 
@@ -468,8 +508,8 @@ PY
   if (( UPDATER_IFACE > INSTALLER_INTERFACE )); then
     die "the updater in release $tag speaks interface v$UPDATER_IFACE, but this
 installer supports up to v$INSTALLER_INTERFACE. Refresh the installer ONCE:
-  curl -fsSLO $RELEASE_DOWNLOAD_BASE/latest-mismatch/install.sh
-  curl -fsSLO $RELEASE_DOWNLOAD_BASE/latest-mismatch/install.sh.sha256
+  curl -fsSLO $RELEASE_LATEST_BASE/install.sh
+  curl -fsSLO $RELEASE_LATEST_BASE/install.sh.sha256
   sha256sum -c install.sh.sha256
 (see docs/BOOTSTRAP.md - exceptional recovery; this is the only situation
 that requires re-downloading this file)."
@@ -542,6 +582,7 @@ run_bootstrap_mode() {  # $1 = upgrade | check | dry-run | rollback
     printf '%s\n' "$_TRUSTED_KEY_1" > "$BOOTSTRAP_WORK/trusted/1.pub"
     printf '%s\n' "$_TRUSTED_KEY_2" > "$BOOTSTRAP_WORK/trusted/2.pub"
     printf '%s\n' "$_TRUSTED_KEY_3" > "$BOOTSTRAP_WORK/trusted/3.pub"
+    printf '%s\n' "$_TRUSTED_KEY_4" > "$BOOTSTRAP_WORK/trusted/4.pub"
     fetch_verified_updater "$target_tag" "$target_version"
     updater_path="$UPDATER_PATH"
     manifest_path="$MANIFEST_PATH"
@@ -658,6 +699,27 @@ if [[ ! -f "$SCRIPT_DIR/pyproject.toml" ]]; then
   # Standalone bootstrap (FR-002): this script was downloaded on its own
   # (checksum-verified by the operator); fetch the matching release source.
   VERSION="${FETCH_VERSION:-${UAEG_VERSION:-$UAEG_RELEASE_VERSION}}"
+  # v0.4.1: a standalone --repair must never fetch its own (possibly older)
+  # pinned release over a NEWER installed application (incident 2026-11-08
+  # variant: old downloaded installer + newer installation). Check the pin
+  # against the installed version BEFORE downloading anything.
+  STANDALONE_INST_VER="$(installed_app_version)"
+  if [[ -n "$STANDALONE_INST_VER" ]] \
+     && ver_gt "$STANDALONE_INST_VER" "${VERSION#v}" \
+     && [[ "${UAEG_ALLOW_DOWNGRADE:-0}" != "1" ]]; then
+    die "REFUSING to --repair with a standalone installer pinned to v${VERSION#v}
+while the installed application is NEWER (v$STANDALONE_INST_VER at $INSTALL_DIR).
+Deploying this file's source would be a silent downgrade - the exact mechanism
+of the 2026-11-08 production incident (older config schema rejecting the
+existing 'dashboard.tls' field). NOTHING was changed.
+
+Recovery:
+  a) safe upgrade to the latest release with THIS file:  sudo bash install.sh
+  b) get the current installer once:
+       curl -fsSLO $RELEASE_LATEST_BASE/install.sh
+       curl -fsSLO $RELEASE_LATEST_BASE/install.sh.sha256
+       sha256sum -c install.sh.sha256" 5
+  fi
   say "standalone installer: fetching UAEG v${VERSION} source from GitHub"
   command -v curl >/dev/null 2>&1 || die "curl is required for standalone installation"
   TMP_SRC="$(mktemp -d /tmp/uaeg-bootstrap.XXXXXX)"
@@ -667,6 +729,131 @@ if [[ ! -f "$SCRIPT_DIR/pyproject.toml" ]]; then
   [[ -f "$SCRIPT_DIR/pyproject.toml" ]] || die "downloaded release archive is missing pyproject.toml"
   say "source ready: $SCRIPT_DIR"
 fi
+
+# ----------------------------------------------------------------------
+# P0 preflight (v0.4.1): the in-place flow must never deploy older or
+# configuration-incompatible source over an existing installation.
+#
+# Production incident 2026-11-08 (host.zerotier.my.id): `install.sh --repair`
+# was run from a stale checkout whose src/uaeg/config.py predated the
+# dashboard `tls` field (added in v0.3.0). The old source was copied over
+# /opt/uaeg, the venv was re-pointed at it (pip install -e), and only THEN
+# was the existing (v0.3.0+ schema) configuration validated ->
+# "DashboardConfig.__init__() got an unexpected keyword argument 'tls'"
+# -> failed repair, stopped service, rollback. Both guards below run
+# BEFORE the service is stopped and before any application, venv or
+# configuration byte is touched.
+# ----------------------------------------------------------------------
+preflight_inplace_safety() {
+  local src_ver inst_ver
+  inst_ver="$(installed_app_version)"
+  [[ -n "$inst_ver" ]] || return 0   # no existing installation: fresh install
+
+  src_ver="$(pyproject_version "$SCRIPT_DIR/pyproject.toml")"
+
+  # -- guard 1: refuse to deploy older source over a newer installation --
+  if [[ -n "$src_ver" ]] && ver_gt "$inst_ver" "$src_ver"; then
+    if [[ "${UAEG_ALLOW_DOWNGRADE:-0}" == "1" ]]; then
+      warn "UAEG_ALLOW_DOWNGRADE=1: deploying OLDER source (v$src_ver from $SCRIPT_DIR)
+over the installed v$inst_ver, as explicitly requested by the operator"
+    else
+      die "REFUSING to deploy OLDER source over the installed application.
+
+  installed application : v$inst_ver  ($INSTALL_DIR)
+  source to be deployed : v$src_ver  ($SCRIPT_DIR)
+
+This is exactly the mechanism of the 2026-11-08 production incident: an
+older schema rejected the existing configuration ('dashboard.tls') AFTER
+the application had already been replaced. NOTHING was changed.
+
+Recovery:
+  a) safe upgrade to a published release:  sudo bash install.sh [--version X.Y.Z]
+  b) repair the installed version: run this installer from a checkout of
+     v$inst_ver:   git fetch --tags && git checkout v$inst_ver
+  c) intentional downgrade:  sudo bash upgrade.sh --version $src_ver --allow-downgrade" 5
+    fi
+  else
+    say "preflight: source v${src_ver:-unknown} vs installed v$inst_ver - version order OK"
+  fi
+
+  # -- guard 2: the staged schema must accept the EXISTING configuration --
+  local cfg_file="$CONFIG_DIR/config.json"
+  [[ -f "$cfg_file" ]] || return 0
+  local venv_py="$INSTALL_DIR/.venv/bin/python"
+  [[ -x "$venv_py" ]] || return 0
+
+  local stage probe out rc=0
+  stage="$(mktemp -d /tmp/uaeg-preflight.XXXXXX)" \
+    || die "could not create the preflight staging directory"
+  chmod 700 "$stage"
+  tar -C "$SCRIPT_DIR" -cf - \
+    --exclude=.git --exclude=.venv --exclude='*.egg-info' \
+    --exclude=__pycache__ --exclude=.pytest_cache --exclude=dist --exclude=build \
+    . | tar -C "$stage" -xf -
+  probe="$stage/config-probe.json"
+  cp "$cfg_file" "$probe"
+
+  # The probe imports uaeg.config FROM THE STAGED SOURCE (the injected
+  # PYTHONPATH precedes site-packages and the editable install) using the
+  # EXISTING venv interpreter with a sanitized environment: an operator's
+  # PYTHONPATH or a stray package in the working directory must never
+  # shadow the code that is about to be deployed. Only the exact incident
+  # shape can fail here: newer-schema config vs older/different schema.
+  out="$(env -u PYTHONPATH -u UAEG_CONFIG -u UAEG_DATA_DIR \
+          PYTHONPATH="$stage/src" "$venv_py" -P - "$probe" "$stage/src" <<'PY' 2>&1
+import sys
+from pathlib import Path
+
+import uaeg
+import uaeg.config
+
+expected_src = Path(sys.argv[2]).resolve()
+origin = Path(uaeg.__file__).resolve()
+if not origin.is_relative_to(expected_src):
+    print(
+        f"RUNTIME_MISMATCH: the probe interpreter loaded uaeg from {origin}, "
+        f"not from the staged source {expected_src}. A stale package "
+        "(PYTHONPATH, working directory or site-packages) is shadowing "
+        "the source that is about to be deployed."
+    )
+    sys.exit(7)
+
+try:
+    uaeg.config.Config.load(sys.argv[1])  # load + validate with the STAGED schema
+except uaeg.config.ConfigError as exc:
+    print(f"CONFIG_INCOMPATIBLE: {exc}")
+    sys.exit(6)
+
+print(f"SCHEMA_OK uaeg={uaeg.__version__}")
+PY
+)" || rc=$?
+  rm -rf "$stage"
+  if [[ $rc -ne 0 || "$out" != SCHEMA_OK* ]]; then
+    die "the existing configuration is NOT compatible with the source about to be deployed.
+
+  source to be deployed : v${src_ver:-unknown} ($SCRIPT_DIR)
+  existing configuration : $cfg_file
+
+$out
+
+NOTHING was changed: this check runs BEFORE the service is stopped and
+before any application file is replaced. The source's configuration schema
+does not accept a field that the existing configuration contains (the
+2026-11-08 incident class: an older DashboardConfig rejected 'dashboard.tls').
+Recovery:
+  a) run this installer from a CURRENT checkout:
+       git fetch --tags && git checkout v$inst_ver
+  b) safe upgrade to a published release:  sudo bash install.sh
+  c) deliberate downgrade to a schema-incompatible version additionally
+     requires reconciling the configuration BY HAND first (the installer
+     never edits the existing configuration): back it up, remove the
+     fields the target version does not know, then re-run with
+     UAEG_ALLOW_DOWNGRADE=1  (supported path: sudo bash upgrade.sh
+     --version $src_ver --allow-downgrade)"
+  fi
+  say "preflight: existing configuration accepted by the staged schema ($out)"
+}
+preflight_inplace_safety
 
 # OS check: Debian 12/13 supported; others need explicit confirmation.
 SUPPORTED_OS=1
@@ -719,6 +906,14 @@ if [[ -d "$INSTALL_DIR" && -f "$INSTALL_DIR/.uaeg-installed" ]]; then
   if [[ $NO_SERVICE -eq 0 ]] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
     SERVICE_WAS_ACTIVE=1
     systemctl stop "$SERVICE_NAME" || true
+    # v0.4.1: replacing application files under a live service must never
+    # happen; a hung stop is a hard pre-mutation failure (was `|| true`).
+    if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+      die "could not stop the running '$SERVICE_NAME' service - refusing to
+replace application files under a live service. Investigate:
+  systemctl status $SERVICE_NAME
+  journalctl -u $SERVICE_NAME -n 50 --no-pager"
+    fi
   fi
 fi
 
@@ -843,7 +1038,7 @@ DASH_BIND_IP="$(resolve_dashboard_bind)"
 # Public dashboard requires a password BEFORE anything is reconfigured
 # ----------------------------------------------------------------------
 if [[ $DASHBOARD_PUBLIC -eq 1 ]]; then
-  if ! UAEG_DATA_DIR="$DATA_DIR" "$VENV_DIR/bin/python" -c \
+  if ! UAEG_DATA_DIR="$DATA_DIR" app_python -c \
       "from uaeg import dashauth; import sys; sys.exit(0 if dashauth.password_is_configured() else 1)" >/dev/null 2>&1; then
     die "public dashboard requested (--dashboard-bind public) but no dashboard password is
 configured. For security the installer refuses to expose an unauthenticated dashboard.
@@ -943,15 +1138,33 @@ CONFIG_EXISTS=0
 [[ -f "$CONFIG_FILE" ]] && CONFIG_EXISTS=1
 
 say "writing configuration: $CONFIG_FILE"
-UAEG_CONFIG="$CONFIG_FILE" UAEG_DATA_DIR="$DATA_DIR" "$VENV_DIR/bin/python" - "$CONFIG_FILE" \
+UAEG_CONFIG="$CONFIG_FILE" UAEG_DATA_DIR="$DATA_DIR" app_python - "$CONFIG_FILE" \
   "$CONFIG_EXISTS" "$PUBLIC_HOST" "$MCP_PORT" "$MCP_PORT_GIVEN" \
   "$DASHBOARD_PORT" "$DASHBOARD_PORT_GIVEN" "$DASH_BIND_IP" "$DASHBOARD_BIND_GIVEN" \
   "$TLS_MODE" "$TLS_MODE_GIVEN" "$CERT_FILE" "$KEY_FILE" "$PUBLIC_HOST_GIVEN" \
-  "$DASHBOARD_PUBLIC" <<'PY' \
+  "$DASHBOARD_PUBLIC" "$INSTALL_DIR" <<'PY' \
   || die "configuration could not be written - see the error above"
 import sys
+from pathlib import Path
 
+import uaeg
 from uaeg.config import Config, ConfigError
+
+# v0.4.1 invariant: the schema that validates and writes the configuration
+# MUST belong to the application being deployed at $INSTALL_DIR - never a
+# stale PYTHONPATH entry, a stray CWD package or an old site-packages copy
+# (the interpreter itself is sanitized by app_python; this is the proof).
+_origin = Path(uaeg.__file__).resolve()
+_expected = Path(sys.argv[16]).resolve() / "src"
+if not _origin.is_relative_to(_expected):
+    print(
+        f"CONFIG_ERROR: runtime/package mismatch - this interpreter loaded "
+        f"uaeg from {_origin}, expected {_expected}. A stale package is "
+        "shadowing the application; the configuration was NOT written. "
+        "Re-run the installer with --repair from a current checkout.",
+        file=sys.stderr,
+    )
+    sys.exit(9)
 
 (
     config_file, config_exists, public_host,
@@ -1044,18 +1257,22 @@ fi
 # Use the EFFECTIVE values from the (possibly preserved) configuration -
 # not the installer defaults - so upgrades of customized installs verify
 # the real listener.
-EFFECTIVE_PORTS="$($VENV_DIR/bin/python - "$CONFIG_FILE" <<'PY'
+EFFECTIVE_PORTS="$(app_python - "$CONFIG_FILE" <<'PY'
 import json, sys
 
 cfg = json.load(open(sys.argv[1]))
 print(cfg["mcp"]["port"])
 print(cfg["dashboard"]["port"])
 print(cfg.get("public_host", ""))
+print(cfg.get("dashboard", {}).get("bind", "127.0.0.1"))
+print(str(cfg.get("dashboard", {}).get("tls", False)).lower())
 PY
 )" || die "could not read the effective configuration"
 EFFECTIVE_MCP_PORT="$(echo "$EFFECTIVE_PORTS" | sed -n 1p)"
 EFFECTIVE_DASH_PORT="$(echo "$EFFECTIVE_PORTS" | sed -n 2p)"
 EFFECTIVE_HOST="$(echo "$EFFECTIVE_PORTS" | sed -n 3p)"
+EFFECTIVE_DASH_BIND="$(echo "$EFFECTIVE_PORTS" | sed -n 4p)"
+EFFECTIVE_DASH_TLS="$(echo "$EFFECTIVE_PORTS" | sed -n 5p)"
 
 if [[ $NO_SERVICE -eq 0 ]]; then
   say "verifying service health"
@@ -1073,6 +1290,32 @@ if [[ $NO_SERVICE -eq 0 ]]; then
     die "installation incomplete - rolling back; inspect the logs above, fix the cause and re-run"
   fi
   say "health check passed"
+
+  # Dashboard listener proof (v0.4.1): the MCP health check proves the
+  # process is serving and the listeners are supervised fail-together, but
+  # the repair contract additionally requires POSITIVE evidence that the
+  # dashboard listener answers on its effective bind address (the effective
+  # configuration is authoritative, not this invocation's flags).
+  DASH_PROBE_HOST="$EFFECTIVE_DASH_BIND"
+  [[ "$DASH_PROBE_HOST" == "0.0.0.0" ]] && DASH_PROBE_HOST="127.0.0.1"
+  if [[ "$DASH_PROBE_HOST" == "::" ]]; then DASH_PROBE_HOST="[::1]"; fi
+  DASH_PROBE_SCHEME="http"
+  [[ "$EFFECTIVE_DASH_TLS" == "true" ]] && DASH_PROBE_SCHEME="https"
+  DASH_OK=0
+  for _ in $(seq 1 15); do
+    if curl -sk --max-time 2 -o /dev/null \
+         "${DASH_PROBE_SCHEME}://${DASH_PROBE_HOST}:${EFFECTIVE_DASH_PORT}/login" 2>/dev/null; then
+      DASH_OK=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ $DASH_OK -eq 0 ]]; then
+    warn "the dashboard listener did not answer on ${DASH_PROBE_SCHEME}://${DASH_PROBE_HOST}:${EFFECTIVE_DASH_PORT}/login"
+    journalctl -u "$SERVICE_NAME" -n 30 --no-pager || true
+    die "installation incomplete - the dashboard listener is not reachable on its effective bind; rolling back"
+  fi
+  say "dashboard listener verified: ${DASH_PROBE_SCHEME}://${DASH_PROBE_HOST}:${EFFECTIVE_DASH_PORT}"
 fi
 
 # Upgrade completed successfully: drop the rollback backup.
@@ -1089,19 +1332,21 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: a
   if [[ $OPEN_FIREWALL -eq 1 ]]; then
     say "opening MCP port $EFFECTIVE_MCP_PORT/tcp in ufw"
     ufw allow "$EFFECTIVE_MCP_PORT/tcp"
-    if [[ "$DASH_BIND_IP" == "0.0.0.0" ]]; then
-      say "opening public dashboard port $EFFECTIVE_DASH_PORT/tcp in ufw"
-      ufw allow "$EFFECTIVE_DASH_PORT/tcp"
-    fi
+    case "$EFFECTIVE_DASH_BIND" in
+      0.0.0.0|::)
+        say "opening public dashboard port $EFFECTIVE_DASH_PORT/tcp in ufw"
+        ufw allow "$EFFECTIVE_DASH_PORT/tcp" ;;
+    esac
   else
     warn "ufw is active. Allow the MCP port yourself, e.g.:"
     warn "    ufw allow ${EFFECTIVE_MCP_PORT}/tcp"
-    if [[ "$DASH_BIND_IP" == "0.0.0.0" ]]; then
-      warn "The dashboard is public - also allow its port:"
-      warn "    ufw allow ${EFFECTIVE_DASH_PORT}/tcp"
-    else
-      warn "(the dashboard is LAN/loopback-private - do NOT open ${EFFECTIVE_DASH_PORT})"
-    fi
+    case "$EFFECTIVE_DASH_BIND" in
+      0.0.0.0|::)
+        warn "The dashboard is public - also allow its port:"
+        warn "    ufw allow ${EFFECTIVE_DASH_PORT}/tcp" ;;
+      *)
+        warn "(the dashboard is LAN/loopback-private - do NOT open ${EFFECTIVE_DASH_PORT})" ;;
+    esac
   fi
 fi
 
@@ -1111,11 +1356,16 @@ fi
 echo
 printf '\033[1mUAEG installed successfully.\033[0m\n'
 echo
-if [[ "$DASH_BIND_IP" == "0.0.0.0" ]]; then
-  echo "  Dashboard    : https://${EFFECTIVE_HOST}:${EFFECTIVE_DASH_PORT} (public - password login + HTTPS)"
-else
-  echo "  Dashboard    : http://${DASH_BIND_IP}:${EFFECTIVE_DASH_PORT} (LAN/loopback only)"
-fi
+EFFECTIVE_DASH_SCHEME="http"
+[[ "$EFFECTIVE_DASH_TLS" == "true" ]] && EFFECTIVE_DASH_SCHEME="https"
+case "$EFFECTIVE_DASH_BIND" in
+  0.0.0.0|::)
+    echo "  Dashboard    : ${EFFECTIVE_DASH_SCHEME}://${EFFECTIVE_HOST}:${EFFECTIVE_DASH_PORT} (public - password login + HTTPS)" ;;
+  127.0.0.1|localhost)
+    echo "  Dashboard    : ${EFFECTIVE_DASH_SCHEME}://127.0.0.1:${EFFECTIVE_DASH_PORT} (loopback only - NOT reachable from other machines)" ;;
+  *)
+    echo "  Dashboard    : ${EFFECTIVE_DASH_SCHEME}://${EFFECTIVE_DASH_BIND}:${EFFECTIVE_DASH_PORT} (LAN bind - reachable only from that interface)" ;;
+esac
 echo "  MCP endpoint : https://${EFFECTIVE_HOST}:${EFFECTIVE_MCP_PORT}/mcp"
 echo "  Config       : $CONFIG_FILE"
 echo "  Data         : $DATA_DIR"
@@ -1123,11 +1373,14 @@ echo "  TLS mode     : $TLS_MODE"
 [[ $NO_SERVICE -eq 0 ]] && echo "  Service      : systemctl status ${SERVICE_NAME}"
 echo
 echo "Next steps:"
-if [[ "$DASH_BIND_IP" != "0.0.0.0" ]]; then
-  echo "  0. (optional) enable dashboard login + remote access:"
-  echo "       sudo uaeg pass"
-  echo "       sudo bash install.sh --repair --dashboard-bind public  # + your TLS flags"
-fi
+case "$EFFECTIVE_DASH_BIND" in
+  0.0.0.0|::) ;;
+  *)
+    echo "  0. (optional) enable dashboard login + remote access:"
+    echo "       sudo uaeg pass"
+    echo "       sudo bash install.sh --repair --dashboard-bind public  # + your TLS flags"
+    echo "       sudo ufw allow ${EFFECTIVE_DASH_PORT}/tcp   # if a firewall is active" ;;
+esac
 echo "  1. Create an agent key:"
 echo "       uaeg generate --name \"Claude\""
 echo "  2. Configure your hosted agent's MCP connector:"

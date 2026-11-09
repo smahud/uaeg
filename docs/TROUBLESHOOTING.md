@@ -30,6 +30,7 @@ uaeg doctor
 | PTY session not found after restart | Sessions are in-memory and die with the service | [Section 6](#6-pty-session-not-found-after-a-restart) |
 | Job status is `interrupted` | VPS rebooted, or service was SIGKILLed before exit was recorded | [Section 7](#7-job-says-interrupted) |
 | Dashboard unreachable | Bind address, LAN routing, CIDR allowlist, tunnel missing | [Section 8](#8-dashboard-unreachable) |
+| `install.sh --repair` exits with `REFUSING to deploy OLDER source` (exit 5) or `CONFIG_INCOMPATIBLE` | The source tree is older than / schema-incompatible with the installed application — the v0.4.1 pre-mutation guard (2026-11-08 incident class) | [Section 13](#13-installsh---repair-refused-older-source--exit-5--or-config_incompatible) |
 | Port already in use | Another process holds 3902/3903 | [Section 9](#9-port-already-in-use) |
 | Disk filling up | Large job output files under `/var/lib/uaeg/jobs/` | [Section 10](#10-disk-space-from-job-output-files) |
 | UAEG itself is gone/broken | Agent used root to stop or damage it | [Section 11](#11-the-agent-stopped-or-damaged-uaeg) |
@@ -269,6 +270,37 @@ sudo systemctl start uaeg        # a fresh database is created
 Keys must be re-issued (`uaeg generate`) — the old key verifiers lived in the moved file.
 Before discarding it, the old database can be inspected read-only with `sqlite3`
 (job history, session records, the audit log).
+
+### 13. `install.sh --repair` refused (older source → exit 5, or CONFIG_INCOMPATIBLE)
+
+Since v0.4.1 the installer validates the operation BEFORE anything changes: it
+refuses to deploy a source tree that is **older** than the installed application
+(exit 5, "REFUSING to deploy OLDER source") or whose configuration **schema does
+not accept the existing configuration** (`CONFIG_INCOMPATIBLE` — the 2026-11-08
+production incident class, where a pre-v0.3.0 `DashboardConfig` rejected the
+existing `dashboard.tls` field). In both cases **nothing was changed**: the
+service was not stopped and no file was replaced. This refusal is the fix working —
+do NOT delete fields from `/etc/uaeg/config.json` to work around it.
+
+**Fix (choose the matching recovery):**
+
+```bash
+# a) you just wanted the current version: use the verified channel
+curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/install.sh
+curl -fsSLO https://github.com/smahud/uaeg/releases/latest/download/install.sh.sha256
+sha256sum -c install.sh.sha256 && sudo bash install.sh
+
+# b) you meant to repair the CURRENT installed version: refresh the stale clone
+cd <your-clone> && git fetch --tags && git checkout v$(uaeg version | awk '{print $2}')
+sudo bash install.sh --repair
+
+# c) deliberate downgrade to a schema-COMPATIBLE version (explicit consent)
+sudo bash upgrade.sh --version X.Y.Z --allow-downgrade
+```
+
+A schema-INCOMPATIBLE downgrade additionally requires reconciling the
+configuration by hand first (back it up, remove fields the target version does
+not know) — the installer never edits the existing configuration for you.
 
 ## `uaeg doctor` walkthrough
 

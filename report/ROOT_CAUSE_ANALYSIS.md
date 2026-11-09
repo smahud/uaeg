@@ -340,3 +340,123 @@ semua check zero-data-loss lolos
 
 Ditegakkan permanen oleh **T-17** dalam `tests/test_upgrade_contract.sh`
 (95 PASS / 0 FAIL — `report/evidence/upgrade_contract_suite_v0.3.2.txt`).
+
+---
+
+# Root Cause Analysis — Insiden 3: `install.sh --repair` Gagal, `DashboardConfig.__init__() got an unexpected keyword argument 'tls'` (2026-11-08)
+
+**Severity:** P0 · **Layanan terdampak:** dashboard publik `host.zerotier.my.id:3903` (proyek P0-3 tertunda karena insiden ini) · **Status:** root cause TERKONFIRMASI dengan reproduksi penuh; perbaikan dirilis di **v0.4.1**.
+
+## 1. Symptom (transkrip operator)
+
+```
+$ bash install.sh --repair
+...
+CONFIG_ERROR: existing configuration is invalid: configuration contains an
+unknown or mistyped field: DashboardConfig.__init__() got an unexpected
+keyword argument 'tls'. Remove fields that do not belong to this UAEG version.
+ERROR: configuration could not be written - see the error above
+WARNING: installation failed - rolling back to the previous working state
+```
+
+Repair gagal; aplikasi dipulihkan oleh rollback; dashboard 3903 tetap tidak
+dapat diakses. Keanehan kunci: **v0.4.0 seharusnya MENGENAL field `tls`**
+(ditambahkan sejak v0.3.0) — jadi mengapa skema yang menolaknya?
+
+## 2. Bukti lapangan
+
+- `GET https://host.zerotier.my.id:3902/healthz` (2026-11-09 02:41 UTC):
+  `{"status":"ok","service":"UAEG","version":"0.4.0","uptime_seconds":22775}`
+  — service HIDUP pada v0.4.0, uptime ±6,3 jam (konsisten dengan
+  deploy v0.4.0 → --repair gagal → rollback → restart).
+- Port 3903: connection refused (dashboard tidak pernah kembali).
+- Flag `--repair` **hanya ada sejak install.sh v0.4.0** (v0.2.0–v0.3.5:
+  `unknown option: --repair`, diverifikasi dari tag historis) — sehingga
+  checkout tempat operator menjalankan perintah memuat install.sh era v0.4.0.
+
+## 3. Root cause (berlapis)
+
+**RC-1 (mekanisme langsung) — urutan operasi installer v0.4.0: mutate-first,
+validate-later.** Alur in-place v0.4.0: stop service → backup → **salin
+source checkout ke /opt/uaeg** → `pip install -e` (venv kini menunjuk kode
+checkout) → **baru kemudian** validator konfigurasi berjalan. Validator
+memuat `uaeg.config` **dari venv** — yaitu kode yang BARU SAJA disalin —
+lalu memuat konfigurasi lama dengan skema tersebut.
+
+**RC-2 (kondisi) — checkout sumber BASI/CAMPURAN.** `--repair` dijalankan
+dari pohon sumber pra-v0.3.0 (`src/uaeg/config.py` tanpa field
+`DashboardConfig.tls`) yang memuat install.sh era v0.4.0 — pohon campuran
+(mis. `install.sh` baru diunduh ke clone lama, atau pull parsial).
+`DashboardConfig` pra-v0.3.0 + konfigurasi produksi yang MEMUAT
+`dashboard.tls` → `TypeError: unexpected keyword argument 'tls'` —
+**persis** pesan produksi (dibungkus `ConfigError` oleh `from_dict`).
+
+**RC-3 (pengungkit) — tidak ada pemeriksaan urutan versi di jalur --repair.**
+`updater.sh` (jalur safe-upgrade) menolak downgrade (exit 5) sejak v0.3.4 —
+tetapi jalur `--repair` in-place v0.4.0 tidak punya pemeriksaan setara, dan
+validator skema berjalan SETELAH aplikasi diganti. Interpretasi juga tidak
+disanitasi (`$VENV_DIR/bin/python` dipanggil langsung; PYTHONPATH/cwd
+operator dapat membayangi).
+
+**Kombinasi ketiganya** menjelaskan seluruh gejala: repair "seharusnya
+harmless" justru mengganti aplikasi baru dengan kode lama, gagal pada
+validasi pasca-mutasi, memicu rollback, dan meninggalkan service dalam
+kondisi terhenti sementara (dashboard 3903 tetap down; MCP kembali setelah
+restart oleh operator/rollback).
+
+## 4. Reproduksi (fail-first, aset publik)
+
+`report/evidence/incident_repro_v041.txt` (skenario penuh;
+`scripts` pengerjaan di luar repo):
+
+- **[A] Insiden:** baseline v0.4.0 terpasang (konfigurasi membawa
+  `dashboard.tls`), lalu `bash install.sh --repair` dari checkout campuran
+  (install.sh v0.4.0 + source pra-v0.3.0) dengan installer **v0.4.0 yang
+  dipublikasikan**:
+  ```
+  CONFIG_ERROR: existing configuration is invalid: configuration contains an
+  unknown or mistyped field: DashboardConfig.__init__() got an unexpected
+  keyword argument 'tls'. ...
+  WARNING: installation failed - rolling back to the previous working state
+       -> restored previous application files
+  ```
+  rc=1 — **pesan produksi direproduksi byte demi byte**; rollback
+  mutate-first-then-fail terkonfirmasi.
+- **[B] Perbaikan:** installer **v0.4.1** ditempatkan di checkout basi yang
+  SAMA, perintah yang SAMA:
+  ```
+  ERROR: REFUSING to deploy OLDER source over the installed application.
+    installed application : v0.4.0
+    source to be deployed : v0.2.0
+  This is exactly the mechanism of the 2026-11-08 production incident ...
+  NOTHING was changed.
+  ```
+  rc=5; **pohon aplikasi byte-identical, konfigurasi byte-identical**
+  (hash diverifikasi sebelum/sesudah).
+
+## 5. Fix (v0.4.1) — preflight pre-mutation di install.sh
+
+1. **Guard 1 — urutan versi (exit 5):** `--repair` dari sumber LEBIH LAMA
+   dari aplikasi terpasang ditolak SEBELUM service dihentikan / file apa pun
+   diganti. Varian standalone (installer ter-pin lama) juga ditolak
+   pre-download. Jalur resmi downgrade tersurat:
+   `UAEG_ALLOW_DOWNGRADE=1` (di-propagate `updater.sh --allow-downgrade`).
+2. **Guard 2 — probe skema ter-staging:** source di-stage ke direktori
+   sementara dan `uaeg.config.Config.load()` dijalankan TERHADAP
+   KONFIGURASI YANG ADA dengan `PYTHONPATH=$stage/src` — ketidakcocokan
+   skema (klas insiden) ditolak sebagai `CONFIG_INCOMPATIBLE` pre-mutation.
+   Probe juga memverifikasi origin `uaeg.__file__` (RUNTIME_MISMATCH,
+   exit 7) terhadap sumber ter-stage.
+3. **Penulis konfigurasi tersanitasi + bukti origin (exit 9):** semua step
+   Python yang menyentuh konfigurasi kini berjalan via `app_python()`
+   (`env -u PYTHONPATH … -P`) dan memverifikasi modul `uaeg` yang dimuat
+   berasal dari `$INSTALL_DIR/src`.
+4. **Stop-service kini hard-fail** (bukan `|| true`): file aplikasi tidak
+   pernah diganti di bawah service yang masih hidup.
+5. **Verifikasi listener dashboard positif:** setelah health-check MCP,
+   installer membuktikan dashboard menjawab pada bind efektifnya
+   (menggunakan konfigurasi efektif, bukan flag invokasi) — regresi P0-3
+   class tertangkap sebelum installer menyatakan sukses.
+
+Ditegakkan permanen oleh **T-53..T-57** (33 assertion) +
+`tests/test_unit_regression_v041.py` (7 test) — lihat TEST_RESULTS.md.

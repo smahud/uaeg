@@ -154,7 +154,8 @@ Rotation is an **exceptional, operator-visible event**, never silent:
    TROUBLESHOOTING.md; it is NOT part of normal upgrade flow.
 
 Current keys: `uaeg-release-1` (historical: releases <= v0.3.3),
-`uaeg-release-2` (v0.3.4 - v0.3.5) and `uaeg-release-3` (v0.4.0+).
+`uaeg-release-2` (v0.3.4 - v0.3.5), `uaeg-release-3` (v0.4.0) and
+`uaeg-release-4` (v0.4.1+).
 Fingerprints (sha256 of the PEM, first 16 hex): see
 `bash upgrade.sh --bootstrap-info`.
 
@@ -183,6 +184,26 @@ Note: an operator moving to the unified installer downloads `install.sh`
 anyway, so the rotation refresh and the v0.4.0 migration are the same single
 step. Existing installations' data, keys and configuration are never
 affected by a rotation — only the next upgrade's verification is.
+
+**Rotation 3 -> 4 at v0.4.1** (bootstrap keyring v4): same operational
+shape as the previous rotations — the publisher's `uaeg-release-3`
+private key is no longer available, so v0.4.1+ is signed with
+`uaeg-release-4`. The keyrings in `install.sh` and `upgrade.sh` trust ALL
+FOUR keys (historical releases keep verifying for pins/downgrades).
+Consequences per operator state:
+
+- **Bootstrap downloaded during v0.3.3 - v0.4.0 (keyring = keys 1-3)** —
+  will refuse v0.4.1+ manifests with the explicit rotation message;
+  perform the ONE-TIME refresh above.
+- **Fresh downloads (v0.4.1+)** — trust all four keys; no action needed.
+
+v0.4.1 additionally hardens the installer itself (2026-11-08 production
+incident): `--repair` refuses pre-mutation when the source tree is older
+than the installed application (exit 5), a staged-schema probe verifies
+the existing configuration is accepted BEFORE anything is replaced, and
+all configuration-touching Python steps run with a sanitized interpreter
+(`env -u PYTHONPATH … -P`) whose loaded `uaeg` origin is asserted. See
+docs/TROUBLESHOOTING.md and report/ROOT_CAUSE_ANALYSIS.md.
 
 ## Migration from v0.3.2 - v0.3.5 installs
 

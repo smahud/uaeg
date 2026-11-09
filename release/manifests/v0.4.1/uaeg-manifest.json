@@ -1,0 +1,21 @@
+{
+  "assets": {
+    "install.sh": {
+      "sha256": "9c27b873d79be3696ec97328c3341a26e52f1281cf766e13f5f67bb6fb0ba9d5",
+      "size": 63092
+    },
+    "upgrade.sh": {
+      "sha256": "3faf7a10865286c5a9b82ac8476a41f54bb86a7e0639dd2a1f37c745c736731f",
+      "size": 19183
+    }
+  },
+  "created_at": "2026-11-09T02:45:25+00:00",
+  "product": "uaeg",
+  "updater": {
+    "interface": 1,
+    "path": "uaeg-updater-0.4.1.sh",
+    "sha256": "ea8cbc708dc29410d8b2408e4c44a2f3d90141ab92214f262ce61b1f4cb12b4b",
+    "size": 55879
+  },
+  "version": "0.4.1"
+}

@@ -80,9 +80,11 @@ upgrade terverifikasi; flag konfigurasi apa pun (`--port`, `--dashboard-bind`,
 v3) untuk operator yang sudah mengunduhnya; perilaku dan antarmukanya tidak
 berubah. Dokumentasi publik sekarang mengarah ke `install.sh`.
 
-Kode keluar: `0` sukses · `1` error/ditolak (termasuk verifikasi gagal) ·
-`2` gagal → sudah di-rollback · `3` instalasi tidak ditemukan (mode
-`--check`/`--rollback`) · `4` reserved · `5` downgrade ditolak.
+Kode keluar: `0` sukses · `1` error/ditolak (termasuk verifikasi gagal dan
+`CONFIG_INCOMPATIBLE` pre-mutation, v0.4.1) · `2` gagal → sudah di-rollback ·
+`3` instalasi tidak ditemukan (mode `--check`/`--rollback`) · `4` reserved ·
+`5` downgrade ditolak (SEMUA jalur sejak v0.4.1: safe upgrade DAN
+`--repair`/in-place).
 
 ---
 
@@ -382,6 +384,27 @@ Kontrak ini berversi (`contract_version` di `RECORD.json`; RECORD tetap
 mencatat `3` untuk kompatibilitas pembaca lama — klausul v4 tidak mengubah
 format RECORD). Perubahan klausul harus: (1) menaikkan versi kontrak,
 (2) memperbarui test suite di commit yang sama, (3) dicatat di `report/`.
+
+### v4.1 (UAEG v0.4.1)
+
+- **Perluasan U-12 ke jalur `--repair` (insiden produksi 2026-11-08):**
+  preflight pre-mutation di `install.sh` — (a) sumber LAMA atas aplikasi
+  terpasang yang LEBIH BARU ditolak **exit 5** sebelum service dihentikan
+  dan sebelum byte apa pun diganti (berlaku juga untuk installer standalone
+  ter-pin lama, ditolak sebelum unduhan); (b) probe skema ter-staging
+  memvalidasi KONFIGURASI YANG ADA terhadap skema sumber sebelum mutasi
+  (`CONFIG_INCOMPATIBLE`, exit 1). Persetujuan downgrade eksplisit tetap
+  `UAEG_ALLOW_DOWNGRADE=1` (di-propagate dari `updater.sh
+  --allow-downgrade`); ketidakcocokan skema TIDAK dapat disetujui —
+  rekonsiliasi konfigurasi adalah tangan operator. Diregresi permanen oleh
+  T-53..T-57. Semantik exit code tidak berubah (5 = downgrade ditolak,
+  kini di SEMUA jalur).
+- **Rotasi kunci penandatanganan 3 → 4** (`uaeg-release-4`, bootstrap
+  keyring v4): prosedur sama dengan rotasi sebelumnya; keyring kini
+  mempercayai EMPAT kunci sehingga manifest historis tetap terverifikasi.
+- `upgrade.sh`: perubahan HANYA keyring + identitas (BOOTSTRAP_VERSION 4)
+  + perbaikan URL pemulihan `latest-mismatch` → `releases/latest/download`
+  (juga di install.sh; bug v0.4.0 as-published).
 
 ### v4 (UAEG v0.4.0)
 

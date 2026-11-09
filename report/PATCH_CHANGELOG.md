@@ -1,3 +1,87 @@
+# Patch Changelog — v0.4.0 → v0.4.1
+
+**Date:** 2026-11-09 · Fokus: penutupan penuh Insiden 3
+(`install.sh --repair` dari checkout basi → `DashboardConfig ... unexpected
+keyword argument 'tls'` → repair gagal pasca-mutasi) + rotasi kunci rilis
+3→4. Semua perubahan tercakup oleh regresi permanen T-53..T-57 +
+`tests/test_unit_regression_v041.py`, dan seluruh suite penuh lulus
+(125 unit + 32 e2e + **290 kontrak PASS / 0 FAIL**).
+
+## A. Preflight pre-mutation di installer (root cause Insiden 3)
+
+### install.sh
+- **Guard 1 — urutan versi (exit 5):** `--repair` menolak menjalankan source
+  LEBIH LAMA dari aplikasi terpasang, SEBELUM service dihentikan dan sebelum
+  satu byte pun diganti (pesan eksplisit + jalur pemulihan). Varian
+  standalone (installer ter-pin rilis lamanya) ditolak pre-download —
+  kanal rilis mati pun tidak pernah disentuh (T-55 membuktikan dengan
+  UAEG_RELEASE_API_BASE mati). Escape hatch resmi: `UAEG_ALLOW_DOWNGRADE=1`.
+- **Guard 2 — probe skema ter-staging (`CONFIG_INCOMPATIBLE`):** source
+  di-stage (tar, tanpa .git/.venv) dan konfigurasi YANG ADA divalidasi
+  dengan `Config.load()` dari `$stage/src` via `PYTHONPATH` ter-inject —
+  versi boleh bohong (pohon campuran), skema tidak. Probe memverifikasi
+  origin `uaeg.__file__` (RUNTIME_MISMATCH, exit 7).
+- **`app_python()` — interpreter tersanitasi:** semua step Python yang
+  menyentuh konfigurasi (`dashauth`, penulis konfigurasi, pembaca port
+  efektif) kini `env -u PYTHONPATH "$VENV_DIR/bin/python" -P` — PYTHONPATH
+  operator / paket liar di cwd tidak dapat membayangi (T-57).
+- **Bukti origin penulis konfigurasi (exit 9):** heredoc penulis
+  konfigurasi memverifikasi `uaeg.__file__` berada di bawah
+  `$INSTALL_DIR/src` sebelum menulis apa pun — mismatch paket = CONFIG_ERROR
+  yang jelas, bukan skema asing yang menulis konfigurasi.
+- **Stop-service hard-fail:** gagal menghentikan `uaeg` = kegagalan
+  pre-mutation (sebelumnya `|| true` — file aplikasi bisa diganti di bawah
+  service hidup).
+- **Verifikasi listener dashboard positif:** setelah health-check MCP,
+  installer membuktikan dashboard menjawab pada bind/port/scheme efektif
+  (15×1s) — kegagalan mengembalikan rc≠0 + journalctl, bukan sukses palsu.
+  Ringkasan akhir + panduan ufw kini mengikuti bind efektif (termasuk `::`).
+- **Pesan `--repair` di usage** mendokumentasikan kedua guard.
+
+### updater.sh
+- **Propagasi persetujuan downgrade:** `--allow-downgrade` operator
+  diekspor sebagai `UAEG_ALLOW_DOWNGRADE=1` ke installer anak (guard 1
+  installer menghormati persetujuan; guard 2 tetap mutlak — persetujuan
+  menurunkan versi bukan persetujuan merusak konfigurasi).
+
+## B. Perbaikan bug terpisah yang ditemukan audit
+
+- **URL pemulihan `latest-mismatch` tidak ada (v0.4.0 as-published):** tiga
+  pesan pemulihan install.sh + satu upgrade.sh menunjuk ke
+  `.../releases/download/latest-mismatch/...` yang tidak pernah ada.
+  Diperbaiki ke alias terdokumentasi `.../releases/latest/download/...`
+  via `RELEASE_LATEST_BASE` (tetap menghormati mirror
+  `UAEG_RELEASE_DOWNLOAD_BASE`).
+
+## C. Rilis / kepercayaan
+
+- **Rotasi kunci rilis 3→4** (BOOTSTRAP_VERSION 4; keyring install.sh +
+  upgrade.sh kini 4 kunci — historis tetap diverifikasi untuk pin/downgrade).
+  `release/keys/uaeg-release-4.pub.pem`; manifest v0.4.1 ditandatangani
+  uaeg-release-4. Dokumen BOOTSTRAP.md diperbarui (rotasi + catatan
+  hardening v0.4.1).
+- Versi: pyproject/`__version__`/pin installer → 0.4.1; README, CI, dan
+  T-39 disinkronkan (T-39 kini membaca versi dari pyproject, bukan
+  hard-code).
+
+## D. Regresi permanen
+
+- **T-53:** --repair sumber lama → exit 5, nol mutasi (tree hash +
+  config sha + kunci + jumlah backup diverifikasi).
+- **T-54:** versi-sama tetapi skema lama (field `tls` dihapus dari salinan)
+  → `CONFIG_INCOMPATIBLE` + `unexpected keyword argument 'tls'`, nol mutasi.
+- **T-55:** standalone ter-pin lama → exit 5 sebelum menyentuh jaringan.
+- **T-56:** `UAEG_ALLOW_DOWNGRADE=1` + skema kompatibel → repair sukses,
+  kunci + konfigurasi operator dipertahankan.
+- **T-57:** PYTHONPATH berisi paket uaeg pra-v0.3.0 → tetap sukses dengan
+  skema benar (sanitasi terbukti).
+- **test_unit_regression_v041.py (7):** bentuk konfigurasi produksi
+  diterima; replika skema lama menolak persis seperti produksi; pesan
+  ConfigError menyebut field; kontrak probe (origin + load) sukses; helper
+  test selalu membawa `dashboard.tls`.
+
+---
+
 # Patch Changelog — v0.3.4 → v0.3.5
 
 **Date:** 2026-11-08 · Fokus: perbaikan end-to-end Insiden 2 (konfirmasi

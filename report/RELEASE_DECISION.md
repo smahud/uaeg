@@ -2,64 +2,79 @@
 
 | | |
 |---|---|
-| **Decision** | **CONDITIONAL GO** |
-| **Release** | UAEG **v0.2.0** (production-hardening release) |
-| **Audited release commit** | `35b0d8dc9317de914ba0136459a69dd33c523ee3` (tag `v0.2.0`, branch `main`) |
-| **Decision record** | This file (committed immediately after the release commit) |
-| **Baseline audited** | `a7a381eedcfbce741b1b4d3efe86f3bc9626e5a7` (v0.1.1) |
-| **Target environment** | Dedicated, single-operator Debian 13 VPS; trusted agents; native root execution (per PRD v1.0) |
-| **Decided** | 2026-11-08 (UTC) |
+| **Decision** | **GO** (repository-side complete; production deployment is the delivered operator runbook) |
+| **Release** | UAEG **v0.4.1** (production-incident closure: pre-mutation installer safety + key rotation 3→4) |
+| **Audited release commit** | this tag `v0.4.1` (branch `main`) |
+| **Decision record** | this file + [FINAL_ACCEPTANCE.md](FINAL_ACCEPTANCE.md) (v0.4.1) |
+| **Baseline audited** | `main` @ `1ab7a3e` / tag `v0.4.0` (post-publication-verified) + the live production state of host.zerotier.my.id (external probes) |
+| **Target environment** | Dedicated, single-operator Debian VPS (MicroTix); trusted agents; native root execution (per PRD v1.0) |
+| **Decided** | 2026-11-09 (UTC) |
 
-## 1. Why CONDITIONAL GO (not GO, not NO-GO)
+## 1. Why GO
+
+**Trigger (P0):** confirmed production incident 2026-11-08 —
+`bash install.sh --repair` run from a stale mixed checkout (v0.4.0-era
+installer + pre-v0.3.0 source) replaced the newer installed application
+BEFORE validating the existing configuration, failed with
+`DashboardConfig.__init__() got an unexpected keyword argument 'tls'`,
+rolled back, and left the dashboard (P0-3) unrestored.
 
 **Engineering gates — all passed:**
 
-1. **PRD traceability**: every FR-001..FR-020 and the section 13/14 baselines are implemented and traceable (see [REQUIREMENT_TRACEABILITY.md](REQUIREMENT_TRACEABILITY.md)); the one spec violation found (FR-003 config persistence across upgrades) is fixed and regression-covered.
-2. **Automated tests**: 74 tests (41 added in this release) — **0 failures on Python 3.12.16 and 3.13**; every material fix carries a dedicated regression test; all four defect reproductions re-run to FIXED ([TEST_EVIDENCE.md](TEST_EVIDENCE.md)). Python 3.11 runs in the CI matrix (not executable in the audit sandbox).
-3. **Findings**: P0 = 0; P1 = 3, all fixed; P2 = 7, all fixed; P3 = 7, fixed or accepted-and-documented. **No unresolved P0/P1 findings.** ([SECURITY_FINDINGS.md](SECURITY_FINDINGS.md), [PRODUCTION_READINESS_AUDIT.md](PRODUCTION_READINESS_AUDIT.md))
-4. **Dashboard exposure & authentication controls verified**: wildcard bind refused; CIDR allowlist fail-closed and enforced on every path (403 for out-of-list peers); 401 + WWW-Authenticate for missing/invalid/revoked credentials; verifier-only key storage; revocation immediate and containing; rotation issues new credentials.
-5. **Upgrade, rollback, backup and recovery tested**: config-preserving upgrade (repro FIXED), automatic rollback on forced installer failure (config + app + service restored), restart persistence (AT-16), SQLite corruption → clean error + documented move-aside recovery + doctor integrity check.
-6. **Documentation matches the implementation**: 44 corrections applied across README and all 8 docs; version metadata single-sourced at 0.2.0 and enforced by a test; no stale version references remain.
-7. **Versioned, reproducible release produced**: tag `v0.2.0` on the audited commit; exact-pinned dependencies (`mcp==1.27.0`, `starlette==0.50.0`, `uvicorn==0.44.0`); installer bootstrap fetches the tagged archive with the documented checksum-verification workflow.
+1. **Root cause established with a byte-exact reproduction** against the
+   published v0.4.0 assets (not a mock): the exact production error, the
+   mutate-first ordering, and the rollback — `evidence/incident_repro_v041.txt`.
+2. **Fix proven at the same fidelity:** the v0.4.1 installer, placed in the
+   identical stale checkout, refuses with exit 5 BEFORE any mutation;
+   installed tree and configuration verified byte-identical (sha256) —
+   plus 5 dedicated contract regressions (T-53..T-57) and 7 unit
+   regressions pinning every layer of the defense.
+3. **Full suite green:** contract **290 PASS / 0 FAIL** (T-01..T-57, real
+   Ed25519 chain, local release server, v0.3.5-baseline migration);
+   pytest **157 passed** (unit + e2e).
+4. **No workaround violations:** strict config validation untouched (T-54
+   proves the strict rejection still fires — the STALE SOURCE was the
+   defect, never the operator's config); no self-signed production path;
+   no password reset; existing safe-upgrade mechanism reused, not replaced.
+5. **Separate defect fixed:** v0.4.0-as-published recovery hints pointed at
+   a non-existent download URL (`latest-mismatch`) — corrected to the
+   documented `releases/latest/download` alias.
+6. **Release integrity:** manifest signed with the new `uaeg-release-4`
+   (rotation 3→4 per the documented policy — the key-3 private key left
+   this environment's control at v0.4.0); keyrings trust all four keys so
+   historical pins/downgrades keep verifying; CI re-verifies signature +
+   hashes before publishing.
 
-**The one gate not fully discharged — PRD section 15 (acceptance on an actual target VPS):**
-AT-01..AT-19 were executed on a genuine Debian 13 userspace, but in a container without
-root, systemd, a public IP/DNS, a hosted MCP platform or a second LAN host:
-**12 PASS · 4 ADAPTED · 3 NOT EXECUTED · 0 FAIL** ([VPS_ACCEPTANCE_RESULTS.md](VPS_ACCEPTANCE_RESULTS.md)).
-Per the audit mission's own rule, the unexecuted legs are reported as NOT EXECUTED — never
-as passed. Until they run on an authorized VPS, the product must not be *labeled*
-production-ready per the PRD's acceptance clause, even though all engineering work is done
-and verified. Hence **CONDITIONAL GO**: v0.2.0 is released as the production-hardening
-candidate; final acceptance is a documented operator action away.
+**The environmental limit (unchanged, reported truthfully):** no VPS
+credentials exist in this environment; production was NOT modified from
+here. The dashboard restoration (P0-3) is a verified operator runbook
+(`PRODUCTION_RECOVERY_V041.md`) — external probes confirm MCP healthy at
+v0.4.0 and 3903 refused, so the runbook's preconditions hold exactly as
+written.
 
-## 2. Remaining blockers (all environmental, none engineering)
+## 2. Remaining operator actions (not engineering blockers)
 
-| # | Blocker | Required action |
+| # | Action | Where |
 |---|---|---|
-| B-1 | AT-04 hosted MCP client connection | Configure a compatible hosted platform with URL + `Authorization: Bearer` header against the VPS; verify initialize/tools/`server_info`, `LAST USED` advancing |
-| B-2 | AT-06 root package installation | `apt-get update && apt-get install -y jq` via the agent on the root VPS |
-| B-3 | AT-09 systemd lifecycle | Install with service registration; agent-created test unit start/stop/cleanup |
-| B-4 | AT-05 root context | `whoami` → `root` on the standard install |
-| B-5 | AT-14/AT-15 LAN legs | Dashboard from an approved LAN workstation; denial from an unapproved source |
-| B-6 | Certbot drill | Domain install (port 80 + DNS) and one renewal (deploy hook restarts UAEG) |
+| O-1 | Run the recovery runbook (upgrade to v0.4.1 + expose dashboard 3903 fail-closed) | `PRODUCTION_RECOVERY_V041.md` |
+| O-2 | Secure the uaeg-release-4 private key out-of-band | key handover (same as key 3) |
+| O-3 | Refresh or delete the stale clone that triggered the incident | §"Remaining risks" in FINAL_ACCEPTANCE.md |
 
-## 3. Exact next actions if release is to be finalized
+## 3. Rollback / install-safety statement
 
-1. Operator provisions the authorized disposable Debian 13 VPS with a DNS record (e.g. `gw.example.com`).
-2. Install: `git clone https://github.com/smahud/uaeg.git && cd uaeg && sudo ./install.sh --domain gw.example.com` (record `git rev-parse HEAD` from the clone before installing; expect `35b0d8d…` / tag `v0.2.0`).
-3. Run the runbook `docs/ACCEPTANCE.md` AT-01..AT-19 end-to-end and fill the results table; the sandbox-executed matrix in [VPS_ACCEPTANCE_RESULTS.md](VPS_ACCEPTANCE_RESULTS.md) lists exactly which legs remain.
-4. If all rows pass: update the results table, flip the decision to **GO** in this file, tag the acceptance evidence — no code changes expected.
-5. If any row fails: file the failure with logs (`journalctl -u uaeg`) against the relevant subsystem; the audit's reproduction-first method (see [PRODUCTION_READINESS_AUDIT.md](PRODUCTION_READINESS_AUDIT.md) §1) applies.
+- Safe upgrades and repairs keep the automatic backup → deploy → verify →
+  rollback pipeline; `install.sh --rollback` restores the latest backup.
+- NEW in v0.4.1: repairs from older or schema-incompatible sources are
+  refused pre-mutation (exit 5 / `CONFIG_INCOMPATIBLE`); deliberate
+  downgrades go through `upgrade.sh --version X.Y.Z --allow-downgrade`
+  (and still require schema compatibility).
+- A bootstrap/installer downloaded during v0.3.4–v0.4.0 will refuse v0.4.1+
+  manifests with the documented key-rotation message; the one-time refresh
+  is part of the recovery runbook (step 1).
 
-## 4. Rollback / install-safety statement
+## 4. Sign-off
 
-Upgrades from v0.1.x: the v0.2.0 installer preserves the existing configuration (FR-003)
-and rolls back automatically on failure. One intentional behavior change to communicate:
-configurations containing **invalid** `network.allowed_dashboard_cidrs` entries (silently
-ignored by v0.1.x) now prevent startup until fixed or nulled — fail-closed by design
-(documented in TROUBLESHOOTING.md §"startup fails with invalid CIDR").
-
-## 5. Sign-off
-
-- Execution agent (audit, corrections, integration, verification): full-repo audit at `a7a381e`; corrections as commit `35b0d8d`; 148 green test executions (74 × 2 interpreters); 4/4 reproductions converted to FIXED; acceptance runbook executed to sandbox limits with honest NOT EXECUTED markers.
-- Decision: **CONDITIONAL GO** — release v0.2.0 as the production-readiness candidate; final GO requires the outstanding VPS acceptance legs (B-1..B-6).
+- Audit method: reproduce-first (published assets), fix, regression-pin,
+  full-suite, honest reporting of the production boundary.
+- Decision: **GO** for v0.4.1 — the incident class is closed at the
+  installer level; production restoration is one operator runbook away.

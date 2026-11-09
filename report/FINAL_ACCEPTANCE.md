@@ -1,90 +1,65 @@
-# Final Acceptance — v0.4.0 (unified installer + focused completion audit)
+# Final Acceptance — v0.4.1 (production-incident closure)
 
-**Date:** 2026-11-08 · **Mission:** unified installer as the sole public
-entrypoint, production dashboard resolution, compatibility for v0.3.2–v0.3.5,
-verified release · **Overall verdict:** repository-side work COMPLETE and
-verified; **production dashboard fix BLOCKED on VPS access** (operator
-runbook delivered; no VPS credentials exist in this environment — reported
-truthfully).
+**Date:** 2026-11-09 · **Mission:** P0 closure of the 2026-11-08 production
+incident (`install.sh --repair` from a stale checkout →
+`DashboardConfig.__init__() got an unexpected keyword argument 'tls'` →
+failed repair, rollback, dashboard 3903 still down) + release-key rotation
+3→4 · **Overall verdict:** repository-side work COMPLETE and verified —
+root cause reproduced byte-for-byte against the published v0.4.0 assets,
+fix proven pre-mutation (exit 5 / CONFIG_INCOMPATIBLE, zero byte changes),
+full suite green (290 contract PASS / 0 FAIL + 157 pytest). Production
+deployment remains an operator action (no VPS credentials exist in this
+environment — reported truthfully; runbook:
+`PRODUCTION_RECOVERY_V041.md`).
 
 ---
 
-## Definition of Done — item-by-item (mission §9)
+## Definition of Done — item-by-item
 
 | Item | Status | Evidence |
 |---|---|---|
-| Dashboard production issue resolved and verified | **Repo-side: root cause re-confirmed with fresh evidence; fix = BLOCKED (operator)** | `evidence/production_probe_v040.txt`: 3903 refused, 3902 healthy at v0.3.3, LE cert valid. Runbook: DASHBOARD_PRODUCTION_CHECK.md §4 (one `install.sh` file, no password reset). Lab dashboard behavior fully verified in a real browser (10/10) |
-| `install.sh` is the only required public installation/upgrade file | ✅ | UNIFIED_INSTALLER.md; embedded trusted keyring + verification chain; `upgrade.sh` kept only as a compatibility asset |
-| No-argument execution selects install or upgrade correctly | ✅ | T-01 (fresh) / T-40 (bare → verified upgrade); dispatch rules in UPGRADE_CONTRACT.md U-16 |
-| Service-management flags work | ✅ | `--start/--stop/--restart/--status` (T-50 clean refusals without systemd; CI smoke with systemctl present; `--status` health probe) |
-| Existing credentials and data remain intact | ✅ | U-4 machine proofs in every upgrade test; T-51 (`--repair`); T-52 (v0.3.5 baseline, keys preserved); password never reset anywhere |
-| Multi-release bootstrap reuse passes | ✅ | Same operator file across releases E→F(changed updater)→G(pin)→v24 with SHA-256 unchanged (T-40..T-42, T-52) |
-| Release verification passes | ✅ | `release/verify_release.py`: signature (uaeg-release-3) + asset hashes + interface consistency all OK; rotation cross-checks in `evidence/key_rotation_v040.txt` |
-| README and docs are synchronized | ✅ | README, INSTALL, BOOTSTRAP, UPGRADE_CONTRACT (contract v4 / U-16) all describe the unified flow; obsolete `upgrade.sh`-download instructions replaced (old runbook marked superseded) |
-| Changes committed and pushed | ✅ | `main` @ `00cc063` + tag `v0.4.0` pushed; release published by `release.yml` and verified from public URLs. CI on `00cc063`: all five jobs SUCCESS (the tagged commit's only CI failure was in the new smoke step itself — test-design, fixed by ci.yml-only commits; contract suite + Python matrices were green on the tagged commit too) |
-| Production status is reported truthfully | ✅ | This file: production NOT modified, dashboard NOT claimed fixed; exact diagnostics listed |
+| P0-1: runtime/config-mismatch root cause traced with evidence | ✅ | `ROOT_CAUSE_ANALYSIS.md` "Insiden 3" (RC-1 mutate-first ordering, RC-2 stale mixed checkout — `--repair` exists only since v0.4.0 while the source predated v0.3.0, RC-3 no version-order check on the --repair path); reproduced exactly: `evidence/incident_repro_v041.txt` |
+| P0-1: minimal fix + regression tests | ✅ | install.sh preflight (guard 1 version order → exit 5; guard 2 staged-schema probe → CONFIG_INCOMPATIBLE) + `app_python()` sanitized interpreter + writer origin proof + stop-service hard-fail; pinned by T-53..T-57 (33 assertions) + `test_unit_regression_v041.py` (7) |
+| P0-2: installer transaction safety | ✅ | preflight runs BEFORE the service is stopped and before any file/venv/config byte is touched; hung `systemctl stop` is a hard pre-mutation failure; updater propagates `--allow-downgrade` consent; updater pipeline inherits both guards (it invokes the installer in-place) |
+| P0-3: dashboard 3903 restoration | **fix delivered + verified in lab; deployment = operator** (unchanged constraint: no VPS access) | `PRODUCTION_RECOVERY_V041.md`: verified-channel upgrade to v0.4.1, fail-closed public-bind flow (password preserved, LE cert reused, no self-signed), ufw, external acceptance matrix, one-command rollback; installer now positively verifies the dashboard listener post-repair |
+| No workaround violations (config `dashboard.tls` kept; no unknown-field loosening; no self-signed production; no password reset; no new orchestration) | ✅ | The fix touches only the installer's ORDER of operations and guards; `Config` strict validation unchanged (T-54 proves the strict rejection still fires); TLS/password flows untouched |
+| Separate bug found & fixed | ✅ | v0.4.0-as-published recovery hints pointed at the non-existent `releases/download/latest-mismatch/` URL (4 sites) — fixed to the documented `releases/latest/download/` alias (`RELEASE_LATEST_BASE`, mirror-aware) |
+| Release-key rotation 3→4 | ✅ | `release/keys/uaeg-release-4.pub.pem`; keyrings (install.sh, upgrade.sh) trust all four keys; BOOTSTRAP_VERSION 4; manifest v0.4.1 signed with key 4; historical manifests still verify (rotation cross-checks below) |
+| Docs synchronized | ✅ | README (v0.4.1 note), BOOTSTRAP.md (rotation 3→4 + hardening note), INSTALL/usage text in installer; T-39 reads the version from pyproject (no more hard-coded pins) |
+| Tests all green | ✅ | Contract **290 PASS / 0 FAIL** (T-01..T-57); pytest **125 unit + 32 e2e passed**; incident repro [A] fail → [B] refuse-with-zero-mutation |
+| Production status reported truthfully | ✅ | This file + TEST_RESULTS.md §5: production NOT modified from this environment; MCP healthy at v0.4.0 (uptime 22 775 s at 02:41 UTC), 3903 refused; exact recovery steps delivered |
 
 ## Test totals
 
-- **Contract suite: 258 PASS / 0 FAIL** (191 pre-existing assertions
-  unmodified + 67 new unified-installer assertions T-39..T-52), real
-  OpenSSL Ed25519 chain against a local release server.
-- **pytest: 150 passed** (unit + e2e incl. dashboard auth, TLS, MCP smoke,
-  hardening, regression suites).
-- **Real-browser lab matrix: 10/10** (login page, wrong-password refusal,
-  login, 5 tabs, logout, 0 console errors; 7 non-blank screenshots).
-- **Lab MCP smoke:** healthz ok (v0.4.0), MCP initialize with bearer key,
-  401 without key.
+- **Contract suite: 290 PASS / 0 FAIL** (258 pre-existing assertions
+  unmodified + 32 new incident assertions T-53..T-57), real OpenSSL
+  Ed25519 chain against a local release server, v0.3.5-baseline migration
+  included.
+- **pytest: 157 passed** (125 unit incl. the 7 new v0.4.1 regressions +
+  32 e2e: TLS, MCP smoke, dashboard auth, hardening).
+- **Incident reproduction:** published-v0.4.0 failure reproduced
+  byte-for-byte; v0.4.1 refusal verified with sha256 tree/config
+  identity before/after.
 
-## Release record (v0.4.0)
+## Release record (v0.4.1)
 
-- Version: `0.4.0` (pyproject, `__init__`, installer pin) — minor bump: new
-  backwards-compatible operator interface (contract v4 / U-16).
-- Signing: **`uaeg-release-3`** (rotation 2→3; the release-2 private key is
-  no longer available to the publisher — same situation and procedure as the
-  v0.3.4 rotation). Keyring now trusts keys 1+2+3 in both `install.sh` and
-  `upgrade.sh`, so historical releases keep verifying for pins/downgrades
-  (proven in `evidence/key_rotation_v040.txt`).
-- CI: contract suite + Python 3.11/3.12/3.13 green on the tagged commit;
-  the new unified smoke step needed two ci.yml-only fixes (non-root updater
-  invocation; a log filename starting with `--`) — final CI run on `00cc063`
-  fully green. No manifest-covered file changed after signing.
-- Assets published by `.github/workflows/release.yml` after re-verification:
-  `install.sh`(+sha256), `upgrade.sh`(+sha256),
-  `uaeg-updater-0.4.0.sh`(+sha256), `uaeg-manifest.json`(+sig) — eight
-  assets, same set as previous releases.
-- The **uaeg-release-3 private key is handed to the operator out-of-band**
-  (never committed); it must be moved to secure operator-only storage. If it
-  cannot be secured, the documented rotation procedure applies again.
+- Version: `0.4.1` (pyproject, `__init__`, installer pin) — patch bump:
+  installer-safety fixes only; no interface change (contract v4 stands).
+- Signing: **`uaeg-release-4`** (rotation 3→4; the release-3 private key
+  was handed to the operator out-of-band at v0.4.0 and is not available to
+  this environment — same documented procedure as the two previous
+  rotations). Keyrings trust keys 1–4; historical releases keep verifying
+  for pins/downgrades (cross-checks in `evidence/key_rotation_v041.txt`).
+- Assets: the same eight documented assets, published by
+  `.github/workflows/release.yml` after signature + hash re-verification.
+- No manifest-covered file changed after signing (manifest is generated
+  last, from the exact tagged bytes).
 
 ## Remaining risks & operator actions
 
-1. **Execute the production runbook** (DASHBOARD_PRODUCTION_CHECK.md §4):
-   one-time verified download of `install.sh`, `sudo bash install.sh`
-   (v0.3.3 → v0.4.0 safe upgrade with automatic rollback protection), then
-   the public-dashboard steps (password only if not yet set — never reset;
-   bind/allow_public/tls; restart; `ufw allow 3903`). ~5 minutes. The audit
-   environment will re-verify ports 3903/3902 externally on request.
-2. **Secure the `uaeg-release-3` private key** (delivered with this report).
-   Losing it forces another documented rotation at the next release.
-3. **Key-rotation friction is real but bounded:** bootstraps downloaded
-   during v0.3.4/v0.3.5 will refuse v0.4.0+ manifests with the explicit
-   rotation message and need the one-time `install.sh` download (which the
-   v0.4.0 migration requires anyway). Production (v0.3.3-era bootstrap)
-   already required this refresh since v0.3.4. No data is affected.
-4. Unauthenticated GitHub API rate limits can transiently block
-   "latest release" resolution (unchanged from v0.3.3–v0.3.5);
-   `--version X.Y.Z` pins work around it.
-5. `install.sh --status` relies on the systemd unit; `--no-service`
-   installations get a clear refusal message with the manual command
-   (documented).
-
-## Explicit non-claims (evidence policy)
-
-- No claim that production was modified: it was not (no VPS access).
-- No claim that the production dashboard renders: it is unreachable
-  (TCP refused) until the operator runbook is executed.
-- No claim that the production upgrade to v0.4.0 happened: production still
-  reports v0.3.3 (measured 2026-11-08T16:00Z).
-- Every number above maps to a log/evidence file under `report/evidence/`
-  or to a suite run in this audit (TEST_RESULTS.md).
+1. **Run `PRODUCTION_RECOVERY_V041.md`** (upgrade to v0.4.1 + expose
+   3903). Until then the dashboard stays down; MCP is unaffected.
+2. Secure the uaeg-release-4 private key out-of-band (same as key 3).
+3. The stale clone that triggered the incident should be deleted or
+   `git fetch --tags && git checkout v0.4.1`-refreshed; v0.4.1 refuses
+   repairs from it regardless (exit 5), but a clean tree avoids confusion.

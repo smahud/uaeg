@@ -8,7 +8,7 @@ native capabilities of the server, up to and including root.
 
 [![CI](https://github.com/smahud/uaeg/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/smahud/uaeg/actions/workflows/ci.yml)
 
-**Current release: v0.4.0** (tag `v0.4.0`). The repository carries its own audit trail
+**Current release: v0.4.1** (tag `v0.4.1`). The repository carries its own audit trail
 — release decisions, security findings, and test evidence — under [report/](report/).
 
 > **SECURITY WARNING — READ THIS BEFORE INSTALLING**
@@ -128,12 +128,15 @@ sudo bash install.sh --check                   # status + available update
 sudo bash install.sh --rollback                # restore the latest upgrade backup
 ```
 
-> **v0.4.0 note (release-signing key rotation + unified installer):** releases are now
-> signed with `uaeg-release-3`, and `install.sh` is the single public install/upgrade file.
-> A bootstrap downloaded during v0.3.4/v0.3.5 will refuse v0.4.0+ with an explicit
+> **v0.4.1 note (production-incident fix + release-key rotation 3→4):** the installer now
+> refuses — before touching anything — to `--repair` from an older source tree over a newer
+> installation (the 2026-11-08 `dashboard.tls` incident class), verifies the staged schema
+> against the existing configuration pre-mutation, and runs every config-touching step with a
+> sanitized interpreter. Releases are now signed with `uaeg-release-4` (keyring rotation;
+> bootstraps downloaded during v0.3.4–v0.4.0 will refuse v0.4.1+ with an explicit
 > "signature invalid / key rotation" error — that is the documented fail-closed behavior;
-> re-download `install.sh` once ([docs/BOOTSTRAP.md](docs/BOOTSTRAP.md)).
-> A bootstrap downloaded fresh (v0.4.0+) trusts all historical keys and needs no refresh.
+> re-download `install.sh` once ([docs/BOOTSTRAP.md](docs/BOOTSTRAP.md))).
+> A bootstrap downloaded fresh (v0.4.1+) trusts all historical keys and needs no refresh.
 
 The first tool an agent should call is `server_info`, which reports the execution context and
 the advisory usage rules. Full walkthrough: [docs/USAGE.md](docs/USAGE.md).
@@ -223,4 +226,4 @@ deploying, read [docs/SECURITY.md](docs/SECURITY.md) (threat model and hardening
 
 ## License
 
-MIT — see [LICENSE](LICENSE). UAEG is experimental software (v0.4.0); treat it accordingly.
+MIT — see [LICENSE](LICENSE). UAEG is experimental software (v0.4.1); treat it accordingly.

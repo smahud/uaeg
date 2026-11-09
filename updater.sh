@@ -1275,6 +1275,11 @@ an unattended upgrade. Nothing was changed."
   local install_args=(--yes --install-dir "$INSTALL_DIR" --data-dir "$DATA_DIR"
                       --config-dir "$CONFIG_DIR")
   [[ $NO_SERVICE -eq 1 ]] && install_args+=(--no-service)
+  # v0.4.1: propagate the operator's explicit downgrade consent to the
+  # installer's in-place preflight (guard 1). The installer still refuses
+  # schema-INCOMPATIBLE downgrades on its own (guard 2) - consent to deploy
+  # older code is not consent to break the existing configuration.
+  [[ $ALLOW_DOWNGRADE -eq 1 ]] && export UAEG_ALLOW_DOWNGRADE=1
   if ! bash "$installer" "${install_args[@]}" 2>&1 | tee "$BACKUP_DIR/install.log"; then
     warn "installer failed (log: $BACKUP_DIR/install.log)"
     return 1   # on_exit trap performs the rollback

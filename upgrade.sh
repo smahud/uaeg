@@ -56,9 +56,9 @@ set -uo pipefail
 # still trusts ALL THREE keys so manifests of historical releases keep
 # verifying for --version pins/downgrades.
 # ----------------------------------------------------------------------
-BOOTSTRAP_VERSION="3"
+BOOTSTRAP_VERSION="4"
 BOOTSTRAP_INTERFACE="1"        # max updater interface this bootstrap speaks
-BOOTSTRAP_KEY_IDS="uaeg-release-1,uaeg-release-2,uaeg-release-3"
+BOOTSTRAP_KEY_IDS="uaeg-release-1,uaeg-release-2,uaeg-release-3,uaeg-release-4"
 
 # ----------------------------------------------------------------------
 # Release channel (env overrides exist for mirrors and the contract test
@@ -66,6 +66,9 @@ BOOTSTRAP_KEY_IDS="uaeg-release-1,uaeg-release-2,uaeg-release-3"
 # ----------------------------------------------------------------------
 RELEASE_API_BASE="${UAEG_RELEASE_API_BASE:-https://api.github.com/repos/smahud/uaeg}"
 RELEASE_DOWNLOAD_BASE="${UAEG_RELEASE_DOWNLOAD_BASE:-https://github.com/smahud/uaeg/releases/download}"
+# "latest" asset alias (docs/BOOTSTRAP.md); v0.4.1 fixes the v0.4.0 recovery
+# hint that pointed at the non-existent .../download/latest-mismatch/ path.
+RELEASE_LATEST_BASE="${RELEASE_DOWNLOAD_BASE%/download}/latest/download"
 
 # ----------------------------------------------------------------------
 # Trusted release-signing public keys (Ed25519, PEM).
@@ -80,6 +83,9 @@ MCowBQYDK2VwAyEAS6XMyzmiARYxhkDoBsMZdNE1SXNtyGCNJV6R+Uvznq4=
 -----END PUBLIC KEY-----"
 _TRUSTED_KEY_3="-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEABBIDBLITvWPB+YC0iDMYvVi3r/0gqdbaAGhy8CLuC/Q=
+-----END PUBLIC KEY-----"
+_TRUSTED_KEY_4="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEA2Ei9ZnJs97L3KzRQwjdASwGbp/ooWSr9retQyZj7qcU=
 -----END PUBLIC KEY-----"
 # ---- TRUSTED KEYRING END ----
 
@@ -181,7 +187,7 @@ if [[ "$BOOT_MODE" == "info" ]]; then
 UAEG upgrade bootstrap
   bootstrap version : $BOOTSTRAP_VERSION
   updater interface : v$BOOTSTRAP_INTERFACE (max supported)
-  trusted keys      : $BOOTSTRAP_KEY_IDS (fingerprints $(_fp "$_TRUSTED_KEY_1"), $(_fp "$_TRUSTED_KEY_2"), $(_fp "$_TRUSTED_KEY_3"))
+  trusted keys      : $BOOTSTRAP_KEY_IDS (fingerprints $(_fp "$_TRUSTED_KEY_1"), $(_fp "$_TRUSTED_KEY_2"), $(_fp "$_TRUSTED_KEY_3"), $(_fp "$_TRUSTED_KEY_4"))
   release channel   : $RELEASE_API_BASE
   this file         : $BOOTSTRAP_FILE (sha256 ${BOOTSTRAP_SHA_BEFORE:0:16}…)
   contract          : docs/UPGRADE_CONTRACT.md (v3), docs/BOOTSTRAP.md
@@ -206,6 +212,7 @@ mkdir -p "$KEY_DIR"
 printf '%s\n' "$_TRUSTED_KEY_1" > "$KEY_DIR/1.pub"
 printf '%s\n' "$_TRUSTED_KEY_2" > "$KEY_DIR/2.pub"
 printf '%s\n' "$_TRUSTED_KEY_3" > "$KEY_DIR/3.pub"
+printf '%s\n' "$_TRUSTED_KEY_4" > "$KEY_DIR/4.pub"
 
 verify_manifest_signature() {  # $1=manifest $2=signature ; 0 = trusted
   local k
@@ -301,7 +308,7 @@ PY
   if (( UPDATER_IFACE > BOOTSTRAP_INTERFACE )); then
     die "the updater in release $tag speaks interface v$UPDATER_IFACE, but this
 bootstrap supports up to v$BOOTSTRAP_INTERFACE. Refresh the bootstrap ONCE:
-  curl -fsSLO $RELEASE_DOWNLOAD_BASE/latest-mismatch/upgrade.sh
+  curl -fsSLO $RELEASE_LATEST_BASE/upgrade.sh
 (see docs/BOOTSTRAP.md - exceptional recovery; this is the only situation
 that requires re-downloading the bootstrap)."
   fi

@@ -47,6 +47,9 @@
 #   T-36     no terminal + piped "y" -> accepted (automation preserved)
 #   T-37     rollback confirmation: "n" aborts; "y" read from the
 #             terminal while stdin is detached -> rollback proceeds
+#   T-53..T-57 INCIDENT 2026-11-08 regressions: pre-mutation preflight
+#             (downgrade exit 5 / schema probe / standalone pin /
+#             PYTHONPATH sanitization) - zero mutation on refusal
 #   T-38     confirm_ask helper (byte-exact from install.sh and
 #             updater.sh): y / n / EOF / detached-stdin probes
 #
@@ -1079,7 +1082,7 @@ assert_in "$LOG" "--repair" "T-39 help memuat --repair"
 assert_in "$LOG" "--start" "T-39 help memuat --start"
 run "$LOG" bash "$OPERATOR_UNI/install.sh" --version
 assert_rc 0 "T-39 --version (tanpa argumen) rc=0"
-assert_in "$LOG" "v0.4.0" "T-39 --version mencetak versi installer"
+assert_in "$LOG" "v$REPO_VERSION" "T-39 --version mencetak versi installer (v$REPO_VERSION)"
 
 # ----------------------------------------------------------------------
 t "T-40: BARE install.sh pada instalasi ada -> SAFE UPGRADE terverifikasi (U-16)"
@@ -1327,6 +1330,123 @@ assert_eq "$(installed_version)" "24.0.0" "T-52 versi sekarang 24.0.0"
 assert_eq "$(db_keys)" "$KEYS_035" "T-52 kunci agent dari baseline 0.3.5 identik"
 assert_eq "$(sha256sum "$OPERATOR_UNI/install.sh" | awk '{print $1}')" "$UNI_SHA" \
   "T-52 SHA-256 install.sh operator MASIH identik (lintas baseline)"
+
+# ----------------------------------------------------------------------
+# T-53 .. T-57 — INSIDEN PRODUKSI 2026-11-08 (host.zerotier.my.id):
+# `install.sh --repair` dari checkout LAMA menimpa aplikasi BARU, KEMUDIAN
+# skema lama menolak konfigurasi yang ada (dashboard.tls) -> CONFIG_ERROR,
+# service mati, rollback. v0.4.1: preflight pre-mutation menolak lebih
+# dulu (guard 1: urutan versi, exit 5; guard 2: probe skema) dan tidak
+# ada satu byte pun berubah.
+# ----------------------------------------------------------------------
+tree_hash() {  # deterministic content hash of the installed app tree
+  ( cd "$1" && find . -type f ! -path './.venv/*' -print0 | sort -z \
+      | xargs -0 sha256sum | sha256sum | awk '{print $1}' )
+}
+
+t "T-53: INSIDEN 2026-11-08 — --repair dari sumber LAMA atas instalasi BARU -> tolak exit 5 SEBELUM mutasi"
+# ----------------------------------------------------------------------
+# Installed: 24.0.0 (dari T-52). Source: repo asli v$REPO_VERSION (LEBIH
+# LAMA) - persis bentuk produksi (checkout basi v0.2.x + aplikasi v0.4.0).
+INSTALL_HASH_BEFORE="$(tree_hash "$INSTALL")"
+CFG_SHA_BEFORE="$(sha256sum "$CONFIG/config.json" | awk '{print $1}')"
+KEYS_BEFORE_53="$(db_keys)"
+N_BEFORE="$(backup_count)"
+run "$LOG" bash "$SRC/install-test.sh" --repair \
+  --install-dir "$INSTALL" --config-dir "$CONFIG" --data-dir "$DATA" \
+  --no-service --yes
+assert_rc 5 "T-53 rc=5 (downgrade pre-mutation ditolak)"
+assert_in "$LOG" "REFUSING to deploy OLDER source" "T-53 pesan penolakan guard 1"
+assert_in "$LOG" "NOTHING was changed" "T-53 penolakan menyatakan tidak ada perubahan"
+assert_eq "$(installed_version)" "24.0.0" "T-53 versi terpasang tidak berubah"
+assert_eq "$(tree_hash "$INSTALL")" "$INSTALL_HASH_BEFORE" "T-53 pohon aplikasi identik byte-per-byte"
+assert_eq "$(sha256sum "$CONFIG/config.json" | awk '{print $1}')" "$CFG_SHA_BEFORE" "T-53 konfigurasi identik"
+assert_eq "$(db_keys)" "$KEYS_BEFORE_53" "T-53 kunci agent identik"
+assert_eq "$(backup_count)" "$N_BEFORE" "T-53 tidak ada backup baru"
+assert_eq "$(ls -1d "$INSTALL".upgrade-bak-* 2>/dev/null | wc -l)" "0" \
+  "T-53 tidak ada backup aplikasi baru (rollback-safety belum dibuat)"
+
+t "T-54: INSIDEN (varian versi-sama) — skema lama menolak konfigurasi ada -> CONFIG_INCOMPATIBLE, nol mutasi"
+# ----------------------------------------------------------------------
+# Version strings LIE in the real world (mixed trees, hand-edited
+# pyproject). Source with the SAME version as installed but with the
+# dashboard `tls` field REMOVED (pre-v0.3.0 schema) - guard 1 passes,
+# guard 2 must catch it via the staged-schema probe BEFORE any mutation.
+SRC_INCOMPAT="$BASE/src-incompat"
+make_source "$SRC_INCOMPAT" "24.0.0"
+sed -i '/^    tls: bool = False$/d' "$SRC_INCOMPAT/src/uaeg/config.py"
+grep -q 'tls: bool' "$SRC_INCOMPAT/src/uaeg/config.py" \
+  && no "T-54 setup: field tls harus terhapus dari salinan" \
+  || ok "T-54 setup: salinan sumber tanpa field tls (skema lama)"
+assert_in "$CONFIG/config.json" "\"tls\"" "T-54 konfigurasi ada memuat dashboard.tls"
+run "$LOG" bash "$SRC_INCOMPAT/install-test.sh" --repair \
+  --install-dir "$INSTALL" --config-dir "$CONFIG" --data-dir "$DATA" \
+  --no-service --yes
+assert_rc 1 "T-54 rc=1 (inkompatibilitas skema ditolak)"
+assert_in "$LOG" "NOT compatible" "T-54 pesan CONFIG_INCOMPATIBLE"
+assert_in "$LOG" "unexpected keyword argument 'tls'" "T-54 penyebab persis insiden disebut"
+assert_in "$LOG" "NOTHING was changed" "T-54 penolakan pre-mutation"
+assert_eq "$(installed_version)" "24.0.0" "T-54 versi tidak berubah"
+assert_eq "$(tree_hash "$INSTALL")" "$INSTALL_HASH_BEFORE" "T-54 pohon aplikasi identik"
+assert_eq "$(sha256sum "$CONFIG/config.json" | awk '{print $1}')" "$CFG_SHA_BEFORE" "T-54 konfigurasi identik"
+
+t "T-55: installer STANDALONE ter-pin lama + instalasi lebih baru -> tolak SEBELUM unduh (exit 5)"
+# ----------------------------------------------------------------------
+# The standalone variant of the incident: an old downloaded install.sh
+# (no pyproject.toml beside it) pinned to its own release. The refusal
+# must fire BEFORE any download - proven by pointing the release channel
+# at a dead URL: a fetch attempt would fail with a network error instead
+# of the downgrade refusal.
+STANDALONE_OLD="$BASE/standalone-old"
+mkdir -p "$STANDALONE_OLD"
+cp "$SRC/install-test.sh" "$STANDALONE_OLD/install.sh"
+run "$LOG" env UAEG_RELEASE_API_BASE="http://127.0.0.1:1/dead" \
+  UAEG_RELEASE_DOWNLOAD_BASE="http://127.0.0.1:1/dead" \
+  bash "$STANDALONE_OLD/install.sh" --repair \
+  --install-dir "$INSTALL" --config-dir "$CONFIG" --data-dir "$DATA" \
+  --no-service --yes
+assert_rc 5 "T-55 rc=5 (pin lama ditolak pre-download)"
+assert_in "$LOG" "REFUSING to --repair with a standalone installer" "T-55 pesan penolakan standalone"
+assert_not_in "$LOG" "could not determine the latest release" "T-55 tidak sempat menyentuh jaringan"
+assert_eq "$(installed_version)" "24.0.0" "T-55 versi tidak berubah"
+
+t "T-56: UAEG_ALLOW_DOWNGRADE=1 + sumber lama yang KOMPATIBEL skema -> repair berjalan (jalur resmi)"
+# ----------------------------------------------------------------------
+# The documented escape hatch: explicit operator consent deploys older
+# source whose schema still ACCEPTS the existing configuration. The
+# full repair must succeed, preserve keys + operator config, and land
+# on the older version.
+DASH_PORT_BEFORE="$(cfg_field "cfg['dashboard']['port']")"
+run "$LOG" env UAEG_ALLOW_DOWNGRADE=1 bash "$SRC/install-test.sh" --repair \
+  --install-dir "$INSTALL" --config-dir "$CONFIG" --data-dir "$DATA" \
+  --no-service --yes
+assert_rc 0 "T-56 rc=0 (downgrade tersurat selesai)"
+assert_in "$LOG" "UAEG_ALLOW_DOWNGRADE=1: deploying OLDER source" "T-56 peringatan persetujuan tampil"
+assert_in "$LOG" "preflight: existing configuration accepted by the staged schema" "T-56 probe skema lolos"
+assert_eq "$(installed_version)" "$REPO_VERSION" "T-56 versi sekarang v$REPO_VERSION (sumber lama)"
+assert_eq "$(db_keys)" "$KEYS_BEFORE_53" "T-56 kunci agent identik"
+assert_eq "$(cfg_field "cfg['dashboard']['port']")" "$DASH_PORT_BEFORE" "T-56 konfigurasi operator dipertahankan"
+
+t "T-57: PYTHONPATH busuk (paket uaeg LAMA) tidak bisa membayangi — sanitasi interpreter v0.4.1"
+# ----------------------------------------------------------------------
+# The stale-module vector: an operator exports PYTHONPATH pointing at a
+# pre-v0.3.0 uaeg package (no dashboard tls field). The v0.4.1 preflight
+# probe and the config writer run with a sanitized interpreter
+# (env -u PYTHONPATH + -P), so the shadow must be ignored and the repair
+# must succeed with the CORRECT schema.
+STALE_SHADOW="$BASE/stale-shadow"
+mkdir -p "$STALE_SHADOW"
+tar -C "$SRC" --exclude=.git -cf - src | tar -C "$STALE_SHADOW" -xf -
+sed -i '/^    tls: bool = False$/d' "$STALE_SHADOW/src/uaeg/config.py"
+# package importable as top-level `uaeg` via PYTHONPATH
+run "$LOG" env PYTHONPATH="$STALE_SHADOW/src" \
+  bash "$SRC/install-test.sh" --repair \
+  --install-dir "$INSTALL" --config-dir "$CONFIG" --data-dir "$DATA" \
+  --no-service --yes
+assert_rc 0 "T-57 rc=0 (repair kebal PYTHONPATH busuk)"
+assert_in "$LOG" "preflight: existing configuration accepted by the staged schema" "T-57 probe memakai sumber ter-staging, bukan bayangan"
+assert_eq "$(installed_version)" "$REPO_VERSION" "T-57 versi $REPO_VERSION"
+assert_in "$CONFIG/config.json" "\"tls\"" "T-57 konfigurasi tetap membawa dashboard.tls (skema benar yang menulis)"
 
 # matikan server rilis yang dinyalakan lagi di T-39
 kill "$RELSRV_PID" 2>/dev/null || true

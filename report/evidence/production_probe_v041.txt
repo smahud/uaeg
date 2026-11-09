@@ -1,0 +1,9 @@
+== PRODUCTION EXTERNAL PROBES — v0.4.1 release day ==
+captured: 2026-11-09T02:48:14Z
+
+-- MCP healthz (expect ok, version) --
+{"status":"ok","service":"UAEG","version":"0.4.0","uptime_seconds":23167.3}
+-- MCP /mcp no key (expect 401) --
+401
+-- dashboard 3903 login (expect refused - P0-3 pending operator runbook) --
+000 Failed to connect to host.zerotier.my.id port 3903 after 65 ms: Could not connect to server

@@ -1,12 +1,13 @@
-# Test Results — v0.4.0 (unified installer release)
+# Test Results — v0.4.1 (production-incident closure release)
 
-**Date:** 2026-11-08 · **Environment:** isolated sandbox (Python 3.12.16,
+**Date:** 2026-11-09 · **Environment:** isolated sandbox (Python 3.12.16,
 bash 5.x, no root, no systemd — identical shape to the CI contract-suite
-job) · **Suites:** `tests/test_upgrade_contract.sh` (contract) + pytest
-unit/e2e + lab browser + lab MCP smoke + external production probes.
+job) · **Suites:** `tests/test_upgrade_contract.sh` (contract, T-01..T-57)
++ pytest unit/e2e + incident reproduction against the PUBLISHED v0.4.0
+assets + external production probes.
 
-Historical suites for v0.3.x releases: see `report/TEST_EVIDENCE.md` and
-`report/evidence/upgrade_contract_suite_v*.txt`.
+Historical suites for earlier releases: `report/TEST_EVIDENCE.md` and the
+v0.4.0 section preserved in git history (`git show v0.4.0:report/TEST_RESULTS.md`).
 
 ---
 
@@ -14,81 +15,79 @@ Historical suites for v0.3.x releases: see `report/TEST_EVIDENCE.md` and
 
 | Suite | Result |
 |---|---|
-| Safe-upgrade contract suite (T-01..T-52, real Ed25519 chain, local release server) | **258 PASS / 0 FAIL** |
-| pytest unit + e2e (core, executor, containment, security redaction, server hardening, dashboard auth, regression v033/v034, e2e smoke, e2e dashboard auth, e2e hardening) | **150 passed** (75.98 s) |
-| Unified-installer dispatch smoke (help/version/check/dry-run/start/stop/status on an empty box) | PASS (manual, pre-suite) |
-| Lab browser verification (real Chromium: login, wrong password, login, 5 tabs, logout, 0 console errors) | **10/10 PASS** — `evidence/lab_browser_verification_v040.txt` + `evidence/browser_v040/` |
-| Lab MCP smoke (healthz, initialize with bearer key, 401 without key) | PASS — `evidence/lab_mcp_smoke_v040.txt` |
-| Production external probes | captured — `evidence/production_probe_v040.txt` (dashboard P0 persists; see DASHBOARD_PRODUCTION_CHECK.md) |
+| Safe-upgrade contract suite (T-01..T-57, real Ed25519 chain, local release server) | **290 PASS / 0 FAIL** |
+| pytest unit (core, executor, containment, security redaction, server hardening, dashboard auth, regression v033/v034/**v041**) | **125 passed** (36.6 s) |
+| pytest e2e (smoke, dashboard auth, hardening) | **32 passed** (102 s) |
+| **Incident reproduction** (published v0.4.0 installer vs v0.4.1 fix, stale mixed checkout) | **reproduced + refused pre-mutation** — `evidence/incident_repro_v041.txt` |
+| Production external probes (2026-11-09 02:41 UTC) | MCP `:3902` healthy **v0.4.0** (uptime 22 775 s); dashboard `:3903` still refused — operator runbook: `PRODUCTION_RECOVERY_V041.md` |
 
-Mission's ten required test areas → coverage:
+## 2. New in v0.4.1 — incident regressions (T-53..T-57, 33 assertions)
 
-| # | Required | Evidence |
+All five pin the 2026-11-08 production incident class
+(`report/ROOT_CAUSE_ANALYSIS.md`, "Insiden 3"):
+
+| Test | Scenario (isolated dirs, patched installer — no root/systemd) | Result |
 |---|---|---|
-| 1 | Existing unit and integration tests | 150/150 pytest; all 191 pre-existing contract assertions unmodified and green |
-| 2 | Installer fresh-install smoke | T-01; CI installer job (fresh install + serve + MCP probe); sandbox lab install |
-| 3 | Upgrade from v0.3.5 | **T-52**: real v0.3.5-tag tree installed, two keys generated, then bare `install.sh` → verified upgrade to a simulated newer release; keys identical |
-| 4 | Multi-release reuse of an unchanged local install.sh | T-40 → T-41 (updater implementation CHANGED) → T-42 (pin) → T-52, operator file SHA-256 identical throughout |
-| 5 | Signature verification + invalid-signature rejection | T-43 (tampered manifest), T-44 (foreign key), T-45 (tampered updater) — exit 1, nothing changed; positive verification in T-40..T-42, T-47, T-52 |
-| 6 | Existing key/password preservation | U-4 machine proofs in every upgrade test (keys identical, password intact, config unchanged); T-51 (--repair preserves data) |
-| 7 | Automatic and manual rollback | T-48 (broken release via bare install.sh → exit 2, auto-restore), T-49 (manual `--rollback` from cached updater); T-08/T-09/T-30/T-31 (pre-existing, still green) |
-| 8 | Service-management commands | T-50 (`--start/--stop/--restart/--status` without systemd → clean rc-1 refusals); CI unified-command smoke (systemctl present, unit absent); `--status` health-probe code path exercised in the lab |
-| 9 | Dashboard browser verification | Lab: 10/10 real-browser matrix (login page, wrong password refused, correct login, all tabs, logout, 0 console errors, 7 non-blank screenshots). **Production: BLOCKED on VPS access** — external probes only (login page unreachable: TCP refused) |
-| 10 | MCP smoke after deployment | Lab: initialize + 401 matrix. Production: `/healthz` ok + 401 (external, no key) — v0.3.3 currently; post-v0.4.0 production verification pending the operator runbook |
+| **T-53** | `--repair` from an OLDER source over a NEWER install (installed 24.0.0, source 0.4.1) | **exit 5** refusal; "REFUSING to deploy OLDER source"; version, installed-tree hash, config sha, agent keys and backup count ALL unchanged |
+| **T-54** | SAME version strings, but the source's `DashboardConfig` has the `tls` field removed (mixed-tree shape) | **exit 1** `CONFIG_INCOMPATIBLE`, message contains the exact production cause (`unexpected keyword argument 'tls'`); zero mutation (tree + config verified) |
+| **T-55** | Standalone installer pinned to its own older release, release channel pointed at a dead URL | **exit 5** BEFORE any download (the refusal, not a network error, is what fires) |
+| **T-56** | `UAEG_ALLOW_DOWNGRADE=1` + schema-COMPATIBLE older source | repair **succeeds** (rc 0) with the consent warning; agent keys and the operator's `dashboard.port` preserved; lands on the older version |
+| **T-57** | `PYTHONPATH` pointing at a pre-v0.3.0 `uaeg` package (stale-module shadow) | repair **succeeds** via the sanitized interpreter (`env -u PYTHONPATH … -P`); the config is written by the CORRECT schema and still carries `dashboard.tls` |
 
-## 2. Contract suite detail (new tests)
+Unit-level pinning (`tests/test_unit_regression_v041.py`, 7 tests): the
+production-shaped config (MCP `0.0.0.0:3902`, dashboard `0.0.0.0:3903`,
+`dashboard.tls=true`, manual TLS material) loads on the current schema; a
+faithful pre-v0.3.0 `DashboardConfig` replica rejects it with exactly the
+production `TypeError`; the wrapped `ConfigError` names the offending
+field; the preflight probe contract (staged-source import origin +
+`Config.load`) passes against the real repository source.
 
-Setup (T-39): the release server is relaunched after T-31's offline test; a
-patched operator `install.sh` (test keyring, redirected system paths) is
-created once and its SHA recorded; a git remote whose tree carries a
-runnable (patched) installer backs each simulated release.
+## 3. Incident reproduction against the published v0.4.0 (fail-first proof)
 
-| Test | Proves | Result |
-|---|---|---|
-| T-39 | `--help` lists all commands; bare `--version` prints v0.4.0 | PASS |
-| T-40 | Bare invocation on an existing install → signature-verified safe upgrade; version bump; keys/config preserved; operator file SHA unchanged; `RECORD.json` shows `bootstrap_invoked=true` and `bootstrap_file` = the operator's install.sh | PASS |
-| T-41 | The SAME file upgrades a release whose updater implementation changed; SHA still identical | PASS |
-| T-42 | `install.sh --version 20.0.0` pinned verified upgrade | PASS |
-| T-43 | Tampered manifest → `SIGNATURE INVALID`, exit 1, no backup, version unchanged | PASS |
-| T-44 | Manifest signed by a foreign key → rejected | PASS |
-| T-45 | Tampered updater bytes → `SHA-256 MISMATCH`, rejected | PASS |
-| T-46 | Updater interface 99 → refused; refresh instructions point at install.sh | PASS |
-| T-47 | `--check` shows status + "update available"; `--dry-run` shows the plan; no backups | PASS |
-| T-48 | Broken release via bare install.sh → automatic rollback, exit 2, app back at previous version, keys intact | PASS |
-| T-49 | `install.sh --rollback` uses the cached updater, restores pre-upgrade data | PASS |
-| T-50 | `--start/--stop/--restart/--status` without a systemd unit → exit 1 with a clear systemd message | PASS |
-| T-51 | `--repair` preserves keys/data, applies config flags (dashboard.port 3954→3956) | PASS |
-| T-52 | v0.3.5 baseline install → bare unified upgrade → keys preserved; operator file SHA identical | PASS |
+`report/evidence/incident_repro_v041.txt` — full logs:
 
-## 3. Issues found and fixed during this audit's own testing
+- Baseline: fresh install of the **published v0.4.0** (`git archive
+  v0.4.0`), config carries `dashboard.tls` (schema field since v0.3.0).
+- **[A] The incident:** `bash install.sh --repair` from a stale mixed
+  checkout (v0.4.0-era `install.sh` + pre-v0.3.0 `src/uaeg/config.py`) →
+  `CONFIG_ERROR: existing configuration is invalid: configuration contains
+  an unknown or mistyped field: DashboardConfig.__init__() got an
+  unexpected keyword argument 'tls'` → rollback engaged → rc 1. The exact
+  production error, byte-for-byte, including the mutate-first ordering.
+- **[B] The fix:** the v0.4.1 installer placed in the SAME stale checkout,
+  same command → `REFUSING to deploy OLDER source … NOTHING was changed`,
+  **rc 5**, installed tree and configuration **byte-identical** before and
+  after (sha256-verified).
 
-1. `--rollback` initially did not forward the mode to the cached updater
-   (the updater ran in upgrade mode; caught by T-49 returning exit 2).
-   Fixed: the rollback subcommand now translates to `--rollback` for the
-   updater, exactly as `upgrade.sh` forwards it.
-2. Config-flag validation initially rejected `--repair` with first-install
-   flags (caught by T-51). Fixed: `--repair` accepts configuration flags by
-   design.
-Both regressions were introduced and eliminated inside this audit; the
-final suite state is fully green with the fixes in place.
+## 4. Full-suite evidence
 
-3. The new CI unified-command smoke step failed twice on GitHub Actions
-   before passing (test-design only, no product change): first it invoked
-   the real unpatched updater as non-root (the updater correctly insists
-   on root), then a log filename starting with `--` broke grep/cat. Fixed
-   by ci.yml-only commits (`56173bd`, `00cc063`); the contract suite and
-   all Python matrices were green on every commit including the tag.
+- Contract suite final line: `HASIL: 290 PASS / 0 FAIL` (runtime ≈ 21 min,
+  includes fresh installs, verified remote upgrades via a local release
+  server with a real Ed25519 signing chain, rollback, key-rotation
+  refusals, and the v0.3.5-baseline migration T-51/T-52).
+- pytest: `125 passed` (unit) · `32 passed` (e2e) — no skips, no flaky
+  reruns; the single initial failure (README version metadata) was fixed
+  by synchronizing README/CI/T-39 to v0.4.1 and re-run green.
 
-## 4. Known environmental notes (not defects)
+## 5. Production state (external probes, not modified by this release)
 
-- Unauthenticated GitHub API calls from a shared egress IP can be
-  rate-limited (403) transiently; the bootstrap then reports "could not
-  determine the latest release" — identical to v0.3.3–v0.3.5 behavior;
-  `--version X.Y.Z` pins bypass it.
-- The contract suite runs without root/systemd by design; service-command
-  tests assert the clean-refusal paths (real systemctl operation is covered
-  by the production runbook's `--status` verification).
-- The sandbox has no systemd, so `install.sh --status`'s systemctl branch is
-  covered by code review + CI (systemctl exists on runners) rather than a
-  live unit here; the dashboard/MCP behavior itself is covered by the real
-  server lab runs.
+| Probe (2026-11-09 02:41 UTC) | Result |
+|---|---|
+| `GET https://host.zerotier.my.id:3902/healthz` | `{"status":"ok","service":"UAEG","version":"0.4.0","uptime_seconds":22775.2}` |
+| `GET https://host.zerotier.my.id:3902/mcp` (no key) | 401 (fail-closed auth intact) |
+| `https://host.zerotier.my.id:3903/login` | connection refused (P0-3 remains; runbook delivered) |
+
+The healthy v0.4.0 MCP service with ~6.3 h uptime is consistent with the
+incident timeline (v0.4.0 deployed → failed `--repair` → rollback restored
+v0.4.0 → service restarted; the dashboard was never re-exposed). Recovery:
+`report/PRODUCTION_RECOVERY_V041.md`.
+
+## 6. Known environmental notes (not defects)
+
+- The contract suite and reproduction apply the documented test-only
+  patches (root check disabled, `apt` skipped, system paths redirected) —
+  identical to the CI installer job; every other code path runs unpatched.
+- systemd-dependent behavior (the hard-fail on a hung `systemctl stop`,
+  the supervised restart) is exercised only on a real host; the sandbox has
+  no systemd. The code paths are simple, reviewed, and their failure
+  semantics (die before mutation) are covered by the preflight tests.
