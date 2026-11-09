@@ -1,0 +1,121 @@
+=== deployE post-patch verification @ 2026-11-10 04:19:35 WIB ===
+[1] re-auth OK: {'name': 'UAEG', 'version': '0.4.1+audit1'} proto=2025-11-25
+[1] server_info: version=0.4.1+audit1 exec_user=root host=microtix
+[2] identity: ['0', 'root', 'microtix']
+[3] bg job started: job-63d525fce2e64f9b86773bd40111a779
+[3] job shim cgroup: 0::/system.slice/uaeg-job-63d525fce2e64f9b86773bd40111a779.scope
+[4] 'transient systemd scopes' journal lines: 1
+[4] startup lines:
+Nov 10 04:17:30 microtix uaeg[30588]: 2026-11-10T04:17:30+0700 INFO    uaeg.server: startup reconciliation: {'running': 0, 'finalized': 0, 'interrupted': 0} jobs, 0 sessions from previous run
+Nov 10 04:17:30 microtix uaeg[30588]: 2026-11-10T04:17:30+0700 INFO    uaeg.server: UAEG v0.4.1+audit1 starting: MCP https://host.zerotier.my.id:3902/mcp (tls=on) | dashboard https://0.0.0.0:3903 | data=/var/lib/uaeg
+Nov 10 04:19:36 microtix uaeg[30588]: 2026-11-10T04:19:36+0700 INFO    uaeg.jobs: background jobs run in transient systemd scopes (they survive 'systemctl stop/restart uaeg')
+
+[5] doctor:
+UAEG doctor v0.4.1+audit1
+  host: microtix | user: root
+  [✓] config: /etc/uaeg/config.json
+        ! Dashboard is bound to ALL interfaces (public). Login with the dashboard password is enforced; a password must exist or the service refuses to start (run 'sudo uaeg pass').
+  [✓] data dir: /var/lib/uaeg
+  [✓] database: 1 active keys, 171 log entries
+  [✓] systemd service: active
+  [✓] MCP listener: 0.0.0.0:3902 (probed via 127.0.0.1)
+        ! MCP listener is bound to ALL interfaces (public): any holder of a valid agent key can reach shell execution. Keep keys secret and revoked keys are refused per request.
+  [✓] dashboard listener: 0.0.0.0:3903
+  [✓] health endpoint: status=ok
+  [✓] TLS certificate: mode=certbot; CN=host.zerotier.my.id; expires Feb  5 17:20:21 2027 GMT; SAN DNS:host.zerotier.my.id
+  [✓] execution user: root (full OS control per PRD FR-010)
+  [✓] dashboard auth: public bind: password + TLS required (password configured, login enforced)
+  [✓] exec shell: /bin/bash
+
+  all checks passed
+
+[6] keys after:
+KEY ID           NAME               PREFIX               STATUS    MODE        CREATED (UTC)            LAST USED
+k-837c0f289a4a   cloud-agent        uaeg_ff…[RED]      active    all         2026-11-09T19:19:41      2026-11-09T21:19:36
+k-89e573b7ab0e   cloud-agent        uaeg_Lz…[RED]      revoked   all         2026-11-07T18:20:36      never
+
+[6] db counts after: {'keys': 2, 'jobs': 8, 'sessions': 2, 'exec_logs': 173}
+[6] config/pass hashes after:
+89aeeef7baee2543cd58763815e56327127bd302a5a6f1ae5f9046670f568cb8  /etc/uaeg/config.json
+8a96b6931f48cfc617f671645d0b53cfd95ba1a54fa92088b3111dd82221f3c3  /var/lib/uaeg/dashboard-pass.json
+
+[6] tls mode: "tls": true,
+    "session_idle_timeout_s": 1800,
+    "session_absolute_timeout_s": 43200
+  },
+  "tls": {
+[7] updater RECORD: result=success from=0.4.1 to=0.4.1+audit1 sha=8369e6e
+[7] install.log tail:
+[1;32m==>[0m upgrade verified - removing rollback backup /opt/uaeg.upgrade-bak-20261110-041724
+
+[1mUAEG installed successfully.[0m
+
+  Dashboard    : https://host.zerotier.my.id:3903 (public - password login + HTTPS)
+  MCP endpoint : https://host.zerotier.my.id:3902/mcp
+  Config       : /etc/uaeg/config.json
+  Data         : /var/lib/uaeg
+  TLS mode     : certbot
+  Service      : systemctl status uaeg
+
+Next steps:
+  1. Create an agent key:
+       uaeg generate --name "Claude"
+  2. Configure your hosted agent's MCP connector:
+       URL:                  https://host.zerotier.my.id:3902/mcp
+       Authentication:       Bearer token (the generated uaeg_... secret)
+  3. Verify health:
+       uaeg doctor
+  4. Future upgrades (this same file, downloaded once):
+       sudo bash install.sh            # verified safe upgrade
+       sudo bash install.sh --check    # status + available update
+
+[1;33mWARNING:[0m self-signed TLS: most hosted platforms will reject this certificate. Use --domain (Let's Encrypt) for real agent connections.
+Docs: https://github.com/smahud/uaeg/tree/main/docs
+
+[8] cert: notAfter=Feb  5 17:20:21 2027 GMT
+[8] zombies: 0
+[8] dashboard anon API: HTTP 401
+[8] service: ['active', 'MainPID=30588']
+[4b] NEW SSE-writer ERROR entries since 04:18 (after 2 client disconnects): 0
+[3b] F5 job output: '' status=running exit=None
+  + Exception Group Traceback (most recent call last):
+  |   File "/home/z/my-project/scripts/deployE_verify.py", line 178, in <module>
+  |     asyncio.run(main())
+  |   File "/home/z/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 195, in run
+  |     return runner.run(main)
+  |            ^^^^^^^^^^^^^^^^
+  |   File "/home/z/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 118, in run
+  |     return self._loop.run_until_complete(task)
+  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |   File "/home/z/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 691, in run_until_complete
+  |     return future.result()
+  |            ^^^^^^^^^^^^^^^
+  |   File "/home/z/my-project/scripts/deployE_verify.py", line 158, in main
+  |     async with UaegClient() as c3:
+  |                ^^^^^^^^^^^^
+  |   File "/home/z/my-project/scripts/mcp_lib.py", line 96, in __aexit__
+  |     await self._http_cm.__aexit__(exc_type, exc, tb)
+  |   File "/home/z/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 231, in __aexit__
+  |     await self.gen.athrow(value)
+  |   File "/home/z/.venv/lib/python3.12/site-packages/mcp/client/streamable_http.py", line 717, in streamablehttp_client
+  |     async with streamable_http_client(
+  |                ^^^^^^^^^^^^^^^^^^^^^^^
+  |   File "/home/z/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 231, in __aexit__
+  |     await self.gen.athrow(value)
+  |   File "/home/z/.venv/lib/python3.12/site-packages/mcp/client/streamable_http.py", line 647, in streamable_http_client
+  |     async with anyio.create_task_group() as tg:
+  |                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  |   File "/home/z/.venv/lib/python3.12/site-packages/anyio/_backends/_asyncio.py", line 799, in __aexit__
+  |     raise BaseExceptionGroup(
+  | ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/home/z/.venv/lib/python3.12/site-packages/mcp/client/streamable_http.py", line 670, in streamable_http_client
+    |     yield (
+    |   File "/home/z/.venv/lib/python3.12/site-packages/mcp/client/streamable_http.py", line 722, in streamablehttp_client
+    |     yield streams
+    |   File "/home/z/my-project/scripts/deployE_verify.py", line 170, in main
+    |     assert "F5_SCOPE_JOB_DONE" in p.get("data", "")
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | AssertionError
+    +------------------------------------
