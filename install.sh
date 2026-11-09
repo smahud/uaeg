@@ -382,6 +382,42 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # ----------------------------------------------------------------------
+# Self-update protection (audit 2026-11-10, finding F4)
+# ----------------------------------------------------------------------
+# When started from INSIDE the UAEG service (an agent ran this installer via
+# shell_exec / a background job), we sit in the unit's systemd cgroup and the
+# service stop performed by this installer (or by the verified updater it
+# launches) would kill THIS process too (KillMode=control-group; setsid does
+# NOT escape a cgroup). Mutating modes re-exec into a transient systemd scope
+# - a separate cgroup that survives the service stop - or refuse loudly.
+# Read-only modes (status, check, dry-run) never touch the service.
+selfupdate_guard() {
+  [[ $NO_SERVICE -eq 1 ]] && return 0
+  case "$MODE_CMD" in status|check|dry-run) return 0 ;; esac
+  local cg=""
+  cg="$(cat "${UAEG_CGROUP_FILE:-/proc/self/cgroup}" 2>/dev/null)" || return 0
+  case "$cg" in
+    *"/${SERVICE_NAME}.service"*)
+      # Re-exec needs a REAL script file (SELF_FILE is the resolved
+      # BASH_SOURCE); a stdin/eval invocation cannot be re-executed safely.
+      if command -v systemd-run >/dev/null 2>&1 && [[ -f "$SELF_FILE" ]]; then
+        say "self-update: running inside the ${SERVICE_NAME}.service cgroup;"
+        say "self-update: re-executing in a transient systemd scope so the operation survives the service stop"
+        exec systemd-run --scope --quiet --unit="uaeg-selfupdate-$$" bash "$SELF_FILE" "$@"
+      fi
+      die "refusing to run a mutating operation from inside the ${SERVICE_NAME}.service
+cgroup: stopping the service would kill this installer mid-flight (systemd
+KillMode=control-group; setsid does not escape the cgroup) and it cannot be
+re-executed into a detached scope (no systemd-run, or the script is not
+running from a file). Run it from an operator shell (SSH/console) instead.
+   (nothing was changed)"
+      ;;
+  esac
+  return 0
+}
+selfupdate_guard "$@"
+
+# ----------------------------------------------------------------------
 # Existing-installation detection (for the unified dispatch only; the
 # install flow below keeps its own detection. Priority mirrors updater.sh:
 # systemd unit > /usr/local/bin/uaeg symlink > default marker.)
@@ -1324,6 +1360,12 @@ print(cfg["dashboard"]["port"])
 print(cfg.get("public_host", ""))
 print(cfg.get("dashboard", {}).get("bind", "127.0.0.1"))
 print(str(cfg.get("dashboard", {}).get("tls", False)).lower())
+# Effective TLS mode from the (possibly preserved) configuration - the
+# installer's own $TLS_MODE variable only reflects what THIS invocation
+# requested, never what an upgrade kept in place (audit 2026-11-10, F3:
+# preserved-certbot upgrades used to be summarized as "self-signed").
+tls = cfg.get("tls") if isinstance(cfg.get("tls"), dict) else {}
+print(tls.get("mode", "self-signed"))
 PY
 )" || die "could not read the effective configuration"
 EFFECTIVE_MCP_PORT="$(echo "$EFFECTIVE_PORTS" | sed -n 1p)"
@@ -1331,6 +1373,10 @@ EFFECTIVE_DASH_PORT="$(echo "$EFFECTIVE_PORTS" | sed -n 2p)"
 EFFECTIVE_HOST="$(echo "$EFFECTIVE_PORTS" | sed -n 3p)"
 EFFECTIVE_DASH_BIND="$(echo "$EFFECTIVE_PORTS" | sed -n 4p)"
 EFFECTIVE_DASH_TLS="$(echo "$EFFECTIVE_PORTS" | sed -n 5p)"
+EFFECTIVE_TLS_MODE="$(echo "$EFFECTIVE_PORTS" | sed -n 6p)"
+# Fall back to the requested mode only when the read-back yielded nothing
+# (should not happen: the config file is always written before this point).
+[[ -z "$EFFECTIVE_TLS_MODE" ]] && EFFECTIVE_TLS_MODE="$TLS_MODE"
 
 if [[ $NO_SERVICE -eq 0 ]]; then
   say "verifying service health"
@@ -1427,7 +1473,7 @@ esac
 echo "  MCP endpoint : https://${EFFECTIVE_HOST}:${EFFECTIVE_MCP_PORT}/mcp"
 echo "  Config       : $CONFIG_FILE"
 echo "  Data         : $DATA_DIR"
-echo "  TLS mode     : $TLS_MODE"
+echo "  TLS mode     : $EFFECTIVE_TLS_MODE"
 [[ $NO_SERVICE -eq 0 ]] && echo "  Service      : systemctl status ${SERVICE_NAME}"
 echo
 echo "Next steps:"

@@ -377,7 +377,10 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"  service      : {_service_state()}")
     bind = cfg.mcp.bind if cfg.mcp.bind not in ("0.0.0.0", "::") else "127.0.0.1"
     listening = _port_listening(bind, cfg.mcp.port)
-    print(f"  MCP port     : {cfg.mcp.port} ({'listening' if listening else 'NOT listening'})")
+    print(
+        f"  MCP          : {cfg.mcp.bind}:{cfg.mcp.port} "
+        f"({'listening' if listening else 'NOT listening'})"
+    )
     dash_listening = _port_listening(cfg.dashboard.bind, cfg.dashboard.port)
     print(
         f"  dashboard    : {cfg.dashboard.bind}:{cfg.dashboard.port} "
@@ -468,12 +471,27 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     # service & listeners
     state = _service_state()
     check("systemd service", state == "active", state)
-    bind = cfg.mcp.bind if cfg.mcp.bind not in ("0.0.0.0", "::") else "127.0.0.1"
-    check("MCP listener", _port_listening(bind, cfg.mcp.port), f"{bind}:{cfg.mcp.port}")
+    # Probe via loopback when the listener is wildcard-bound (a connection
+    # test needs a concrete address), but DISPLAY the configured bind so the
+    # operator sees the real exposure - 0.0.0.0 means every bearer key
+    # holder on the network can reach full shell execution (audit
+    # 2026-11-10, finding F2: doctor used to print the probe address
+    # 127.0.0.1 even for public wildcard binds, hiding the exposure).
+    probe = "127.0.0.1" if cfg.mcp.bind in ("0.0.0.0", "::", "*") else cfg.mcp.bind
+    mcp_detail = f"{cfg.mcp.bind}:{cfg.mcp.port}"
+    if probe != cfg.mcp.bind:
+        mcp_detail += f" (probed via {probe})"
+    check("MCP listener", _port_listening(probe, cfg.mcp.port), mcp_detail)
+    if cfg.mcp.bind in ("0.0.0.0", "::", "*"):
+        print(
+            "        ! MCP listener is bound to ALL interfaces (public): any "
+            "holder of a valid agent key can reach shell execution. Keep keys "
+            "secret and revoked keys are refused per request."
+        )
     check("dashboard listener", _port_listening(cfg.dashboard.bind, cfg.dashboard.port),
           f"{cfg.dashboard.bind}:{cfg.dashboard.port}")
 
-    health = _http_get_json(f"https://{bind}:{cfg.mcp.port}/healthz")
+    health = _http_get_json(f"https://{probe}:{cfg.mcp.port}/healthz")
     check("health endpoint", bool(health),
           f"status={health.get('status') if health else 'unreachable'}")
 

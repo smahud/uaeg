@@ -97,8 +97,16 @@ survive service restarts with honest state. The mechanism:
 
 1. The service allocates a `job_id` and creates `/var/lib/uaeg/jobs/<job_id>/`.
 2. It launches a tiny shim (shipped inside the package as `uaeg._jobwrap`) in a **detached
-   process group** (`setsid`), so the job is not part of UAEG's process tree. Killing or
-   restarting UAEG does not kill the job.
+   process group** (`setsid`), so the job is not part of UAEG's process tree. When the
+   service itself runs under systemd (standard install), the shim is additionally placed in
+   its own **transient systemd scope** (`systemd-run --scope --unit=uaeg-job-<id>`):
+   `setsid` alone does NOT escape the unit's cgroup, and the shipped unit uses the systemd
+   default `KillMode=control-group`, which kills *every* process in the cgroup on
+   `systemctl stop/restart uaeg`. The scope is a separate cgroup, so the job survives the
+   service stop/restart as documented. A one-shot capability probe at first use detects
+   whether scopes can be created; without systemd, or when the probe fails, the legacy
+   direct spawn is used and a warning states that jobs will not survive service restarts
+   on that host (live audit 2026-11-10).
 3. The shim runs the command with stdout/stderr redirected to the job's `stdout` and
    `stderr` files, writes its own pid to `pid`, and writes the final exit code to `exit`
    when the command finishes.

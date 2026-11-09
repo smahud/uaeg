@@ -81,6 +81,32 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
         """The calling agent's key_id, for key-scoped ownership checks."""
         return key.get("key_id") if key else None
 
+    def _require_key(ctx):
+        """Resolve the calling key, failing CLOSED when it is not possible.
+
+        Over the wire, BearerAuthMiddleware guarantees a valid, active key on
+        every /mcp request. A None identity inside a tool call therefore means
+        something anomalous happened between authentication and execution
+        (key revoked mid-request, request-context failure, transient database
+        error). The managers treat owner_key_id=None as "operator level"
+        (dashboard/CLI see everything), so an unresolved identity MUST NOT be
+        forwarded as None - that would silently hand an agent operator-level
+        access to other keys' jobs and sessions. Deny instead
+        (live audit 2026-11-10, finding F1).
+
+        Returns (key, None) on success or (None, denial_payload) on failure.
+        """
+        key = _key(ctx)
+        if key is None:
+            return None, {
+                "ok": False,
+                "error": (
+                    "calling agent key could not be resolved (revoked during the "
+                    "request or an internal error); the call was denied - retry it"
+                ),
+            }
+        return key, None
+
     def _audit(
         ctx, tool: str, status: str, meta: dict | None = None,
         exit_code: int | None = None, duration_ms: int | None = None,
@@ -137,11 +163,13 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
             truncated flags and total byte counts.
             Background: job_id, pid, status='running'.
         """
-        key = _key(ctx)
+        key, denied = _require_key(ctx)
         started = time.monotonic()
         cwd = cwd or _default_cwd()
         meta = {"command": command, "cwd": cwd, "background": background}
-
+        if denied:
+            _audit(ctx, "shell_exec", "denied", meta, key=None)
+            return denied
         denied = runtime.check_restricted_cwd(cwd, key)
         if denied:
             _audit(ctx, "shell_exec", "denied", meta, key=key)
@@ -218,9 +246,12 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
             cols: Initial terminal width in columns.
             rows: Initial terminal height in rows.
         """
-        key = _key(ctx)
+        key, denied = _require_key(ctx)
         cwd = cwd or _default_cwd()
         meta = {"command": command or "(interactive shell)", "cwd": cwd}
+        if denied:
+            _audit(ctx, "shell_open", "denied", meta, key=None)
+            return denied
         denied = runtime.check_restricted_cwd(cwd, key)
         if denied:
             _audit(ctx, "shell_open", "denied", meta, key=key)
@@ -255,7 +286,10 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
             data: Raw input text to write to the terminal.
             add_newline: Append a trailing newline to the input.
         """
-        key = _key(ctx)
+        key, denied = _require_key(ctx)
+        if denied:
+            _audit(ctx, "shell_input", "denied", {"session_id": session_id}, key=None)
+            return denied
         try:
             result = runtime.sessions.input(
                 session_id, data, add_newline, owner_key_id=_owner(key)
@@ -287,12 +321,15 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
                 retained output).
             limit_bytes: Maximum bytes to return per call.
         """
+        key, denied = _require_key(ctx)
+        if denied:
+            return denied
         try:
             # Clamp at the tool boundary (B-8): negative limits previously
             # produced a backwards cursor and re-delivered old output.
             limit_bytes = max(0, min(int(limit_bytes), 8 * 1024 * 1024))
             return runtime.sessions.output(
-                session_id, since_seq, limit_bytes, owner_key_id=_owner(_key(ctx))
+                session_id, since_seq, limit_bytes, owner_key_id=_owner(key)
             )
         except SessionError as exc:
             return {"ok": False, "error": str(exc), "session_id": session_id}
@@ -306,9 +343,12 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
             cols: New terminal width in columns (2..1000).
             rows: New terminal height in rows (2..1000).
         """
+        key, denied = _require_key(ctx)
+        if denied:
+            return denied
         try:
             return runtime.sessions.resize(
-                session_id, cols, rows, owner_key_id=_owner(_key(ctx))
+                session_id, cols, rows, owner_key_id=_owner(key)
             )
         except SessionError as exc:
             return {"ok": False, "error": str(exc), "session_id": session_id}
@@ -320,7 +360,10 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
         Args:
             session_id: Session identifier from shell_open.
         """
-        key = _key(ctx)
+        key, denied = _require_key(ctx)
+        if denied:
+            _audit(ctx, "shell_close", "denied", {"session_id": session_id}, key=None)
+            return denied
         try:
             result = await runtime.sessions.close(
                 session_id, owner_key_id=_owner(key)
@@ -337,7 +380,10 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
 
         Returns the CALLING KEY's sessions (including any that exited within
         the last minute, with their exit codes)."""
-        owner = _owner(_key(ctx))
+        key, denied = _require_key(ctx)
+        if denied:
+            return denied
+        owner = _owner(key)
         sessions = runtime.sessions.list()
         if owner is not None:
             sessions = [
@@ -359,8 +405,11 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
         Args:
             job_id: Job identifier from shell_exec(background=true).
         """
+        key, denied = _require_key(ctx)
+        if denied:
+            return denied
         try:
-            job = runtime.jobs.status(job_id, owner_key_id=_owner(_key(ctx)))
+            job = runtime.jobs.status(job_id, owner_key_id=_owner(key))
         except JobError as exc:
             return {"ok": False, "error": str(exc)}
         if not job:
@@ -383,9 +432,12 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
             offset: Byte offset from a previous call (0 = from the start).
             limit: Maximum bytes to return per call.
         """
+        key, denied = _require_key(ctx)
+        if denied:
+            return denied
         try:
             return runtime.jobs.output(
-                job_id, stream, offset, limit, owner_key_id=_owner(_key(ctx))
+                job_id, stream, offset, limit, owner_key_id=_owner(key)
             )
         except JobError as exc:
             return {"ok": False, "error": str(exc), "job_id": job_id}
@@ -407,8 +459,11 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
                 timeout_seconds = max(0.0, min(float(timeout_seconds), 600.0))
             except (TypeError, ValueError):
                 timeout_seconds = 30.0
+            key, denied = _require_key(ctx)
+            if denied:
+                return denied
             job = await runtime.jobs.wait(
-                job_id, timeout_seconds, owner_key_id=_owner(_key(ctx))
+                job_id, timeout_seconds, owner_key_id=_owner(key)
             )
         except JobError as exc:
             return {"ok": False, "error": str(exc)}
@@ -421,7 +476,10 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
         Args:
             job_id: Job identifier from shell_exec(background=true).
         """
-        key = _key(ctx)
+        key, denied = _require_key(ctx)
+        if denied:
+            _audit(ctx, "job_cancel", "denied", {"job_id": job_id}, key=None)
+            return denied
         try:
             job = await runtime.jobs.cancel(job_id, owner_key_id=_owner(key))
             _audit(ctx, "job_cancel", "ok", {"job_id": job_id}, key=key)
@@ -445,7 +503,10 @@ def register_tools(mcp: FastMCP, runtime: Runtime) -> None:
             limit = max(0, min(int(limit), 500))
         except (TypeError, ValueError):
             limit = 50
-        return {"jobs": runtime.jobs.list(limit=limit, owner_key_id=_owner(_key(ctx)))}
+        key, denied = _require_key(ctx)
+        if denied:
+            return denied
+        return {"jobs": runtime.jobs.list(limit=limit, owner_key_id=_owner(key))}
 
     # ==================================================================
     # server info
