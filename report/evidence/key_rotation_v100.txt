@@ -1,0 +1,23 @@
+== v1.0.0 ROTATION CROSS-CHECKS 2026-11-10T01:33:21Z ==
+
+-- v1.0.0 manifest vs OLD key 4 (expect: FAIL - documented refusal) --
+Signature Verification Failure
+-- v1.0.0 manifest vs NEW key 5 (expect: OK) --
+Signature Verified Successfully
+-- historical v0.4.1 manifest vs key 4 (expect: OK - pins/downgrades keep verifying) --
+Signature Verified Successfully
+-- historical v0.4.0 manifest vs key 3 (expect: OK) --
+Signature Verified Successfully
+-- historical v0.3.5 manifest vs key 2 (expect: OK) --
+Signature Verified Successfully
+-- historical v0.3.3 manifest vs key 1 (expect: OK) --
+Signature Verified Successfully
+
+-- keyring inventory (embedded key count / release/keys) --
+install.sh:5
+upgrade.sh:5
+uaeg-release-1.pub.pem
+uaeg-release-2.pub.pem
+uaeg-release-3.pub.pem
+uaeg-release-4.pub.pem
+uaeg-release-5.pub.pem

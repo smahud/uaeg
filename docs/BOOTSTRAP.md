@@ -154,8 +154,8 @@ Rotation is an **exceptional, operator-visible event**, never silent:
    TROUBLESHOOTING.md; it is NOT part of normal upgrade flow.
 
 Current keys: `uaeg-release-1` (historical: releases <= v0.3.3),
-`uaeg-release-2` (v0.3.4 - v0.3.5), `uaeg-release-3` (v0.4.0) and
-`uaeg-release-4` (v0.4.1+).
+`uaeg-release-2` (v0.3.4 - v0.3.5), `uaeg-release-3` (v0.4.0),
+`uaeg-release-4` (v0.4.1) and `uaeg-release-5` (v1.0.0+).
 Fingerprints (sha256 of the PEM, first 16 hex): see
 `bash upgrade.sh --bootstrap-info`.
 
@@ -204,6 +204,19 @@ the existing configuration is accepted BEFORE anything is replaced, and
 all configuration-touching Python steps run with a sanitized interpreter
 (`env -u PYTHONPATH … -P`) whose loaded `uaeg` origin is asserted. See
 docs/TROUBLESHOOTING.md and report/ROOT_CAUSE_ANALYSIS.md.
+
+**Rotation 4 -> 5 at v1.0.0** (bootstrap keyring v5): same operational
+shape as the previous rotations — the publisher's `uaeg-release-4`
+private key is no longer available, so v1.0.0+ is signed with
+`uaeg-release-5` (rotation authorized by the operator on 2026-11-10).
+The keyrings in `install.sh` and `upgrade.sh` trust ALL FIVE keys
+(historical releases keep verifying for pins/downgrades). Consequences
+per operator state:
+
+- **Bootstrap downloaded during v0.3.4 - v0.4.1 (keyring = keys 1-4)** —
+  will refuse v1.0.0+ manifests with the explicit rotation message;
+  perform the ONE-TIME refresh above.
+- **Fresh downloads (v1.0.0+)** — trust all five keys; no action needed.
 
 ## Migration from v0.3.2 - v0.3.5 installs
 

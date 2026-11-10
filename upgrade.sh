@@ -55,10 +55,15 @@ set -uo pipefail
 # private key is no longer available to the publisher either). The keyring
 # still trusts ALL THREE keys so manifests of historical releases keep
 # verifying for --version pins/downgrades.
+# v5: rotated to the uaeg-release-5 signing key at v1.0.0 (the uaeg-release-4
+# private key is no longer available to the publisher either - same
+# operational shape as rotations 1->2, 2->3 and 3->4, operator-authorized).
+# The keyring still trusts ALL FIVE keys so manifests of historical
+# releases keep verifying for --version pins/downgrades.
 # ----------------------------------------------------------------------
-BOOTSTRAP_VERSION="4"
+BOOTSTRAP_VERSION="5"
 BOOTSTRAP_INTERFACE="1"        # max updater interface this bootstrap speaks
-BOOTSTRAP_KEY_IDS="uaeg-release-1,uaeg-release-2,uaeg-release-3,uaeg-release-4"
+BOOTSTRAP_KEY_IDS="uaeg-release-1,uaeg-release-2,uaeg-release-3,uaeg-release-4,uaeg-release-5"
 
 # ----------------------------------------------------------------------
 # Release channel (env overrides exist for mirrors and the contract test
@@ -86,6 +91,9 @@ MCowBQYDK2VwAyEABBIDBLITvWPB+YC0iDMYvVi3r/0gqdbaAGhy8CLuC/Q=
 -----END PUBLIC KEY-----"
 _TRUSTED_KEY_4="-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEA2Ei9ZnJs97L3KzRQwjdASwGbp/ooWSr9retQyZj7qcU=
+-----END PUBLIC KEY-----"
+_TRUSTED_KEY_5="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAVXitrX+/jxv0DGBhQl2WViMnZ7rHYmhTIsMcXmgyFYo=
 -----END PUBLIC KEY-----"
 # ---- TRUSTED KEYRING END ----
 
@@ -199,7 +207,7 @@ if [[ "$BOOT_MODE" == "info" ]]; then
 UAEG upgrade bootstrap
   bootstrap version : $BOOTSTRAP_VERSION
   updater interface : v$BOOTSTRAP_INTERFACE (max supported)
-  trusted keys      : $BOOTSTRAP_KEY_IDS (fingerprints $(_fp "$_TRUSTED_KEY_1"), $(_fp "$_TRUSTED_KEY_2"), $(_fp "$_TRUSTED_KEY_3"), $(_fp "$_TRUSTED_KEY_4"))
+  trusted keys      : $BOOTSTRAP_KEY_IDS (fingerprints $(_fp "$_TRUSTED_KEY_1"), $(_fp "$_TRUSTED_KEY_2"), $(_fp "$_TRUSTED_KEY_3"), $(_fp "$_TRUSTED_KEY_4"), $(_fp "$_TRUSTED_KEY_5"))
   release channel   : $RELEASE_API_BASE
   this file         : $BOOTSTRAP_FILE (sha256 ${BOOTSTRAP_SHA_BEFORE:0:16}…)
   contract          : docs/UPGRADE_CONTRACT.md (v3), docs/BOOTSTRAP.md
@@ -225,6 +233,7 @@ printf '%s\n' "$_TRUSTED_KEY_1" > "$KEY_DIR/1.pub"
 printf '%s\n' "$_TRUSTED_KEY_2" > "$KEY_DIR/2.pub"
 printf '%s\n' "$_TRUSTED_KEY_3" > "$KEY_DIR/3.pub"
 printf '%s\n' "$_TRUSTED_KEY_4" > "$KEY_DIR/4.pub"
+printf '%s\n' "$_TRUSTED_KEY_5" > "$KEY_DIR/5.pub"
 
 verify_manifest_signature() {  # $1=manifest $2=signature ; 0 = trusted
   local k

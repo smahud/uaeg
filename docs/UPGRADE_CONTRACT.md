@@ -385,6 +385,20 @@ mencatat `3` untuk kompatibilitas pembaca lama — klausul v4 tidak mengubah
 format RECORD). Perubahan klausul harus: (1) menaikkan versi kontrak,
 (2) memperbarui test suite di commit yang sama, (3) dicatat di `report/`.
 
+### v5 (UAEG v1.0.0)
+
+- **Rotasi kunci penandatanganan 4 → 5** (`uaeg-release-5`, bootstrap
+  keyring v5, `BOOTSTRAP_VERSION` 5): kunci privat `uaeg-release-4` tidak
+  lagi tersedia bagi publisher — bentuk operasional yang sama dengan rotasi
+  1→2 (v0.3.4), 2→3 (v0.4.0) dan 3→4 (v0.4.1); dirotasi dengan otorisasi
+  operator 2026-11-10. Keyring (`install.sh` dan `upgrade.sh`) kini
+  mempercayai LIMA kunci sehingga manifest rilis historis tetap
+  terverifikasi untuk pin/downgrade. Bootstrap lama (keyring 1-4) akan
+  MENOLAK manifest v1.0.0+ dengan pesan rotasi eksplisit — pemulihannya
+  satu kali unduh ulang `install.sh` (prosedur istimewa, BOOTSTRAP.md).
+  Tidak ada perubahan perilaku aplikasi; konten patch F1–F8 sudah ter-deploy
+  live sebagai `0.4.1+audit1` (target_git_sha `8369e6e`).
+
 ### v4.1 (UAEG v0.4.1)
 
 - **Perluasan U-12 ke jalur `--repair` (insiden produksi 2026-11-08):**

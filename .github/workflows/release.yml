@@ -6,8 +6,9 @@ name: Release
 #   install.sh                        verified one-line installer
 #   upgrade.sh                        the PERMANENT bootstrap (stable, downloaded once)
 #   uaeg-updater-<version>.sh         the versioned safe-upgrade updater
-#   uaeg-manifest.json (+ .sig)       signed release manifest (Ed25519; uaeg-release-2
-#                                      since v0.3.4, uaeg-release-1 historically)
+#   uaeg-manifest.json (+ .sig)       signed release manifest (Ed25519; uaeg-release-5
+#                                      since v1.0.0, uaeg-release-4 v0.4.1, uaeg-release-3
+#                                      v0.4.0, uaeg-release-2 v0.3.4-v0.3.5, uaeg-release-1 historically)
 #   *.sha256                          sidecars for human verification
 #
 # The manifest and signature are pre-generated and committed by
@@ -81,7 +82,7 @@ jobs:
           - \`install.sh\` + \`.sha256\` — verified one-line installer (docs/INSTALL.md, Option B). Pins $GITHUB_REF_NAME.
           - \`upgrade.sh\` + \`.sha256\` — the PERMANENT upgrade bootstrap: download ONCE, reuse for every future release (\`sudo bash upgrade.sh\`; docs/UPGRADE_CONTRACT.md, contract v3).
           - \`uaeg-updater-${VERSION}.sh\` + \`.sha256\` — the versioned safe-upgrade updater (fetched and verified automatically by the bootstrap).
-          - \`uaeg-manifest.json\` + \`.sig\` — Ed25519-signed release manifest (key uaeg-release-2 since v0.3.4, uaeg-release-1 for releases <= v0.3.3; verified by every bootstrap before anything is executed).
+          - \`uaeg-manifest.json\` + \`.sig\` — Ed25519-signed release manifest (key uaeg-release-5 since v1.0.0 — keyring rotations are operator-visible events, see docs/BOOTSTRAP.md; verified by every bootstrap before anything is executed).
 
           One-time setup for existing installations:
           \`\`\`bash

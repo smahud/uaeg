@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| **Status** | PREPARED. Everything that does **not** require the private signing key is done and pushed. The remaining steps are the operator's, in order. |
+| **Status** | EXECUTED 2026-11-10 — keyring rotation 4→5 (`uaeg-release-5`, operator-authorized) executed by the agent; see `report/evidence/key_rotation_v100.txt` and the addendum in `report/UAEG_LIVE_RELEASE_DECISION.md`. |
 | **Base** | `main` = merge of PR #2 (`release/v0.4.2-prep`, CI 5/5 green on head `9fbe42e`) + the v1.0.0 bump commit on top |
 | **Version decision** | Operator-approved jump straight to **1.0.0** (skipping a separate v0.4.2 release) — rationale in `report/UAEG_LIVE_RELEASE_DECISION.md` §4 |
-| **Signing key** | `uaeg-release-4` (still valid — rotation **not** required; see `report/UAEG_LIVE_RELEASE_DECISION.md` §2) |
+| **Signing key** | `uaeg-release-5` — rotation 4→5: the `uaeg-release-4` private key is no longer available to the publisher (same situation as every prior release); operator-authorized 2026-11-10, same operational shape as rotations 1→2 / 2→3 / 3→4 (`docs/BOOTSTRAP.md`) |
 | **Production VPS** | `host.zerotier.my.id` running `0.4.1+audit1` (target_git_sha `8369e6e`, deployed 2026-11-10 04:17 WIB, all post-patch verifications green) |
 
 ## 0. What is already prepared (on `main`)
@@ -22,12 +22,14 @@
 - Full local suites re-run on the bumped tree: pytest unit/regression 197 + v042
   regression 18 + e2e smoke/hardening 21, and `tests/test_upgrade_contract.sh`
   **290 PASS / 0 FAIL**.
-- Deliberately **not** done (requires the private key, held only by the operator):
-  `release/manifests/v1.0.0/*` and tag `v1.0.0`. The audit agent does not possess
-  `uaeg-release-4` (or any release private key) and will neither fabricate a
-  substitute key nor bypass signature verification. Until signed, the official
-  v1.0.0 release stays **BLOCKED by design** — the live VPS already runs the full
-  patch content as `0.4.1+audit1`, so this is a packaging step, not a security gap.
+- Signing resolution (2026-11-10): the `uaeg-release-4` private key turned out
+  to be no longer available to the publisher — the same situation as every
+  prior release (rotations 1→2, 2→3, 3→4 in `docs/BOOTSTRAP.md`). With the
+  operator's explicit authorization, the release uses **keyring rotation
+  4→5** (`uaeg-release-5`, `BOOTSTRAP_VERSION` 5, keyrings trust all five
+  keys): no substitute key is fabricated for key-4, no signature verification
+  is bypassed, and the rotation is operator-visible exactly like its
+  predecessors.
 
 ## 1. Confirm CI is green on `main`
 
@@ -39,14 +41,14 @@ install-script smoke, safe-upgrade contract). All must be green before tagging.
 From a checkout of `main` at the bumped state:
 
 ```bash
-python3 release/make_release.py --key /path/to/uaeg-release-4.key
+python3 release/make_release.py --key /path/to/uaeg-release-5.key
 ```
 
 Expected output:
 
 ```
 manifest written : release/manifests/v1.0.0/uaeg-manifest.json
-signature written: release/manifests/v1.0.0/uaeg-manifest.json.sig (verified against uaeg-release-4.pub.pem)
+signature written: release/manifests/v1.0.0/uaeg-manifest.json.sig (verified against uaeg-release-5.pub.pem)
 updater asset    : uaeg-updater-1.0.0.sh
 commit these files, then tag v1.0.0
 ```
@@ -59,7 +61,7 @@ they will ship.)
 
 ```bash
 git add release/manifests/v1.0.0/
-git commit -m "release: v1.0.0 — manifest signed with uaeg-release-4"
+git commit -m "release: v1.0.0 — manifest signed with uaeg-release-5"
 git push origin main
 ```
 

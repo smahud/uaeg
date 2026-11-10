@@ -138,6 +138,9 @@ MCowBQYDK2VwAyEABBIDBLITvWPB+YC0iDMYvVi3r/0gqdbaAGhy8CLuC/Q=
 _TRUSTED_KEY_4="-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEA2Ei9ZnJs97L3KzRQwjdASwGbp/ooWSr9retQyZj7qcU=
 -----END PUBLIC KEY-----"
+_TRUSTED_KEY_5="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAVXitrX+/jxv0DGBhQl2WViMnZ7rHYmhTIsMcXmgyFYo=
+-----END PUBLIC KEY-----"
 # ---- TRUSTED KEYRING END ----
 
 # ----------------------------------------------------------------------
@@ -654,6 +657,7 @@ run_bootstrap_mode() {  # $1 = upgrade | check | dry-run | rollback
     printf '%s\n' "$_TRUSTED_KEY_2" > "$BOOTSTRAP_WORK/trusted/2.pub"
     printf '%s\n' "$_TRUSTED_KEY_3" > "$BOOTSTRAP_WORK/trusted/3.pub"
     printf '%s\n' "$_TRUSTED_KEY_4" > "$BOOTSTRAP_WORK/trusted/4.pub"
+    printf '%s\n' "$_TRUSTED_KEY_5" > "$BOOTSTRAP_WORK/trusted/5.pub"
     fetch_verified_updater "$target_tag" "$target_version"
     updater_path="$UPDATER_PATH"
     manifest_path="$MANIFEST_PATH"

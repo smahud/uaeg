@@ -138,7 +138,11 @@ sudo bash install.sh --rollback                # restore the latest upgrade back
 > scopes and survive service restarts under systemd (F5, AT-11 verified live), plus log
 > hygiene (F6/F7) and a branch-agnostic upgrade-contract harness (F8). Full audit trail:
 > `report/UAEG_LIVE_FINDINGS_AND_FIXES.md` (and the live evidence pack under
-> `report/evidence/live-audit-2026-11-10/`).
+> `report/evidence/live-audit-2026-11-10/`). Releases are signed with
+> `uaeg-release-5` (keyring rotation 4→5 — the `uaeg-release-4` private key is
+> no longer available to the publisher; same operator-visible procedure as every
+> prior rotation, see `docs/BOOTSTRAP.md`; fresh downloads trust all five keys,
+> historical manifests keep verifying).
 
 > **v0.4.1 note (production-incident fix + release-key rotation 3→4):** the installer now
 > refuses — before touching anything — to `--repair` from an older source tree over a newer

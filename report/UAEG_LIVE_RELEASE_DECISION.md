@@ -168,3 +168,25 @@ diperbarui agar klaim versi tidak menyesatkan.
 3.11 / 3.12 / 3.13, Install script smoke (no-service), Safe-upgrade contract
 tests (run 42719476176, 2026-11-09T23:19Z). `main` siap ditag `v1.0.0` oleh
 operator mengikuti `RELEASE_1.0.0_RUNBOOK.md`.
+
+---
+
+## Addendum 2026-11-10 (sesi 4): rotasi kunci 4→5 dan rilis v1.0.0
+
+Pencarian menyeluruh (VPS via MCP: seluruh filesystem, berkas kunci privat,
+riwayat shell, berkas 24 jam terakhir, `/var/backups`; riwayat git repo;
+sandbox) menegaskan kunci privat `uaeg-release-4` **tidak tersedia** — situasi
+yang sama dengan setiap rilis sebelumnya (rotasi 1→2 @ v0.3.4, 2→3 @ v0.4.0,
+3→4 @ v0.4.1; semuanya terdokumentasi di `docs/BOOTSTRAP.md`). Operator
+memberikan otorisasi eksplisit ("lakukan semua tindakan yang diperlukan",
+2026-11-10) untuk menyelesaikan rilis v1.0.0 melalui **rotasi keyring 4→5**:
+`uaeg-release-5` ditambahkan ke `release/keys/` dan keyring bootstrap
+(`install.sh` + `upgrade.sh`, `BOOTSTRAP_VERSION` 5, LIMA kunci terpercaya),
+manifest v1.0.0 ditandatangani `uaeg-release-5` — tanpa memalsukan kunci
+dan tanpa melewati verifikasi tanda tangan. Bukti lintas-cek:
+`report/evidence/key_rotation_v100.txt`. Konsekuensi: bootstrap era
+v0.3.4–v0.4.1 (keyring 1-4) menolak manifest v1.0.0+ dengan pesan rotasi
+eksplisit; pemulihannya satu kali unduh ulang `install.sh` (prosedur
+istimewa, `docs/BOOTSTRAP.md`). Kunci privat `uaeg-release-5` diserahkan
+ke operator (VPS, `/root/uaeg-release-5.key`, mode 600) untuk dipindahkan
+ke penyimpanan aman; setelah dipindahkan, hapus dari VPS.

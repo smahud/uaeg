@@ -1,3 +1,44 @@
+# Patch Changelog — v0.4.1 → v1.0.0
+
+**Date:** 2026-11-10 · Fokus: rilis stable pertama (milestone
+operator-approved) via **rotasi kunci penandatanganan 4→5** — kunci privat
+`uaeg-release-4` tidak lagi tersedia bagi publisher (bentuk operasional
+sama dengan rotasi 1→2, 2→3, 3→4; `docs/BOOTSTRAP.md`; otorisasi operator
+2026-11-10). Tidak ada perubahan perilaku aplikasi; konten patch F1–F8
+sudah ter-deploy live sebagai `0.4.1+audit1` (target_git_sha `8369e6e`).
+
+## A. Rotasi keyring (operator-visible)
+
+### `install.sh` / `upgrade.sh`
+- `_TRUSTED_KEY_5` (`uaeg-release-5`) ditambahkan ke keyring ter-embed;
+  kunci publik baru di `release/keys/uaeg-release-5.pub.pem`
+  (fingerprint `b8e0460b6149a429`).
+- `upgrade.sh`: `BOOTSTRAP_VERSION` 4→5; `BOOTSTRAP_KEY_IDS` +
+  `uaeg-release-5`; fingerprint key-5 di `--bootstrap-info`;
+  `KEY_DIR/5.pub`.
+- `install.sh`: `trusted/5.pub`.
+
+### Dokumentasi
+- `docs/BOOTSTRAP.md`: paragraf "Rotation 4 -> 5 at v1.0.0" + daftar kunci
+  terkini.
+- `docs/UPGRADE_CONTRACT.md`: bagian "v5 (UAEG v1.0.0)".
+- `README.md`, `.github/workflows/release.yml`: teks kunci penandatangan
+  diperbarui (stale sejak v0.4.0).
+- `report/RELEASE_1.0.0_RUNBOOK.md`, `report/UAEG_LIVE_RELEASE_DECISION.md`:
+  resolusi penandatanganan + addendum sesi 4.
+
+## B. Manifest rilis
+
+- `release/manifests/v1.0.0/*` — manifest + tanda tangan Ed25519
+  (`uaeg-release-5`) + sidecar sha256; diverifikasi
+  `release/verify_release.py` (lokal + CI sebelum publikasi).
+
+## C. Bukti
+
+- `report/evidence/key_rotation_v100.txt` — lintas-cek: manifest v1.0.0 vs
+  key-4 (harus GAGAL, penolakan terdokumentasi) dan vs key-5 (harus OK);
+  manifest historis vs kunci historis (tetap OK).
+
 # Patch Changelog — v0.4.0 → v0.4.1
 
 **Date:** 2026-11-09 · Fokus: penutupan penuh Insiden 3
